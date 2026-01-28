@@ -121,9 +121,13 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Initialize logging
-    let level = if cli.verbose { "debug" } else { "info" };
+    let filter = if cli.verbose {
+        "debug"
+    } else {
+        "magector_core=info,warn"
+    };
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(level))
+        .with(tracing_subscriber::EnvFilter::new(filter))
         .with(tracing_subscriber::fmt::layer())
         .init();
 
