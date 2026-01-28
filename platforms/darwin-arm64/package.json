@@ -1,0 +1,13 @@
+{
+  "name": "@magector/cli-darwin-arm64",
+  "version": "1.0.0",
+  "description": "Magector Rust binary for macOS ARM (Apple Silicon)",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "files": ["bin/magector-core"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/krejcif/magector.git"
+  }
+}

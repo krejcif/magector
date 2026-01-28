@@ -111,69 +111,41 @@ Source File ──▶ Tree-sitter AST ──▶ Magento Pattern Detection ──
 
 ### Prerequisites
 
-- [Rust 1.75+](https://rustup.rs) (for building the core)
-- [Node.js 18+](https://nodejs.org) (for MCP server)
-- Git
+- [Node.js 18+](https://nodejs.org)
 
-### 1. Clone and Build
+### 1. Initialize in Your Magento Project
 
 ```bash
-git clone https://github.com/krejcif/magector.git
-cd magector
-
-# Install Node.js dependencies
-npm install
-
-# Build the Rust core
-cd rust-core
-cargo build --release
-cd ..
+cd /path/to/your/magento2
+npx magector init
 ```
 
-### 2. Index a Magento Codebase
+This single command:
+- Verifies the Magento project
+- Downloads the ONNX model (~86MB, cached globally in `~/.magector/models/`)
+- Indexes the entire codebase
+- Detects your IDE (Cursor / Claude Code)
+- Writes MCP server configuration
+- Writes IDE rules (`.cursorrules` / `CLAUDE.md`)
+- Adds `magector.db` to `.gitignore`
+
+### 2. Search
 
 ```bash
-./rust-core/target/release/magector-core index -m /path/to/magento2
+npx magector search "product price calculation"
+npx magector search "checkout totals collector" -l 20
 ```
 
-### 3. Search
+### 3. Re-index After Changes
 
 ```bash
-# Semantic search
-./rust-core/target/release/magector-core search "product price calculation"
-
-# With result limit
-./rust-core/target/release/magector-core search "checkout totals collector" -l 20
-
-# JSON output
-./rust-core/target/release/magector-core search "customer authentication" -f json
+npx magector index
 ```
 
-### 4. Set Up MCP Server (for Claude Code / Cursor)
+### 4. IDE Setup Only (Skip Indexing)
 
 ```bash
-# Automatic setup for Claude Code
-./scripts/setup.sh
-
-# Or manually
-claude mcp add magector node src/mcp-server.js
-```
-
-For Cursor, add to `.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "magector": {
-      "command": "node",
-      "args": ["/path/to/magector/src/mcp-server.js"],
-      "env": {
-        "MAGECTOR_DB": "/path/to/magector/magector.db",
-        "MAGENTO_ROOT": "/path/to/magento2"
-      }
-    }
-  }
-}
+npx magector setup
 ```
 
 ---
@@ -220,13 +192,13 @@ Options:
 ### Node.js CLI
 
 ```bash
-npx magector index [path]       # Index Magento codebase
+npx magector init [path]        # Full setup: index + IDE config
+npx magector index [path]       # Index (or re-index) Magento codebase
 npx magector search <query>     # Search indexed code
 npx magector stats              # Show indexer statistics
-npx magector setup              # Generate Claude Code MCP config
+npx magector setup [path]       # IDE setup only (no indexing)
 npx magector mcp                # Start MCP server
-npx magector validate           # Run validation suite
-npx magector benchmark          # Run performance benchmarks
+npx magector help               # Show help
 ```
 
 ### Environment Variables
@@ -235,6 +207,8 @@ npx magector benchmark          # Run performance benchmarks
 |----------|-------------|---------|
 | `MAGENTO_ROOT` | Path to Magento installation | Current directory |
 | `MAGECTOR_DB` | Path to index database | `./magector.db` |
+| `MAGECTOR_BIN` | Path to magector-core binary | Auto-detected |
+| `MAGECTOR_MODELS` | Path to ONNX model directory | `~/.magector/models/` |
 
 ---
 
@@ -345,9 +319,15 @@ npm run validate:verbose
 ```
 magector/
 ├── src/                          # Node.js source
-│   ├── cli.js                    # Node.js CLI entry point
+│   ├── cli.js                    # CLI entry point (npx magector <command>)
 │   ├── mcp-server.js             # MCP server (19 tools, delegates to Rust core)
+│   ├── binary.js                 # Platform binary resolver
+│   ├── model.js                  # ONNX model resolver/downloader
+│   ├── init.js                   # Full init command (index + IDE config)
 │   ├── magento-patterns.js       # Magento pattern detection (JS)
+│   ├── templates/                # IDE rules templates
+│   │   ├── cursorrules.js        # .cursorrules content
+│   │   └── claude-md.js          # CLAUDE.md content
 │   └── validation/               # JS validation suite
 │       ├── validator.js
 │       ├── benchmark.js
@@ -356,6 +336,12 @@ magector/
 │       └── accuracy-calculator.js
 ├── tests/                        # Automated tests
 │   └── mcp-server.test.js        # MCP server tests (Rust core + analysis tools)
+├── platforms/                    # Platform-specific binary packages
+│   ├── darwin-arm64/             # macOS ARM (Apple Silicon)
+│   ├── darwin-x64/               # macOS Intel
+│   ├── linux-x64/                # Linux x64
+│   ├── linux-arm64/              # Linux ARM64
+│   └── win32-x64/                # Windows x64
 ├── rust-core/                    # Rust high-performance core
 │   ├── Cargo.toml
 │   ├── src/
@@ -370,13 +356,15 @@ magector/
 │   └── models/                   # ONNX model files (auto-downloaded)
 │       ├── all-MiniLM-L6-v2.onnx
 │       └── tokenizer.json
+├── .github/
+│   └── workflows/
+│       └── release.yml           # Cross-compile + publish CI
 ├── scripts/
 │   └── setup.sh                  # Claude Code MCP setup script
 ├── config/
 │   └── mcp-config.json           # MCP server configuration template
 ├── package.json
 ├── .gitignore
-├── .cursorrules                  # Cursor IDE rules for Magento development
 ├── LICENSE
 └── README.md
 ```
@@ -475,6 +463,24 @@ magector-core index -m /path/to/magento -c /custom/model/path
 ---
 
 ## Development
+
+### Building from Source
+
+```bash
+git clone https://github.com/krejcif/magector.git
+cd magector
+
+# Install Node.js dependencies
+npm install
+
+# Build the Rust core
+cd rust-core
+cargo build --release
+cd ..
+
+# The CLI will automatically find the dev binary at rust-core/target/release/magector-core
+node src/cli.js help
+```
 
 ### Building
 

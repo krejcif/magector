@@ -41,3 +41,6 @@ validation-results/
 
 # Temporary files
 tmp/
+
+# Platform binary builds (populated by CI)
+platforms/*/bin/

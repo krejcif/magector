@@ -1,0 +1,13 @@
+{
+  "name": "@magector/cli-linux-x64",
+  "version": "1.0.0",
+  "description": "Magector Rust binary for Linux x64",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "files": ["bin/magector-core"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/krejcif/magector.git"
+  }
+}

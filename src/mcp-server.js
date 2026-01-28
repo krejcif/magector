@@ -19,7 +19,6 @@ import { existsSync } from 'fs';
 import { stat } from 'fs/promises';
 import { glob } from 'glob';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import {
   analyzeCommit,
   getStagedDiff,
@@ -29,14 +28,14 @@ import {
   analyzeFiles as analyzeComplexityFiles,
   getComplexityRating
 } from 'ruvector/dist/analysis/complexity.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { resolveBinary } from './binary.js';
+import { resolveModels } from './model.js';
 
 const config = {
   dbPath: process.env.MAGECTOR_DB || './magector.db',
   magentoRoot: process.env.MAGENTO_ROOT || process.cwd(),
-  rustBinary: process.env.MAGECTOR_BIN || path.join(__dirname, '..', 'rust-core', 'target', 'release', 'magector-core'),
-  modelCache: process.env.MAGECTOR_MODELS || path.join(__dirname, '..', 'rust-core', 'models')
+  get rustBinary() { return resolveBinary(); },
+  get modelCache() { return resolveModels() || process.env.MAGECTOR_MODELS || './models'; }
 };
 
 // ─── Rust Core Integration ──────────────────────────────────────

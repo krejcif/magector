@@ -1,155 +1,199 @@
 #!/usr/bin/env node
-import { MagentoIndexer } from './indexer.js';
-import { readFile, writeFile } from 'fs/promises';
-import { existsSync } from 'fs';
+/**
+ * Magector CLI — npx magector <command>
+ *
+ * All search/index/stats commands delegate to the Rust binary (magector-core).
+ * The CLI resolves the binary and model paths, then shells out.
+ */
+import { execFileSync, spawn } from 'child_process';
 import path from 'path';
+import { resolveBinary } from './binary.js';
+import { ensureModels, resolveModels } from './model.js';
+import { init, setup } from './init.js';
 
 const args = process.argv.slice(2);
 const command = args[0];
 
-const config = {
-  dbPath: process.env.MAGECTOR_DB || './magector.db',
-  magentoRoot: process.env.MAGENTO_ROOT || process.cwd()
-};
-
-async function index(targetPath) {
-  const root = targetPath || config.magentoRoot;
-  console.log(`\n🔍 Magector - Magento Code Indexer\n`);
-  console.log(`Indexing: ${root}`);
-  console.log(`Database: ${config.dbPath}\n`);
-
-  const indexer = new MagentoIndexer({
-    dbPath: config.dbPath,
-    magentoRoot: root
-  });
-
-  await indexer.init();
-  const stats = await indexer.indexDirectory();
-  await indexer.close();
-
-  console.log(`\n✅ Indexing complete!`);
-  console.log(`   Files indexed: ${stats.indexed}`);
-  console.log(`   Files skipped: ${stats.skipped}`);
-}
-
-async function search(query, options = {}) {
-  console.log(`\n🔍 Searching: "${query}"\n`);
-
-  const indexer = new MagentoIndexer({ dbPath: config.dbPath });
-  await indexer.init();
-
-  const results = await indexer.search(query, {
-    limit: options.limit || 5,
-    filter: options.type ? { type: options.type } : undefined
-  });
-
-  if (results.length === 0) {
-    console.log('No results found.');
-  } else {
-    results.forEach((r, i) => {
-      console.log(`\n--- Result ${i + 1} (score: ${r.score?.toFixed(3)}) ---`);
-      console.log(`Path: ${r.path}`);
-      if (r.module) console.log(`Module: ${r.module}`);
-      if (r.className) console.log(`Class: ${r.className}`);
-      if (r.methodName) console.log(`Method: ${r.methodName}`);
-      console.log(`\n${r.content?.substring(0, 300)}...`);
-    });
-  }
-
-  await indexer.close();
-}
-
-async function stats() {
-  const indexer = new MagentoIndexer({ dbPath: config.dbPath });
-  await indexer.init();
-  const s = await indexer.getStats();
-  console.log(`\n📊 Magector Stats`);
-  console.log(`   Total vectors: ${s.totalVectors}`);
-  console.log(`   Database: ${s.dbPath}`);
-  await indexer.close();
-}
-
-async function setupClaude() {
-  const mcpConfig = {
-    mcpServers: {
-      magector: {
-        command: 'node',
-        args: [path.resolve('./src/mcp-server.js')],
-        env: {
-          MAGECTOR_DB: path.resolve(config.dbPath),
-          MAGENTO_ROOT: path.resolve(config.magentoRoot)
-        }
-      }
-    }
-  };
-
-  const configPath = path.join(process.cwd(), '.mcp.json');
-  await writeFile(configPath, JSON.stringify(mcpConfig, null, 2));
-
-  console.log(`\n✅ Claude Code MCP config created: ${configPath}`);
-  console.log(`\nTo add to Claude Code globally, run:`);
-  console.log(`  claude mcp add magector node ${path.resolve('./src/mcp-server.js')}`);
-  console.log(`\nOr add to your Claude Code settings manually.`);
-}
-
 function showHelp() {
   console.log(`
-Magector - Magento Code Indexer for Claude Code
+Magector — Semantic code search for Magento 2
 
 Usage:
-  npx magector index [path]     Index Magento codebase
-  npx magector search <query>   Search indexed code
-  npx magector stats            Show indexer statistics
-  npx magector setup            Generate Claude Code MCP config
-  npx magector mcp              Start MCP server (for Claude Code)
-  npx magector validate         Run accuracy validation suite
-  npx magector benchmark        Run performance benchmarks
+  npx magector init [path]       Full setup: index + IDE config
+  npx magector index [path]      Index (or re-index) Magento codebase
+  npx magector search <query>    Search indexed code
+  npx magector mcp               Start MCP server (for Claude Code / Cursor)
+  npx magector stats             Show index statistics
+  npx magector setup [path]      IDE setup only (no indexing)
+  npx magector help              Show this help
+
+Options:
+  -l, --limit <n>    Number of search results (default: 10)
+  -f, --format <fmt> Output format: text, json (default: text)
 
 Environment Variables:
-  MAGENTO_ROOT    Path to Magento installation
-  MAGECTOR_DB     Path to index database file
+  MAGENTO_ROOT     Path to Magento installation (default: cwd)
+  MAGECTOR_DB      Path to index database (default: ./magector.db)
+  MAGECTOR_BIN     Path to magector-core binary
+  MAGECTOR_MODELS  Path to ONNX model directory
 
 Examples:
-  npx magector index /var/www/magento
+  npx magector init /var/www/magento
   npx magector search "product price calculation"
-  npx magector search "checkout controller" --type php
-  npx magector setup
-  npx magector validate --verbose
-  npx magector benchmark
+  npx magector search "checkout controller" -l 20
+  npx magector index
+  npx magector mcp
 `);
+}
+
+function getConfig() {
+  return {
+    dbPath: process.env.MAGECTOR_DB || './magector.db',
+    magentoRoot: process.env.MAGENTO_ROOT || process.cwd()
+  };
+}
+
+function parseArgs(argv) {
+  const opts = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '-l' || argv[i] === '--limit') {
+      opts.limit = argv[++i];
+    } else if (argv[i] === '-f' || argv[i] === '--format') {
+      opts.format = argv[++i];
+    } else if (argv[i] === '-v' || argv[i] === '--verbose') {
+      opts.verbose = true;
+    }
+  }
+  return opts;
+}
+
+async function runIndex(targetPath) {
+  const config = getConfig();
+  const root = targetPath || config.magentoRoot;
+  const binary = resolveBinary();
+  const modelPath = await ensureModels();
+
+  console.log(`\nIndexing: ${path.resolve(root)}`);
+  console.log(`Database: ${path.resolve(config.dbPath)}\n`);
+
+  try {
+    const output = execFileSync(binary, [
+      'index',
+      '-m', path.resolve(root),
+      '-d', path.resolve(config.dbPath),
+      '-c', modelPath
+    ], { encoding: 'utf-8', timeout: 600000, stdio: ['pipe', 'pipe', 'pipe'] });
+    if (output.trim()) console.log(output.trim());
+    console.log('\nIndexing complete.');
+  } catch (err) {
+    const output = err.stderr || err.stdout || err.message;
+    console.error(`Indexing error: ${output}`);
+    process.exit(1);
+  }
+}
+
+function runSearch(query, opts = {}) {
+  const config = getConfig();
+  const binary = resolveBinary();
+  const modelPath = resolveModels();
+
+  if (!modelPath) {
+    console.error('ONNX model not found. Run `npx magector init` or `npx magector index` first.');
+    process.exit(1);
+  }
+
+  const searchArgs = [
+    'search', query,
+    '-d', path.resolve(config.dbPath),
+    '-c', modelPath,
+    '-l', String(opts.limit || 10),
+    '-f', opts.format || 'text'
+  ];
+
+  try {
+    const output = execFileSync(binary, searchArgs, {
+      encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe']
+    });
+    console.log(output);
+  } catch (err) {
+    const output = err.stderr || err.stdout || err.message;
+    console.error(`Search error: ${output}`);
+    process.exit(1);
+  }
+}
+
+function runStats() {
+  const config = getConfig();
+  const binary = resolveBinary();
+
+  try {
+    const output = execFileSync(binary, [
+      'stats', '-d', path.resolve(config.dbPath)
+    ], { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
+    console.log(output);
+  } catch (err) {
+    const output = err.stderr || err.stdout || err.message;
+    console.error(`Stats error: ${output}`);
+    process.exit(1);
+  }
 }
 
 async function main() {
   switch (command) {
+    case 'init':
+      await init(args[1]);
+      break;
+
     case 'index':
-      await index(args[1]);
+      await runIndex(args[1]);
       break;
-    case 'search':
-      await search(args.slice(1).join(' '));
+
+    case 'search': {
+      const query = args.slice(1).filter(a => !a.startsWith('-')).join(' ');
+      if (!query) {
+        console.error('Usage: npx magector search <query>');
+        process.exit(1);
+      }
+      const opts = parseArgs(args.slice(1));
+      runSearch(query, opts);
       break;
-    case 'stats':
-      await stats();
-      break;
-    case 'setup':
-      await setupClaude();
-      break;
+    }
+
     case 'mcp':
       await import('./mcp-server.js');
       break;
-    case 'validate':
+
+    case 'stats':
+      runStats();
+      break;
+
+    case 'setup':
+      await setup(args[1]);
+      break;
+
+    case 'validate': {
       const { runFullValidation } = await import('./validation/validator.js');
       const verbose = args.includes('--verbose') || args.includes('-v');
       const keepData = args.includes('--keep');
       await runFullValidation({ verbose, keepTestData: keepData });
       break;
+    }
+
     case 'benchmark':
       await import('./validation/benchmark.js');
       break;
+
     case 'help':
     case '--help':
     case '-h':
-    default:
+    case undefined:
       showHelp();
+      break;
+
+    default:
+      console.error(`Unknown command: ${command}`);
+      showHelp();
+      process.exit(1);
   }
 }
 

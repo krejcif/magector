@@ -1,0 +1,13 @@
+{
+  "name": "@magector/cli-darwin-x64",
+  "version": "1.0.0",
+  "description": "Magector Rust binary for macOS Intel",
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "files": ["bin/magector-core"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/krejcif/magector.git"
+  }
+}
