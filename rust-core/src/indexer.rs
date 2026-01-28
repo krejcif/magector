@@ -119,9 +119,15 @@ impl Indexer {
     pub fn index(&mut self) -> Result<IndexStats> {
         let mut stats = IndexStats::default();
 
-        println!("\n╔═══════════════════════════════════════════════════════════╗");
-        println!("║              MAGECTOR INDEXING ENGINE                     ║");
-        println!("╚═══════════════════════════════════════════════════════════╝\n");
+        println!();
+        println!("  __  __    _    ____ _____ ____ _____ ___  ____  ");
+        println!(" |  \\/  |  / \\  / ___| ____/ ___|_   _/ _ \\|  _ \\ ");
+        println!(" | |\\/| | / _ \\| |  _|  _|| |     | || | | | |_) |");
+        println!(" | |  | |/ ___ \\ |_| | |__| |___  | || |_| |  _ < ");
+        println!(" |_|  |_/_/   \\_\\____|_____\\____| |_| \\___/|_| \\_\\");
+        println!();
+        println!("  Semantic code search for Magento 2");
+        println!();
 
         println!("📁 Source: {:?}", self.magento_root);
         println!("🔍 Discovering files...");
@@ -161,11 +167,10 @@ impl Indexer {
         let pb = ProgressBar::new(files.len() as u64);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}")
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) ~{eta} remaining")
                 .unwrap()
                 .progress_chars("█▓░"),
         );
-        pb.set_message("Parsing...");
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
         let indexed = AtomicUsize::new(0);

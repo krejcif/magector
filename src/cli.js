@@ -77,17 +77,19 @@ async function runIndex(targetPath) {
   console.log(`Database: ${path.resolve(config.dbPath)}\n`);
 
   try {
-    const output = execFileSync(binary, [
+    execFileSync(binary, [
       'index',
       '-m', path.resolve(root),
       '-d', path.resolve(config.dbPath),
       '-c', modelPath
-    ], { encoding: 'utf-8', timeout: 600000, stdio: ['pipe', 'pipe', 'pipe'] });
-    if (output.trim()) console.log(output.trim());
+    ], { timeout: 600000, stdio: 'inherit' });
     console.log('\nIndexing complete.');
   } catch (err) {
-    const output = err.stderr || err.stdout || err.message;
-    console.error(`Indexing error: ${output}`);
+    if (err.status) {
+      console.error('Indexing failed.');
+      process.exit(err.status);
+    }
+    console.error(`Indexing error: ${err.message}`);
     process.exit(1);
   }
 }

@@ -199,18 +199,18 @@ export async function init(projectPath) {
   console.log('\nIndexing codebase...');
   const startTime = Date.now();
   try {
-    const output = execFileSync(binary, [
+    execFileSync(binary, [
       'index',
       '-m', projectPath,
       '-d', dbPath,
       '-c', modelPath
-    ], { encoding: 'utf-8', timeout: 600000, stdio: ['pipe', 'pipe', 'pipe'] });
-    if (output.trim()) {
-      console.log(output.trim().split('\n').map(l => `  ${l}`).join('\n'));
-    }
+    ], { timeout: 600000, stdio: 'inherit' });
   } catch (err) {
-    const output = err.stderr || err.stdout || err.message;
-    console.error(`Indexing error: ${output}`);
+    if (err.status) {
+      console.error('Indexing failed.');
+      process.exit(err.status);
+    }
+    console.error(`Indexing error: ${err.message}`);
     process.exit(1);
   }
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
