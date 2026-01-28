@@ -195,42 +195,6 @@ impl Embedder {
     }
 }
 
-/// Lightweight embedder that calls external process (for JS integration)
-pub struct ExternalEmbedder {
-    binary_path: String,
-}
-
-impl ExternalEmbedder {
-    pub fn new(binary_path: &str) -> Self {
-        Self {
-            binary_path: binary_path.to_string(),
-        }
-    }
-
-    pub fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        use std::process::Command;
-
-        let output = Command::new(&self.binary_path)
-            .arg("embed")
-            .arg("--text")
-            .arg(text)
-            .output()
-            .context("Failed to run embedder")?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "Embedder failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        let embedding: Vec<f32> = serde_json::from_slice(&output.stdout)
-            .context("Failed to parse embedding output")?;
-
-        Ok(embedding)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

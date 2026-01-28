@@ -15,16 +15,12 @@
     "validate": "node src/validation/validator.js",
     "validate:verbose": "node src/validation/validator.js --verbose",
     "validate:keep": "node src/validation/validator.js --verbose --keep",
-    "validate:real": "node src/validation/real-validator.js",
-    "validate:dev": "node src/validation/developer-validator.js",
     "benchmark": "node src/validation/benchmark.js",
-    "test": "npm run validate:dev && npm run validate:real"
+    "test": "node tests/mcp-server.test.js",
+    "test:no-index": "node tests/mcp-server.test.js --no-index"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@ruvector/gnn": "^0.1.22",
-    "@ruvector/gnn-darwin-arm64": "^0.1.19",
-    "@ruvector/graph-node": "^0.1.26",
     "chalk": "^5.3.0",
     "glob": "^10.3.10",
     "ora": "^8.0.1",

@@ -277,7 +277,7 @@ impl PhpAnalyzer {
         meta.is_repository = content.contains("RepositoryInterface")
             || meta.class_name.as_ref().map_or(false, |n| n.contains("Repository"));
 
-        meta.is_plugin = !self.plugin_method_re.captures_iter(content).count() == 0;
+        meta.is_plugin = self.plugin_method_re.captures_iter(content).count() > 0;
 
         meta.is_observer = content.contains("implements ObserverInterface")
             || content.contains("implements Observer");
@@ -481,7 +481,7 @@ pub fn generate_search_text(
     terms.join(" ")
 }
 
-fn split_camel_case(s: &str) -> String {
+pub fn split_camel_case(s: &str) -> String {
     let mut result = String::new();
     for (i, c) in s.chars().enumerate() {
         if i > 0 && c.is_uppercase() {

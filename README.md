@@ -7,7 +7,7 @@ Magector indexes an entire Magento 2 codebase and lets you search it with natura
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
 [![Node.js](https://img.shields.io/badge/node-18+-green.svg)](https://nodejs.org)
 [![Magento](https://img.shields.io/badge/magento-2.4.x-blue.svg)](https://magento.com)
-[![Accuracy](https://img.shields.io/badge/accuracy-94.8%25-brightgreen.svg)](#validation)
+[![Accuracy](https://img.shields.io/badge/accuracy-94.4%25-brightgreen.svg)](#validation)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -30,7 +30,7 @@ Magector understands that a query about *"payment capture"* should return `Sales
 ## Features
 
 - **Semantic search** -- find code by meaning, not exact keywords
-- **94.8% accuracy** -- validated with 557 test cases across 50+ categories
+- **94.4% accuracy** -- validated with 557 test cases across 50+ categories
 - **Magento-aware** -- understands controllers, plugins, observers, blocks, resolvers, repositories, and 20+ Magento patterns
 - **AST-powered** -- tree-sitter parsing for PHP and JavaScript extracts classes, methods, namespaces, and inheritance
 - **Fast** -- 15-45ms queries, ~3 minute indexing for full Magento 2.4.7
@@ -49,7 +49,7 @@ Magector understands that a query about *"payment capture"* should return `Sales
                     │                  │                       │
                     │  ┌────────────┐  │  ┌─────────────────┐  │
                     │  │ Tree-sitter│  │  │  MCP Server     │  │
-                    │  │ AST Parser │  │  │  (16 tools)     │  │
+                    │  │ AST Parser │  │  │  (15 tools)     │  │
                     │  │ PHP + JS   │  │  └────────┬────────┘  │
                     │  └─────┬──────┘  │           │           │
                     │        │         │  ┌────────┴────────┐  │
@@ -114,7 +114,7 @@ Source File ──▶ Tree-sitter AST ──▶ Magento Pattern Detection ──
 ### 1. Clone and Build
 
 ```bash
-git clone https://github.com/AmiPotworworthy/magector.git
+git clone https://github.com/krejcif/magector.git
 cd magector
 
 # Install Node.js dependencies
@@ -244,7 +244,7 @@ npx magector benchmark          # Run performance benchmarks
 
 ## MCP Server Tools
 
-The MCP server exposes 16 tools for AI-assisted Magento development:
+The MCP server exposes 15 tools for AI-assisted Magento development:
 
 ### Search Tools
 
@@ -300,8 +300,8 @@ Magector is validated against the complete Magento 2.4.7 codebase with **557 tes
 
 | Metric | Value |
 |--------|-------|
-| **Accuracy** | **94.8%** |
-| Tests passed | 528 / 557 |
+| **Accuracy** | **94.4%** |
+| Tests passed | 526 / 557 |
 | Index size | 17,891 vectors |
 | Query time | 15-45ms |
 | Indexing time | ~3 minutes |
@@ -341,17 +341,17 @@ npm run validate:verbose
 magector/
 ├── src/                          # Node.js source
 │   ├── cli.js                    # Node.js CLI entry point
-│   ├── mcp-server.js             # MCP server (16 tools)
+│   ├── mcp-server.js             # MCP server (15 tools)
 │   ├── indexer.js                # Node.js indexer (hybrid search, re-ranking)
 │   ├── magento-patterns.js       # Magento pattern detection (JS)
 │   └── validation/               # JS validation suite
 │       ├── validator.js
-│       ├── real-validator.js
-│       ├── developer-validator.js
 │       ├── benchmark.js
 │       ├── test-queries.js
 │       ├── test-data-generator.js
 │       └── accuracy-calculator.js
+├── tests/                        # Automated tests
+│   └── mcp-server.test.js        # MCP server tests (129 tests)
 ├── rust-core/                    # Rust high-performance core
 │   ├── Cargo.toml
 │   ├── src/
@@ -400,7 +400,7 @@ Magector scans every `.php`, `.js`, `.xml`, `.phtml`, and `.graphqls` file in a 
 
 ### 3. MCP Integration
 
-The Node.js MCP server wraps the indexer with 16 specialized tools. When an AI assistant like Claude Code or Cursor needs to find Magento code, it calls the appropriate tool:
+The Node.js MCP server wraps the indexer with 15 specialized tools. When an AI assistant like Claude Code or Cursor needs to find Magento code, it calls the appropriate tool:
 
 ```
 Developer: "How does checkout totals calculation work?"
@@ -484,6 +484,22 @@ cargo test
 
 # Run validation
 cargo run --release -- validate
+```
+
+### Testing
+
+```bash
+# Run MCP server auto tests (129 tests, requires indexed codebase)
+npm test
+
+# Run without index (unit + schema tests only)
+npm run test:no-index
+
+# Run Rust unit tests
+cd rust-core && cargo test
+
+# Run Rust validation (557 test cases)
+cd rust-core && cargo run --release -- validate -m ./magento2 --skip-index
 ```
 
 ### Adding New Magento Patterns

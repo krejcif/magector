@@ -12,7 +12,7 @@ use walkdir::WalkDir;
 use crate::ast::{PhpAstAnalyzer, JsAstAnalyzer, PhpAstMetadata, JsAstMetadata};
 use crate::embedder::Embedder;
 use crate::magento::{
-    detect_area, detect_file_type, extract_module_info,
+    detect_area, detect_file_type, extract_module_info, split_camel_case,
     XmlAnalyzer,
 };
 use crate::vectordb::{IndexMetadata, VectorDB};
@@ -778,14 +778,3 @@ impl Indexer {
     }
 }
 
-/// Split CamelCase into words
-fn split_camel_case(s: &str) -> String {
-    let mut result = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if c.is_uppercase() && i > 0 {
-            result.push(' ');
-        }
-        result.push(c);
-    }
-    result
-}

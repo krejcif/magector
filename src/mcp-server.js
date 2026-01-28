@@ -41,7 +41,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'magento_search',
-      description: 'Search Magento codebase semantically with GNN-enhanced results. Find classes, methods, configurations, templates by describing what you need.',
+      description: 'Search Magento codebase semantically. Find classes, methods, configurations, templates by describing what you need.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -63,11 +63,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             description: 'Filter by Magento module (e.g., "Magento/Catalog", "Magento/Checkout")'
           },
-          useGraph: {
-            type: 'boolean',
-            description: 'Include related code from dependency graph (default: true)',
-            default: true
-          }
         },
         required: ['query']
       }
@@ -147,50 +142,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
-      name: 'magento_dependencies',
-      description: 'Find all dependencies of a class using GNN code graph - shows what it extends, implements, uses, and what uses it',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          className: {
-            type: 'string',
-            description: 'Class name to analyze (e.g., "ProductRepository", "CartManagement")'
-          }
-        },
-        required: ['className']
-      }
-    },
-    {
-      name: 'magento_graph_query',
-      description: 'Query the code dependency graph directly - find inheritance chains, DI dependencies, module relationships',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          nodeType: {
-            type: 'string',
-            enum: ['class', 'method', 'all'],
-            description: 'Type of nodes to query'
-          },
-          edgeType: {
-            type: 'string',
-            enum: ['extends', 'implements', 'uses', 'di_dependency', 'all'],
-            description: 'Type of relationships to include'
-          },
-          moduleName: {
-            type: 'string',
-            description: 'Filter by module name'
-          },
-          limit: {
-            type: 'number',
-            description: 'Maximum results',
-            default: 20
-          }
-        }
-      }
-    },
-    {
       name: 'magento_index',
-      description: 'Index or re-index Magento codebase with GNN learning',
+      description: 'Index or re-index Magento codebase for semantic search',
       inputSchema: {
         type: 'object',
         properties: {
@@ -198,17 +151,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             description: 'Path to Magento root (uses configured path if not specified)'
           },
-          enableGNN: {
-            type: 'boolean',
-            description: 'Enable GNN features (default: true)',
-            default: true
-          }
         }
       }
     },
     {
       name: 'magento_stats',
-      description: 'Get indexer statistics including GNN graph metrics',
+      description: 'Get indexer statistics',
       inputSchema: {
         type: 'object',
         properties: {}
@@ -386,10 +334,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (args.type) options.filter = { type: args.type };
         if (args.module) options.filter = { ...options.filter, module: args.module };
 
-        const useGraph = args.useGraph !== false;
-        const results = useGraph
-          ? await idx.searchWithGraph(args.query, options)
-          : await idx.search(args.query, options);
+        const results = await idx.search(args.query, options);
 
         return {
           content: [{
@@ -452,63 +397,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      case 'magento_dependencies': {
-        const deps = await idx.findDependencies(args.className);
-        let text = `## Dependencies for ${args.className}\n\n`;
-
-        if (deps.extends.length > 0) text += `**Extends:** ${deps.extends.join(', ')}\n`;
-        if (deps.implements.length > 0) text += `**Implements:** ${deps.implements.join(', ')}\n`;
-        if (deps.uses.length > 0) text += `**Uses:** ${deps.uses.join(', ')}\n`;
-        if (deps.di.length > 0) text += `**DI Dependencies:** ${deps.di.join(', ')}\n`;
-        if (deps.usedBy.length > 0) text += `**Used By:** ${deps.usedBy.slice(0, 10).join(', ')}${deps.usedBy.length > 10 ? ` (+${deps.usedBy.length - 10} more)` : ''}\n`;
-
-        if (Object.values(deps).every(arr => arr.length === 0)) {
-          text += 'No dependencies found in graph. Try re-indexing.';
-        }
-
-        return { content: [{ type: 'text', text }] };
-      }
-
-      case 'magento_graph_query': {
-        const graph = await idx.loadGraph();
-        let nodes = graph.nodes;
-        let edges = graph.edges;
-
-        if (args.nodeType && args.nodeType !== 'all') {
-          nodes = nodes.filter(n => n.type === args.nodeType);
-        }
-        if (args.edgeType && args.edgeType !== 'all') {
-          edges = edges.filter(e => e.type === args.edgeType);
-        }
-        if (args.moduleName) {
-          nodes = nodes.filter(n => n.file?.includes(args.moduleName));
-          edges = edges.filter(e => e.source?.includes(args.moduleName));
-        }
-
-        const limit = args.limit || 20;
-        nodes = nodes.slice(0, limit);
-        edges = edges.slice(0, limit);
-
-        let text = `## Code Graph Query Results\n\n`;
-        text += `**Nodes (${nodes.length}):**\n`;
-        nodes.forEach(n => {
-          text += `- ${n.type}: ${n.name} (${n.file})\n`;
-        });
-        text += `\n**Edges (${edges.length}):**\n`;
-        edges.forEach(e => {
-          text += `- ${e.source} --[${e.type}]--> ${e.target}\n`;
-        });
-
-        return { content: [{ type: 'text', text }] };
-      }
-
       case 'magento_index': {
         const path = args.path || config.magentoRoot;
         const stats = await idx.indexDirectory(path);
         return {
           content: [{
             type: 'text',
-            text: `Indexing complete!\n- Files indexed: ${stats.indexed}\n- Files skipped: ${stats.skipped}\n- Total files: ${stats.total}\n- GNN Graph nodes: ${stats.graphNodes}\n- GNN Graph edges: ${stats.graphEdges}`
+            text: `Indexing complete!\n- Files indexed: ${stats.indexed}\n- Files skipped: ${stats.skipped}\n- Total files: ${stats.total}`
           }]
         };
       }
@@ -518,7 +413,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `Magector Stats:\n- Total indexed chunks: ${stats.totalVectors}\n- Database path: ${stats.dbPath}\n- GNN enabled: ${stats.gnnEnabled}\n- Graph nodes: ${stats.graphNodes}\n- Graph edges: ${stats.graphEdges}\n- Classes: ${stats.classCount}\n- Methods: ${stats.methodCount}`
+            text: `Magector Stats:\n- Total indexed chunks: ${stats.totalVectors}\n- Database path: ${stats.dbPath}`
           }]
         };
       }
@@ -713,28 +608,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'magento_module_structure': {
+        const results = await idx.search(args.moduleName, { limit: 100 });
         const moduleName = args.moduleName.replace('_', '/');
-        const graph = await idx.loadGraph();
-
-        // Filter nodes by module
-        const moduleNodes = graph.nodes.filter(n =>
-          n.file?.includes(moduleName) || n.file?.includes(args.moduleName)
+        const moduleResults = results.filter(r =>
+          r.path?.includes(moduleName) || r.module?.includes(args.moduleName)
         );
 
         // Group by type
         const structure = {
-          controllers: moduleNodes.filter(n => n.magentoType === 'Controller' || n.file?.includes('/Controller/')),
-          models: moduleNodes.filter(n => n.magentoType === 'Model' || (n.file?.includes('/Model/') && !n.file?.includes('ResourceModel'))),
-          resourceModels: moduleNodes.filter(n => n.magentoType === 'ResourceModel' || n.file?.includes('ResourceModel')),
-          blocks: moduleNodes.filter(n => n.magentoType === 'Block' || n.file?.includes('/Block/')),
-          helpers: moduleNodes.filter(n => n.magentoType === 'Helper' || n.file?.includes('/Helper/')),
-          plugins: moduleNodes.filter(n => n.magentoType === 'Plugin' || n.file?.includes('/Plugin/')),
-          observers: moduleNodes.filter(n => n.magentoType === 'Observer' || n.file?.includes('/Observer/')),
-          apis: moduleNodes.filter(n => n.file?.includes('/Api/')),
-          setup: moduleNodes.filter(n => n.file?.includes('/Setup/')),
-          console: moduleNodes.filter(n => n.file?.includes('/Console/')),
-          cron: moduleNodes.filter(n => n.file?.includes('/Cron/')),
-          graphql: moduleNodes.filter(n => n.file?.includes('/Resolver/') || n.magentoType === 'GraphQlResolver')
+          controllers: moduleResults.filter(r => r.isController || r.path?.includes('/Controller/')),
+          models: moduleResults.filter(r => r.isModel || (r.path?.includes('/Model/') && !r.path?.includes('ResourceModel'))),
+          blocks: moduleResults.filter(r => r.isBlock || r.path?.includes('/Block/')),
+          plugins: moduleResults.filter(r => r.isPlugin || r.path?.includes('/Plugin/')),
+          observers: moduleResults.filter(r => r.isObserver || r.path?.includes('/Observer/')),
+          apis: moduleResults.filter(r => r.path?.includes('/Api/')),
+          configs: moduleResults.filter(r => r.type === 'xml'),
+          other: moduleResults.filter(r =>
+            !r.isController && !r.isModel && !r.isBlock && !r.isPlugin && !r.isObserver &&
+            !r.path?.includes('/Api/') && r.type !== 'xml' &&
+            !r.path?.includes('/Controller/') && !r.path?.includes('/Model/') &&
+            !r.path?.includes('/Block/') && !r.path?.includes('/Plugin/') &&
+            !r.path?.includes('/Observer/')
+          )
         };
 
         let text = `## Module Structure: ${args.moduleName}\n\n`;
@@ -743,14 +638,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (items.length > 0) {
             text += `### ${category.charAt(0).toUpperCase() + category.slice(1)} (${items.length})\n`;
             items.slice(0, 10).forEach(item => {
-              text += `- ${item.name} (${item.file})\n`;
+              text += `- ${item.className || item.path} (${item.path})\n`;
             });
             if (items.length > 10) text += `  ... and ${items.length - 10} more\n`;
             text += '\n';
           }
         }
 
-        if (moduleNodes.length === 0) {
+        if (moduleResults.length === 0) {
           text += 'No code found for this module. Try re-indexing or check the module name.';
         }
 

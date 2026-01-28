@@ -1,15 +1,12 @@
 /**
  * Magento Code Indexer using ruvector
- * Uses VectorDB for semantic search, CodeGraph for dependencies, GNN for graph learning
+ * Uses VectorDB for semantic search with Magento-aware pattern detection
  */
 
 import {
   VectorDB,
-  createIntelligenceEngine,
-  RuvectorLayer,
-  isGnnAvailable
+  createIntelligenceEngine
 } from 'ruvector';
-import { GraphDatabase } from '@ruvector/graph-node';
 import { glob } from 'glob';
 import { readFile, stat, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
@@ -61,15 +58,11 @@ const IGNORE_PATTERNS = [
 export class MagentoIndexer {
   constructor(options = {}) {
     this.dbPath = options.dbPath || './magector.db';
-    this.graphPath = options.graphPath || './magector-graph.json';
     this.magentoRoot = options.magentoRoot || process.cwd();
     this.db = null;
-    this.graph = null;
     this.intelligenceEngine = null;
-    this.gnnLayer = null;
     this.chunkSize = options.chunkSize || 500;
     this.maxFileSize = options.maxFileSize || 100000;
-    this.enableGNN = options.enableGNN !== false;
   }
 
   async init() {
@@ -87,26 +80,6 @@ export class MagentoIndexer {
       enableSona: false
     });
 
-    // Graph database for code dependencies
-    if (this.enableGNN) {
-      try {
-        this.graph = new GraphDatabase();
-        console.log('CodeGraph initialized');
-      } catch (err) {
-        console.warn('CodeGraph init warning:', err.message);
-      }
-
-      // GNN layer for graph-enhanced search
-      if (isGnnAvailable()) {
-        try {
-          this.gnnLayer = new RuvectorLayer(EMBED_DIM, 128, 4);
-          console.log('GNN layer initialized');
-        } catch (err) {
-          console.warn('GNN init warning:', err.message);
-        }
-      }
-    }
-
     return this;
   }
 
@@ -123,7 +96,6 @@ export class MagentoIndexer {
   async indexDirectory(directory = null) {
     const root = directory || this.magentoRoot;
     console.log(`Indexing Magento at: ${root}`);
-    console.log(`GNN enabled: ${this.enableGNN}`);
 
     const files = await glob(MAGENTO_FILE_PATTERNS, {
       cwd: root,
@@ -161,11 +133,6 @@ export class MagentoIndexer {
           magentoMeta = extractXmlMagentoMetadata(content, relativePath);
         } else if (fileType === 'graphql') {
           magentoMeta = extractGraphqlMetadata(content, relativePath);
-        }
-
-        // AST analysis for graph
-        if (fileType === 'php' && this.enableGNN && this.graph) {
-          await this.analyzePhpForGraph(content, relativePath, magentoMeta);
         }
 
         // Chunk and index
@@ -211,21 +178,12 @@ export class MagentoIndexer {
       }
     }
 
-    // Get graph stats
-    let graphStats = { totalNodes: 0, totalEdges: 0 };
-    if (this.graph) {
-      graphStats = await this.graph.stats();
-    }
-
-    console.log(`Code graph: ${graphStats.totalNodes} nodes, ${graphStats.totalEdges} edges`);
     console.log(`Indexing complete: ${indexed} indexed, ${skipped} skipped`);
 
     return {
       indexed,
       skipped,
-      total: files.length,
-      graphNodes: graphStats.totalNodes,
-      graphEdges: graphStats.totalEdges
+      total: files.length
     };
   }
 
@@ -278,37 +236,6 @@ export class MagentoIndexer {
     }
 
     return text;
-  }
-
-  async analyzePhpForGraph(content, relativePath, magentoMeta) {
-    if (!this.graph) return;
-
-    try {
-      // Extract class
-      const classMatch = content.match(/(?:abstract\s+)?(?:final\s+)?(?:class|interface|trait)\s+(\w+)/);
-      if (!classMatch) return;
-
-      const className = classMatch[1];
-      const nodeId = `${relativePath}:${className}`;
-      const embedding = this.embed(`${className} ${magentoMeta.magentoType || ''} ${content.substring(0, 500)}`);
-
-      // Create node only (skip edges for now - they require target nodes to exist)
-      this.graph.createNode({
-        id: nodeId,
-        labels: [magentoMeta.magentoType || 'class', ...(magentoMeta.patterns || [])],
-        properties: {
-          className,
-          path: relativePath,
-          module: magentoMeta.module
-        },
-        embedding
-      });
-
-      // Store relationship info in properties for later use
-      // (Edges would require all target nodes to exist first)
-    } catch (err) {
-      // Graph operations may fail, continue silently
-    }
   }
 
   chunkCode(content, filePath, magentoMeta = {}) {
@@ -889,109 +816,12 @@ export class MagentoIndexer {
     }));
   }
 
-  async searchWithGraph(query, options = {}) {
-    const vectorResults = await this.search(query, options);
-
-    if (!this.enableGNN || !this.graph) return vectorResults;
-
-    // Expand results with graph neighbors
-    const expandedResults = [...vectorResults];
-    const seenPaths = new Set(vectorResults.map(r => r.path));
-
-    for (const result of vectorResults.slice(0, 3)) {
-      if (!result.className) continue;
-
-      try {
-        const neighbors = this.graph.kHopNeighbors(`${result.path}:${result.className}`, 1);
-        if (neighbors && Array.isArray(neighbors)) {
-          for (const n of neighbors.slice(0, 3)) {
-            if (!seenPaths.has(n.properties?.path)) {
-              expandedResults.push({
-                path: n.properties?.path,
-                className: n.properties?.className,
-                type: 'related',
-                relation: 'graph_neighbor',
-                score: result.score * 0.8
-              });
-              seenPaths.add(n.properties?.path);
-            }
-          }
-        }
-      } catch (err) {
-        // Graph query may fail
-      }
-    }
-
-    return expandedResults;
-  }
-
-  async findDependencies(className) {
-    if (!this.graph) {
-      return { extends: [], implements: [], uses: [], di: [], usedBy: [] };
-    }
-
-    const deps = {
-      extends: [],
-      implements: [],
-      uses: [],
-      di: [],
-      usedBy: []
-    };
-
-    try {
-      // Query edges from/to this class
-      const result = this.graph.querySync(`
-        MATCH (n)-[r]->(m) WHERE n.id CONTAINS "${className}" OR m.id CONTAINS "${className}"
-        RETURN r.type, n.id, m.id
-      `);
-
-      if (result && result.edges) {
-        for (const edge of result.edges) {
-          if (edge.from.includes(className)) {
-            if (edge.type === 'extends') deps.extends.push(edge.to);
-            if (edge.type === 'implements') deps.implements.push(edge.to);
-            if (edge.type === 'uses') deps.uses.push(edge.to);
-            if (edge.type === 'di_dependency') deps.di.push(edge.to);
-          }
-          if (edge.to.includes(className)) {
-            deps.usedBy.push(edge.from);
-          }
-        }
-      }
-    } catch (err) {
-      // Query may fail
-    }
-
-    return deps;
-  }
-
-  async searchByModule(query, moduleName, limit = 10) {
-    const results = await this.search(query, { limit: limit * 3 });
-    return results.filter(r => r.module?.includes(moduleName)).slice(0, limit);
-  }
-
-  async searchByType(query, fileType, limit = 10) {
-    const results = await this.search(query, { limit: limit * 3 });
-    return results.filter(r => r.type === fileType).slice(0, limit);
-  }
-
   async getStats() {
     const vectorCount = await this.db.len();
-    let graphStats = { totalNodes: 0, totalEdges: 0 };
-
-    if (this.graph) {
-      graphStats = await this.graph.stats();
-    }
 
     return {
       totalVectors: vectorCount,
-      dbPath: this.dbPath,
-      gnnEnabled: this.enableGNN,
-      gnnAvailable: isGnnAvailable(),
-      graphNodes: graphStats.totalNodes,
-      graphEdges: graphStats.totalEdges,
-      classCount: graphStats.totalNodes, // Approximation
-      methodCount: 0
+      dbPath: this.dbPath
     };
   }
 

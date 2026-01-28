@@ -160,18 +160,6 @@ impl VectorDB {
         id
     }
 
-    /// Batch insert for efficiency
-    pub fn insert_batch(&mut self, items: Vec<(Vec<f32>, IndexMetadata)>) -> Vec<usize> {
-        let mut ids = Vec::with_capacity(items.len());
-
-        for (vector, metadata) in items {
-            let id = self.insert(&vector, metadata);
-            ids.push(id);
-        }
-
-        ids
-    }
-
     /// Search for similar vectors
     pub fn search(&self, query: &[f32], k: usize) -> Vec<SearchResult> {
         assert_eq!(query.len(), EMBEDDING_DIM);
@@ -189,21 +177,6 @@ impl VectorDB {
                     metadata: meta.clone(),
                 })
             })
-            .collect()
-    }
-
-    /// Search with metadata filtering
-    pub fn search_filtered<F>(&self, query: &[f32], k: usize, filter: F) -> Vec<SearchResult>
-    where
-        F: Fn(&IndexMetadata) -> bool,
-    {
-        // Get more results and filter
-        let results = self.search(query, k * 5);
-
-        results
-            .into_iter()
-            .filter(|r| filter(&r.metadata))
-            .take(k)
             .collect()
     }
 
