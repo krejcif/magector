@@ -7,7 +7,7 @@
  * 3. rust-core/target/release/magector-core (dev fallback)
  * 4. magector-core in PATH
  */
-import { existsSync } from 'fs';
+import { existsSync, chmodSync } from 'fs';
 import { execFileSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -33,6 +33,10 @@ export function resolveBinary() {
     const pkgDir = path.dirname(require.resolve(`${platformPkg}/package.json`));
     const binPath = path.join(pkgDir, 'bin', BINARY_NAME);
     if (existsSync(binPath)) {
+      // npm doesn't preserve execute permissions — ensure the binary is executable
+      if (process.platform !== 'win32') {
+        try { chmodSync(binPath, 0o755); } catch {}
+      }
       return binPath;
     }
   } catch {
