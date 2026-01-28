@@ -225,7 +225,7 @@ impl VectorDB {
         self.next_id = start_id + items.len();
     }
 
-    /// Search for similar vectors
+    /// Search for similar vectors (pure semantic)
     pub fn search(&self, query: &[f32], k: usize) -> Vec<SearchResult> {
         assert_eq!(query.len(), EMBEDDING_DIM);
 
@@ -243,6 +243,124 @@ impl VectorDB {
                 })
             })
             .collect()
+    }
+
+    /// Hybrid search: semantic + keyword re-ranking
+    ///
+    /// Fetches extra candidates from HNSW, then boosts scores based on
+    /// keyword matches in path and search_text. This significantly improves
+    /// accuracy for type-specific queries (helper, plugin, di.xml, setup, etc.)
+    pub fn hybrid_search(&self, query: &[f32], query_text: &str, k: usize) -> Vec<SearchResult> {
+        assert_eq!(query.len(), EMBEDDING_DIM);
+
+        // Fetch 3x candidates for re-ranking
+        let candidates = k * 3;
+        let ef_search = (candidates * 2).max(100);
+        let results = self.hnsw.search(query, candidates, ef_search);
+
+        // Lowercase query terms for matching
+        let query_lower = query_text.to_lowercase();
+        let query_terms: Vec<&str> = query_lower.split_whitespace().collect();
+
+        // Detect specific file/type patterns in query for strong boosting
+        let wants_di_xml = query_lower.contains("di.xml");
+        let wants_db_schema = query_lower.contains("db_schema");
+        let wants_helper = query_terms.contains(&"helper");
+        let wants_plugin = query_terms.contains(&"plugin");
+        let wants_repository = query_terms.contains(&"repository");
+        let wants_setup = query_terms.contains(&"setup");
+        let wants_observer = query_terms.contains(&"observer");
+
+        let mut scored: Vec<SearchResult> = results
+            .into_iter()
+            .filter_map(|n| {
+                let id = n.d_id;
+                self.metadata.get(&id).map(|meta| {
+                    let semantic_score = 1.0 - n.distance;
+
+                    // Compute keyword bonus from path and search_text
+                    let path_lower = meta.path.to_lowercase();
+                    let search_lower = meta.search_text.to_lowercase();
+
+                    let mut keyword_bonus: f32 = 0.0;
+                    let mut matched_terms = 0u32;
+
+                    for term in &query_terms {
+                        if term.len() < 3 { continue; }
+
+                        // Path match is strongest signal
+                        if path_lower.contains(term) {
+                            keyword_bonus += 0.08;
+                            matched_terms += 1;
+                        }
+                        // Search text match
+                        if search_lower.contains(term) {
+                            keyword_bonus += 0.03;
+                            matched_terms += 1;
+                        }
+                        // Class name match
+                        if let Some(ref cn) = meta.class_name {
+                            if cn.to_lowercase().contains(term) {
+                                keyword_bonus += 0.06;
+                                matched_terms += 1;
+                            }
+                        }
+                        // Magento type match (e.g. "helper", "plugin", "di_config")
+                        if let Some(ref mt) = meta.magento_type {
+                            let mt_lower = mt.to_lowercase();
+                            if mt_lower.contains(term) || term.replace('.', "_") == mt_lower {
+                                keyword_bonus += 0.10;
+                                matched_terms += 1;
+                            }
+                        }
+                    }
+
+                    // Strong type-specific boosts when query explicitly names a type
+                    let mtype = meta.magento_type.as_deref().unwrap_or("");
+                    if wants_di_xml && (mtype == "di_config" || path_lower.ends_with("di.xml")) {
+                        keyword_bonus += 0.20;
+                    }
+                    if wants_db_schema && (mtype == "db_schema" || path_lower.ends_with("db_schema.xml")) {
+                        keyword_bonus += 0.20;
+                    }
+                    if wants_helper && (mtype == "helper" || path_lower.contains("/helper/")) {
+                        keyword_bonus += 0.15;
+                    }
+                    if wants_plugin && (mtype == "plugin" || path_lower.contains("/plugin/") || meta.is_plugin) {
+                        keyword_bonus += 0.15;
+                    }
+                    if wants_repository && (mtype == "repository" || meta.is_repository) {
+                        keyword_bonus += 0.15;
+                    }
+                    if wants_setup && (mtype == "setup" || path_lower.contains("/setup/")) {
+                        keyword_bonus += 0.15;
+                    }
+                    if wants_observer && (mtype == "observer" || path_lower.contains("/observer/") || meta.is_observer) {
+                        keyword_bonus += 0.15;
+                    }
+
+                    // Multi-term bonus: reward results matching many query terms
+                    if matched_terms >= 3 {
+                        keyword_bonus += 0.05;
+                    }
+
+                    // Cap keyword bonus to avoid overwhelming semantic score
+                    let keyword_bonus = keyword_bonus.min(0.45);
+                    let final_score = semantic_score + keyword_bonus;
+
+                    SearchResult {
+                        id,
+                        score: final_score,
+                        metadata: meta.clone(),
+                    }
+                })
+            })
+            .collect();
+
+        // Sort by final score descending and take top k
+        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(k);
+        scored
     }
 
     /// Get total number of vectors

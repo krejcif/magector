@@ -440,10 +440,12 @@ impl Indexer {
                 terms.push("controller controller controller".to_string()); // Weight boost
             }
             if php.is_repository {
-                terms.push("repository data persistence save load get".to_string());
+                terms.push("repository data persistence save load get delete getList getById".to_string());
+                terms.push("repository repository repository interface".to_string()); // Weight boost
             }
             if php.is_plugin {
                 terms.push("plugin interceptor before after around".to_string());
+                terms.push("plugin plugin plugin".to_string()); // Weight boost
                 for pm in &php.plugin_methods {
                     terms.push(format!("{} {}", pm.method_type, pm.target_method));
                 }
@@ -460,12 +462,39 @@ impl Indexer {
             if php.is_resolver {
                 terms.push("graphql resolver query mutation field".to_string());
             }
+            if php.is_helper {
+                terms.push("helper utility data helper helper helper".to_string()); // Weight boost
+                terms.push("helper class data output".to_string());
+            }
+            if php.is_setup {
+                terms.push("setup install schema data patch upgrade".to_string());
+                terms.push("setup setup setup".to_string()); // Weight boost
+            }
         }
 
-        // Path-based controller detection (fallback if AST doesn't catch it)
+        // Path-based fallbacks (ensure detection even if AST misses it)
         if path_lower.contains("/controller/") {
             terms.push("controller action execute http request".to_string());
             terms.push("controller controller controller".to_string());
+        }
+        if path_lower.contains("/helper/") {
+            terms.push("helper utility data helper helper helper".to_string());
+            terms.push("helper class data output abstract".to_string());
+        }
+        if path_lower.contains("/plugin/") {
+            terms.push("plugin interceptor before after around".to_string());
+            terms.push("plugin plugin plugin".to_string());
+        }
+        if path_lower.contains("/model/") && path_lower.contains("repository") {
+            terms.push("repository data persistence save load get delete getList getById".to_string());
+            terms.push("repository repository repository interface".to_string());
+        }
+        if path_lower.contains("/setup/") || path_lower.contains("installschema")
+            || path_lower.contains("installdata") || path_lower.contains("upgradeschema")
+            || path_lower.contains("upgradedata") || path_lower.contains("/patch")
+        {
+            terms.push("setup install schema data patch upgrade".to_string());
+            terms.push("setup setup setup".to_string());
         }
 
         // Path-based inventory detection
@@ -524,8 +553,10 @@ impl Indexer {
 
             match filename {
                 "di.xml" => {
-                    terms.push("di.xml dependency injection preference plugin type virtualType".to_string());
-                    terms.push("di.xml di.xml di.xml configuration".to_string());
+                    terms.push("di.xml dependency injection preference plugin type virtualType argument".to_string());
+                    terms.push("di.xml di.xml di.xml di.xml configuration".to_string());
+                    terms.push("dependency injection dependency injection".to_string());
+                    terms.push("plugin type configuration di.xml preference".to_string());
                 }
                 "events.xml" => {
                     terms.push("events.xml observer event listener dispatch".to_string());
@@ -634,6 +665,19 @@ impl Indexer {
             for method in &php.methods {
                 text.push_str(&format!(" method {}", method.name));
             }
+            // Add type signals for better semantic matching
+            if php.is_helper {
+                text.push_str(" helper helper helper utility data");
+            }
+            if php.is_setup {
+                text.push_str(" setup setup setup install schema patch upgrade");
+            }
+            if php.is_plugin {
+                text.push_str(" plugin plugin interceptor before after around");
+            }
+            if php.is_repository {
+                text.push_str(" repository repository interface persistence save load get");
+            }
         }
 
         // JS enrichment
@@ -681,6 +725,14 @@ impl Indexer {
         js_ast: Option<JsAstMetadata>,
         search_text: String,
     ) -> IndexMetadata {
+        // Path-based type detection for fallback
+        let path_lower = path.to_lowercase();
+        let path_is_plugin = path_lower.contains("/plugin/");
+        let path_is_repository = path_lower.contains("/model/") && path_lower.contains("repository");
+        let path_is_controller = path_lower.contains("/controller/");
+        let path_is_observer = path_lower.contains("/observer/");
+        let path_is_block = path_lower.contains("/block/");
+
         let (
             class_name,
             class_type,
@@ -704,17 +756,20 @@ impl Indexer {
                 php.extends,
                 php.implements,
                 php.methods.iter().map(|m| m.name.clone()).collect(),
-                php.is_controller,
-                php.is_repository,
-                php.is_plugin,
-                php.is_observer,
+                php.is_controller || path_is_controller,
+                php.is_repository || path_is_repository,
+                php.is_plugin || path_is_plugin,
+                php.is_observer || path_is_observer,
                 php.is_model,
-                php.is_block,
+                php.is_block || path_is_block,
                 php.is_resolver,
                 php.is_api_interface,
             )
         } else {
-            (None, None, None, None, Vec::new(), Vec::new(), false, false, false, false, false, false, false, false)
+            // No AST — fall back to path-based detection
+            (None, None, None, None, Vec::new(), Vec::new(),
+             path_is_controller, path_is_repository, path_is_plugin, path_is_observer,
+             false, path_is_block, false, false)
         };
 
         let (is_ui_component, is_widget, is_mixin, js_dependencies) = if let Some(js) = js_ast {
@@ -762,10 +817,10 @@ impl Indexer {
         self.vectordb.save(path)
     }
 
-    /// Search the index
+    /// Search the index (hybrid: semantic + keyword re-ranking)
     pub fn search(&mut self, query: &str, k: usize) -> Result<Vec<crate::vectordb::SearchResult>> {
         let query_embedding = self.embedder.embed(query)?;
-        Ok(self.vectordb.search(&query_embedding, k))
+        Ok(self.vectordb.hybrid_search(&query_embedding, query, k))
     }
 
     /// Get index statistics

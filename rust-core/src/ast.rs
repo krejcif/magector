@@ -41,6 +41,8 @@ pub struct PhpAstMetadata {
     pub is_block: bool,
     pub is_resolver: bool,
     pub is_api_interface: bool,
+    pub is_helper: bool,
+    pub is_setup: bool,
     pub plugin_methods: Vec<PluginMethod>,
     pub event_handlers: Vec<String>,
     pub di_injections: Vec<String>,
@@ -460,10 +462,13 @@ impl PhpAstAnalyzer {
 
         // Repository detection
         metadata.is_repository = metadata.implements.iter().any(|i| i.contains("RepositoryInterface"))
-            || metadata.class_name.as_ref().map_or(false, |n| n.contains("Repository"));
+            || metadata.class_name.as_ref().map_or(false, |n| n.contains("Repository"))
+            || metadata.namespace.as_ref().map_or(false, |n| n.contains("Repository"));
 
-        // Plugin detection
-        metadata.is_plugin = !metadata.plugin_methods.is_empty();
+        // Plugin detection — method-based or class name / namespace
+        metadata.is_plugin = !metadata.plugin_methods.is_empty()
+            || metadata.class_name.as_ref().map_or(false, |n| n.contains("Plugin"))
+            || metadata.namespace.as_ref().map_or(false, |n| n.contains("\\Plugin\\"));
 
         // Observer detection
         metadata.is_observer = metadata.implements.iter().any(|i| i.contains("ObserverInterface"));
@@ -477,6 +482,24 @@ impl PhpAstAnalyzer {
         metadata.is_block = metadata.extends.as_ref().map_or(false, |e| {
             e.contains("Template") || e.contains("AbstractBlock")
         });
+
+        // Helper detection — extends AbstractHelper or namespace/class contains Helper
+        metadata.is_helper = metadata.extends.as_ref().map_or(false, |e| {
+            e.contains("AbstractHelper") || e.contains("AbstractData")
+        }) || metadata.class_name.as_ref().map_or(false, |n| n.contains("Helper"))
+            || metadata.namespace.as_ref().map_or(false, |n| n.contains("\\Helper\\") || n.ends_with("\\Helper"));
+
+        // Setup detection — implements DataPatchInterface, SchemaPatchInterface, etc.
+        metadata.is_setup = metadata.implements.iter().any(|i| {
+            i.contains("PatchInterface") || i.contains("InstallSchemaInterface")
+                || i.contains("InstallDataInterface") || i.contains("UpgradeSchemaInterface")
+                || i.contains("UpgradeDataInterface")
+        }) || metadata.namespace.as_ref().map_or(false, |n| n.contains("\\Setup\\") || n.ends_with("\\Setup"))
+            || metadata.class_name.as_ref().map_or(false, |n| {
+                n.contains("InstallSchema") || n.contains("InstallData")
+                    || n.contains("UpgradeSchema") || n.contains("UpgradeData")
+                    || n.contains("Patch")
+            });
 
         // GraphQL Resolver detection
         metadata.is_resolver = metadata.implements.iter().any(|i| {
