@@ -1,6 +1,6 @@
 {
   "name": "magector",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "description": "Semantic code search for Magento 2 — index, search, MCP server",
   "type": "module",
   "main": "src/mcp-server.js",
@@ -31,10 +31,10 @@
     "ruvector": "^0.1.96"
   },
   "optionalDependencies": {
-    "@magector/cli-darwin-arm64": "1.2.6",
-    "@magector/cli-linux-x64": "1.2.6",
-    "@magector/cli-linux-arm64": "1.2.6",
-    "@magector/cli-win32-x64": "1.2.6"
+    "@magector/cli-darwin-arm64": "1.2.7",
+    "@magector/cli-linux-x64": "1.2.7",
+    "@magector/cli-linux-arm64": "1.2.7",
+    "@magector/cli-win32-x64": "1.2.7"
   },
   "keywords": [
     "magento",
