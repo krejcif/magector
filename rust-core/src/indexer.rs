@@ -3,10 +3,10 @@
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
+use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 use walkdir::WalkDir;
 
 use crate::ast::{PhpAstAnalyzer, JsAstAnalyzer, PhpAstMetadata, JsAstMetadata};
@@ -63,10 +63,19 @@ struct ParsedFile {
     metadata: IndexMetadata,
 }
 
-/// Thread-safe AST analyzers wrapper
-struct AstAnalyzers {
-    php: Mutex<PhpAstAnalyzer>,
-    js: Mutex<JsAstAnalyzer>,
+/// Embedding batch size — balance between ONNX throughput and memory
+const EMBED_BATCH_SIZE: usize = 32;
+
+// Thread-local AST analyzers (avoids mutex contention in parallel parsing)
+thread_local! {
+    static TL_PHP_ANALYZER: RefCell<Option<PhpAstAnalyzer>> = RefCell::new(PhpAstAnalyzer::new().ok());
+    static TL_JS_ANALYZER: RefCell<Option<JsAstAnalyzer>> = RefCell::new(JsAstAnalyzer::new().ok());
+}
+
+/// Whether AST analyzers are available (checked once at init)
+struct AstAvailability {
+    php: bool,
+    js: bool,
 }
 
 /// Main indexer
@@ -75,7 +84,7 @@ pub struct Indexer {
     vectordb: VectorDB,
     xml_analyzer: XmlAnalyzer,
     magento_root: PathBuf,
-    ast_analyzers: Option<AstAnalyzers>,
+    ast_available: AstAvailability,
 }
 
 impl Indexer {
@@ -87,31 +96,22 @@ impl Indexer {
         tracing::info!("Opening vector database...");
         let vectordb = VectorDB::open(db_path)?;
 
-        // Initialize AST analyzers
-        let ast_analyzers = match (PhpAstAnalyzer::new(), JsAstAnalyzer::new()) {
-            (Ok(php), Ok(js)) => {
-                tracing::info!("AST analyzers initialized (PHP + JavaScript)");
-                Some(AstAnalyzers {
-                    php: Mutex::new(php),
-                    js: Mutex::new(js),
-                })
-            }
-            (Err(e), _) => {
-                tracing::warn!("Failed to initialize PHP AST analyzer: {}", e);
-                None
-            }
-            (_, Err(e)) => {
-                tracing::warn!("Failed to initialize JS AST analyzer: {}", e);
-                None
-            }
-        };
+        // Check AST analyzer availability (thread-local instances created per-thread)
+        let php_ok = PhpAstAnalyzer::new().is_ok();
+        let js_ok = JsAstAnalyzer::new().is_ok();
+        if php_ok && js_ok {
+            tracing::info!("AST analyzers available (PHP + JavaScript, thread-local)");
+        } else {
+            if !php_ok { tracing::warn!("PHP AST analyzer not available"); }
+            if !js_ok { tracing::warn!("JS AST analyzer not available"); }
+        }
 
         Ok(Self {
             embedder,
             vectordb,
             xml_analyzer: XmlAnalyzer::new(),
             magento_root: magento_root.to_path_buf(),
-            ast_analyzers,
+            ast_available: AstAvailability { php: php_ok, js: js_ok },
         })
     }
 
@@ -179,7 +179,8 @@ impl Indexer {
         // Clone refs needed for parallel processing
         let magento_root = self.magento_root.clone();
         let xml_analyzer = &self.xml_analyzer;
-        let ast_analyzers = &self.ast_analyzers;
+        let ast_php = self.ast_available.php;
+        let ast_js = self.ast_available.js;
 
         let parsed_results: Vec<_> = files
             .par_iter()
@@ -194,7 +195,7 @@ impl Indexer {
                     _ => other_count.fetch_add(1, Ordering::Relaxed),
                 };
 
-                match Self::parse_file(file_path, &magento_root, xml_analyzer, ast_analyzers) {
+                match Self::parse_file(file_path, &magento_root, xml_analyzer, ast_php, ast_js) {
                     Ok(Some(items)) => {
                         indexed.fetch_add(1, Ordering::Relaxed);
                         Some(items)
@@ -229,10 +230,13 @@ impl Indexer {
         println!("  Errors: {}", stats.errors);
         println!("  Items to embed: {}\n", parsed_results.len());
 
-        // Phase 2: Generate embeddings sequentially
+        // Phase 2: Generate embeddings in batches
         println!("════════════════════════════════════════════════════════════");
-        println!("PHASE 2: Generating semantic embeddings (ONNX)");
+        println!("PHASE 2: Generating semantic embeddings (ONNX, batch={})", EMBED_BATCH_SIZE);
         println!("════════════════════════════════════════════════════════════\n");
+
+        // Pre-allocate vectordb with known capacity
+        self.vectordb = VectorDB::with_capacity(parsed_results.len());
 
         let total_items = parsed_results.len();
         let pb = ProgressBar::new(total_items as u64);
@@ -245,21 +249,25 @@ impl Indexer {
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
         let mut embedded = 0;
-        let report_interval = (total_items / 20).max(100); // Report every 5%
 
-        for (i, parsed) in parsed_results.into_iter().enumerate() {
-            // Generate embedding
-            let embedding = self.embedder.embed(&parsed.embed_text)?;
+        // Process in batches
+        for chunk in parsed_results.chunks(EMBED_BATCH_SIZE) {
+            let texts: Vec<&str> = chunk.iter().map(|p| p.embed_text.as_str()).collect();
 
-            // Insert into vector DB
-            self.vectordb.insert(&embedding, parsed.metadata);
-            embedded += 1;
-            pb.inc(1);
+            let embeddings = self.embedder.embed_batch(&texts)?;
 
-            // Periodic status update
-            if (i + 1) % report_interval == 0 {
-                pb.set_message(format!("Embedded {} vectors", embedded));
-            }
+            let batch_items: Vec<(Vec<f32>, IndexMetadata)> = embeddings
+                .into_iter()
+                .zip(chunk.iter())
+                .map(|(emb, parsed)| (emb, parsed.metadata.clone()))
+                .collect();
+
+            let batch_len = batch_items.len();
+            self.vectordb.insert_batch(batch_items);
+
+            embedded += batch_len;
+            pb.inc(batch_len as u64);
+            pb.set_message(format!("Embedded {} vectors", embedded));
         }
 
         pb.finish_with_message(format!("✓ Generated {} embeddings", embedded));
@@ -273,12 +281,12 @@ impl Indexer {
         Ok(stats)
     }
 
-    /// Discover files to index
+    /// Discover files to index (no symlink following for speed)
     fn discover_files(&self) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
 
         for entry in WalkDir::new(&self.magento_root)
-            .follow_links(true)
+            .follow_links(false)
             .into_iter()
             .filter_entry(|e| !Self::should_skip_dir(e))
         {
@@ -286,11 +294,11 @@ impl Indexer {
             if entry.file_type().is_file() {
                 let path = entry.path();
 
-                // Check extension
+                // Check extension first (cheap), then file size
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     if INCLUDE_EXTENSIONS.contains(&ext) {
-                        // Check file size
-                        if let Ok(meta) = fs::metadata(path) {
+                        // Use entry metadata (already cached from DirEntry)
+                        if let Ok(meta) = entry.metadata() {
                             if meta.len() <= MAX_FILE_SIZE {
                                 files.push(path.to_path_buf());
                             }
@@ -312,12 +320,13 @@ impl Indexer {
         false
     }
 
-    /// Parse a single file (no embedding, can be parallelized)
+    /// Parse a single file (no embedding, can be parallelized with thread-local AST)
     fn parse_file(
         path: &Path,
         magento_root: &Path,
         xml_analyzer: &XmlAnalyzer,
-        ast_analyzers: &Option<AstAnalyzers>,
+        ast_php: bool,
+        ast_js: bool,
     ) -> Result<Option<Vec<ParsedFile>>> {
         let content = fs::read_to_string(path).context("Failed to read file")?;
 
@@ -349,30 +358,20 @@ impl Indexer {
         let module_info = extract_module_info(&relative_path);
         let area = detect_area(&relative_path);
 
-        // Parse with AST or fallback to regex
+        // Parse with thread-local AST analyzers (no mutex contention)
         let (php_ast, js_ast, xml_meta) = match ext {
-            "php" | "phtml" => {
-                let php_meta = if let Some(ref analyzers) = ast_analyzers {
-                    if let Ok(mut analyzer) = analyzers.php.lock() {
-                        Some(analyzer.analyze(&content))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
+            "php" | "phtml" if ast_php => {
+                let php_meta = TL_PHP_ANALYZER.with(|cell| {
+                    let mut opt = cell.borrow_mut();
+                    opt.as_mut().map(|analyzer| analyzer.analyze(&content))
+                });
                 (php_meta, None, None)
             }
-            "js" => {
-                let js_meta = if let Some(ref analyzers) = ast_analyzers {
-                    if let Ok(mut analyzer) = analyzers.js.lock() {
-                        Some(analyzer.analyze(&content))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
+            "js" if ast_js => {
+                let js_meta = TL_JS_ANALYZER.with(|cell| {
+                    let mut opt = cell.borrow_mut();
+                    opt.as_mut().map(|analyzer| analyzer.analyze(&content))
+                });
                 (None, js_meta, None)
             }
             "xml" => (None, None, Some(xml_analyzer.analyze(&content))),

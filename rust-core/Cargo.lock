@@ -1122,6 +1122,7 @@ name = "magector-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bincode",
  "clap",
  "colored",
  "glob",
@@ -1129,6 +1130,7 @@ dependencies = [
  "indicatif",
  "memmap2",
  "ndarray 0.16.1",
+ "num_cpus",
  "ort",
  "rayon",
  "regex",

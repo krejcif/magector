@@ -258,7 +258,8 @@ fn run_validation(
     };
 
     // Check if we need to index
-    let db_exists = database.with_extension("json").exists();
+    let db_exists = database.with_extension("bin").exists()
+        || database.with_extension("json").exists();
 
     if skip_index && db_exists {
         println!("Using existing index at {:?}", database);

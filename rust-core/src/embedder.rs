@@ -24,10 +24,15 @@ pub struct Embedder {
 impl Embedder {
     /// Create a new embedder from model files
     pub fn new(model_path: &Path, tokenizer_path: &Path) -> Result<Self> {
+        // Use all available cores for ONNX intra-op parallelism
+        let num_threads = num_cpus::get().max(1);
+        tracing::info!("ONNX intra_threads: {}", num_threads);
+
         // Initialize ONNX session
         let session = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?
+            .with_intra_threads(num_threads)?
+            .with_inter_threads(2)?
             .commit_from_file(model_path)
             .context("Failed to load ONNX model")?;
 

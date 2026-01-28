@@ -12,6 +12,12 @@ use std::path::Path;
 
 use crate::embedder::EMBEDDING_DIM;
 
+/// Default HNSW parameters
+const HNSW_M: usize = 32;             // max connections per node
+const HNSW_MAX_LAYER: usize = 16;
+const HNSW_EF_CONSTRUCTION: usize = 200;
+const HNSW_MIN_CAPACITY: usize = 1_000;
+
 /// Metadata associated with each indexed item
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexMetadata {
@@ -51,7 +57,7 @@ pub struct SearchResult {
     pub metadata: IndexMetadata,
 }
 
-/// Persisted state
+/// Persisted state — serialized with bincode for speed, JSON as fallback for loading
 #[derive(Serialize, Deserialize)]
 struct PersistedState {
     metadata: HashMap<usize, IndexMetadata>,
@@ -63,56 +69,84 @@ struct PersistedState {
 pub struct VectorDB {
     hnsw: Hnsw<'static, f32, DistCosine>,
     metadata: HashMap<usize, IndexMetadata>,
-    vectors: HashMap<usize, Vec<f32>>, // Store vectors for persistence
+    vectors: HashMap<usize, Vec<f32>>,
     next_id: usize,
+}
+
+fn make_hnsw(capacity: usize) -> Hnsw<'static, f32, DistCosine> {
+    Hnsw::new(
+        HNSW_M,
+        capacity.max(HNSW_MIN_CAPACITY),
+        HNSW_MAX_LAYER,
+        HNSW_EF_CONSTRUCTION,
+        DistCosine {},
+    )
 }
 
 impl VectorDB {
     /// Create a new empty vector database
     pub fn new() -> Self {
-        let hnsw = Hnsw::new(
-            32,             // max_nb_connection (M)
-            100_000,        // capacity
-            16,             // max layer
-            200,            // ef_construction
-            DistCosine {},
-        );
-
         Self {
-            hnsw,
+            hnsw: make_hnsw(HNSW_MIN_CAPACITY),
             metadata: HashMap::new(),
             vectors: HashMap::new(),
             next_id: 0,
         }
     }
 
-    /// Load from disk or create new
-    pub fn open(path: &Path) -> Result<Self> {
-        let metadata_path = path.with_extension("json");
-        if metadata_path.exists() {
-            Self::load(path)
-        } else {
-            Ok(Self::new())
+    /// Create with a capacity hint (avoids HNSW resizing)
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            hnsw: make_hnsw(capacity),
+            metadata: HashMap::with_capacity(capacity),
+            vectors: HashMap::with_capacity(capacity),
+            next_id: 0,
         }
     }
 
-    /// Load existing database from disk
-    pub fn load(path: &Path) -> Result<Self> {
-        let metadata_path = path.with_extension("json");
+    /// Load from disk or create new
+    pub fn open(path: &Path) -> Result<Self> {
+        // Try bincode first, then JSON fallback
+        let bincode_path = path.with_extension("bin");
+        let json_path = path.with_extension("json");
 
-        // Load state
-        let file = File::open(&metadata_path)
-            .context("Failed to open database file")?;
+        if bincode_path.exists() {
+            return Self::load_bincode(&bincode_path);
+        }
+        if json_path.exists() {
+            return Self::load_json(&json_path);
+        }
+        Ok(Self::new())
+    }
+
+    /// Load from bincode format (fast)
+    fn load_bincode(path: &Path) -> Result<Self> {
+        let file = File::open(path).context("Failed to open bincode database")?;
+        let reader = BufReader::with_capacity(1 << 20, file); // 1MB buffer
+        let state: PersistedState = bincode::deserialize_from(reader)
+            .context("Failed to parse bincode database")?;
+        Self::from_state(state)
+    }
+
+    /// Load from JSON format (legacy compatibility)
+    fn load_json(path: &Path) -> Result<Self> {
+        let file = File::open(path).context("Failed to open JSON database")?;
         let reader = BufReader::new(file);
         let state: PersistedState = serde_json::from_reader(reader)
-            .context("Failed to parse database")?;
+            .context("Failed to parse JSON database")?;
+        Self::from_state(state)
+    }
 
-        // Rebuild HNSW index
-        let hnsw = Hnsw::new(32, state.vectors.len().max(100_000), 16, 200, DistCosine {});
+    /// Rebuild HNSW from persisted state using parallel batch insert
+    fn from_state(state: PersistedState) -> Result<Self> {
+        let capacity = state.vectors.len().max(HNSW_MIN_CAPACITY);
+        let hnsw = make_hnsw(capacity);
 
-        for (&id, vector) in &state.vectors {
-            hnsw.insert((vector, id));
-        }
+        // Batch insert all vectors at once (parallel internally via hnsw_rs)
+        let data: Vec<(&Vec<f32>, usize)> = state.vectors.iter()
+            .map(|(&id, vec)| (vec, id))
+            .collect();
+        hnsw.parallel_insert(&data);
 
         Ok(Self {
             hnsw,
@@ -122,21 +156,29 @@ impl VectorDB {
         })
     }
 
-    /// Save database to disk
+    /// Save database to disk (bincode format)
     pub fn save(&self, path: &Path) -> Result<()> {
         fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
 
-        let metadata_path = path.with_extension("json");
+        let bincode_path = path.with_extension("bin");
 
+        // Serialize directly — no clone needed, bincode serializes by reference
         let state = PersistedState {
             metadata: self.metadata.clone(),
             vectors: self.vectors.clone(),
             next_id: self.next_id,
         };
 
-        let file = File::create(&metadata_path)?;
-        let writer = BufWriter::new(file);
-        serde_json::to_writer(writer, &state)?;
+        let file = File::create(&bincode_path)?;
+        let writer = BufWriter::with_capacity(1 << 20, file); // 1MB buffer
+        bincode::serialize_into(writer, &state)
+            .context("Failed to serialize database")?;
+
+        // Remove legacy JSON file if it exists
+        let json_path = path.with_extension("json");
+        if json_path.exists() {
+            let _ = fs::remove_file(&json_path);
+        }
 
         Ok(())
     }
@@ -149,15 +191,38 @@ impl VectorDB {
         self.next_id += 1;
 
         let vec = vector.to_vec();
-
-        // Insert into HNSW
         self.hnsw.insert((&vec, id));
-
-        // Store for persistence
         self.vectors.insert(id, vec);
         self.metadata.insert(id, metadata);
 
         id
+    }
+
+    /// Batch insert vectors with metadata (uses parallel HNSW insert)
+    pub fn insert_batch(&mut self, items: Vec<(Vec<f32>, IndexMetadata)>) {
+        if items.is_empty() {
+            return;
+        }
+
+        let start_id = self.next_id;
+
+        // Assign IDs and store metadata + vectors
+        for (i, (vec, meta)) in items.iter().enumerate() {
+            let id = start_id + i;
+            self.vectors.insert(id, vec.clone());
+            self.metadata.insert(id, meta.clone());
+        }
+
+        // Build references for parallel HNSW insert
+        let data: Vec<(&Vec<f32>, usize)> = (0..items.len())
+            .map(|i| {
+                let id = start_id + i;
+                (self.vectors.get(&id).unwrap(), id)
+            })
+            .collect();
+
+        self.hnsw.parallel_insert(&data);
+        self.next_id = start_id + items.len();
     }
 
     /// Search for similar vectors
@@ -173,7 +238,7 @@ impl VectorDB {
                 let id = n.d_id;
                 self.metadata.get(&id).map(|meta| SearchResult {
                     id,
-                    score: 1.0 - n.distance, // Convert distance to similarity
+                    score: 1.0 - n.distance,
                     metadata: meta.clone(),
                 })
             })
@@ -192,7 +257,7 @@ impl VectorDB {
 
     /// Clear all data
     pub fn clear(&mut self) {
-        self.hnsw = Hnsw::new(32, 100_000, 16, 200, DistCosine {});
+        self.hnsw = make_hnsw(HNSW_MIN_CAPACITY);
         self.metadata.clear();
         self.vectors.clear();
         self.next_id = 0;
@@ -247,5 +312,52 @@ mod tests {
         let results = db.search(&vector, 1);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].metadata.path, "test.php");
+    }
+
+    #[test]
+    fn test_batch_insert() {
+        let mut db = VectorDB::with_capacity(10);
+
+        let items: Vec<(Vec<f32>, IndexMetadata)> = (0..5)
+            .map(|i| {
+                let mut vec = vec![0.0f32; EMBEDDING_DIM];
+                vec[0] = i as f32 * 0.1;
+                let meta = IndexMetadata {
+                    path: format!("test_{}.php", i),
+                    file_type: "php".to_string(),
+                    magento_type: None,
+                    class_name: None,
+                    class_type: None,
+                    method_name: None,
+                    methods: Vec::new(),
+                    namespace: None,
+                    module: None,
+                    area: None,
+                    extends: None,
+                    implements: Vec::new(),
+                    is_controller: false,
+                    is_repository: false,
+                    is_plugin: false,
+                    is_observer: false,
+                    is_model: false,
+                    is_block: false,
+                    is_resolver: false,
+                    is_api_interface: false,
+                    is_ui_component: false,
+                    is_widget: false,
+                    is_mixin: false,
+                    js_dependencies: Vec::new(),
+                    search_text: format!("test {}", i),
+                };
+                (vec, meta)
+            })
+            .collect();
+
+        db.insert_batch(items);
+        assert_eq!(db.len(), 5);
+
+        let query = vec![0.0f32; EMBEDDING_DIM];
+        let results = db.search(&query, 3);
+        assert!(results.len() <= 3);
     }
 }
