@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+/**
+ * Magector MCP Server
+ *
+ * Search tools delegate to the Rust core binary (magector-core).
+ * Analysis tools (diff, complexity) use ruvector JS modules directly.
+ * No JS indexer — Rust core is the single source of truth for search/index.
+ */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -7,22 +14,157 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema
 } from '@modelcontextprotocol/sdk/types.js';
-import { MagentoIndexer } from './indexer.js';
+import { execFileSync } from 'child_process';
+import { existsSync } from 'fs';
+import { stat } from 'fs/promises';
+import { glob } from 'glob';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import {
+  analyzeCommit,
+  getStagedDiff,
+  analyzeFileDiff
+} from 'ruvector/dist/core/diff-embeddings.js';
+import {
+  analyzeFiles as analyzeComplexityFiles,
+  getComplexityRating
+} from 'ruvector/dist/analysis/complexity.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const config = {
   dbPath: process.env.MAGECTOR_DB || './magector.db',
-  magentoRoot: process.env.MAGENTO_ROOT || process.cwd()
+  magentoRoot: process.env.MAGENTO_ROOT || process.cwd(),
+  rustBinary: process.env.MAGECTOR_BIN || path.join(__dirname, '..', 'rust-core', 'target', 'release', 'magector-core'),
+  modelCache: process.env.MAGECTOR_MODELS || path.join(__dirname, '..', 'rust-core', 'models')
 };
 
-let indexer = null;
+// ─── Rust Core Integration ──────────────────────────────────────
 
-async function getIndexer() {
-  if (!indexer) {
-    indexer = new MagentoIndexer(config);
-    await indexer.init();
-  }
-  return indexer;
+function rustSearch(query, limit = 10) {
+  const result = execFileSync(config.rustBinary, [
+    'search', query,
+    '-d', config.dbPath,
+    '-c', config.modelCache,
+    '-l', String(limit),
+    '-f', 'json'
+  ], { encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] });
+  return JSON.parse(result);
 }
+
+function rustIndex(magentoRoot) {
+  const result = execFileSync(config.rustBinary, [
+    'index',
+    '-m', magentoRoot,
+    '-d', config.dbPath,
+    '-c', config.modelCache
+  ], { encoding: 'utf-8', timeout: 600000, stdio: ['pipe', 'pipe', 'pipe'] });
+  return result;
+}
+
+function rustStats() {
+  const result = execFileSync(config.rustBinary, [
+    'stats',
+    '-d', config.dbPath
+  ], { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
+  // Parse text output: "Total vectors: N" and "Embedding dim: N"
+  const vectors = result.match(/Total vectors:\s*(\d+)/)?.[1] || '0';
+  const dim = result.match(/Embedding dim:\s*(\d+)/)?.[1] || '384';
+  return { totalVectors: parseInt(vectors), embeddingDim: parseInt(dim), dbPath: config.dbPath };
+}
+
+// ─── Analysis (ruvector JS) ─────────────────────────────────────
+
+async function analyzeDiff(options = {}) {
+  if (options.commitHash) {
+    return analyzeCommit(options.commitHash);
+  }
+  const diff = getStagedDiff();
+  if (!diff || diff.trim() === '') {
+    return { files: [], totalAdditions: 0, totalDeletions: 0, riskScore: 0, message: 'No staged changes found' };
+  }
+  const fileSections = diff.split(/^diff --git /m).filter(Boolean);
+  const files = [];
+  let totalAdditions = 0;
+  let totalDeletions = 0;
+
+  for (const section of fileSections) {
+    const fileMatch = section.match(/a\/(.+?)\s/);
+    if (!fileMatch) continue;
+    const filePath = fileMatch[1];
+    const analysis = await analyzeFileDiff(filePath, section);
+    files.push(analysis);
+    totalAdditions += analysis.totalAdditions || 0;
+    totalDeletions += analysis.totalDeletions || 0;
+  }
+
+  const maxRisk = files.length > 0 ? Math.max(...files.map(f => f.riskScore || 0)) : 0;
+  return { files, totalAdditions, totalDeletions, riskScore: maxRisk };
+}
+
+async function analyzeComplexity(paths) {
+  const results = analyzeComplexityFiles(paths);
+  return results.map(r => ({
+    ...r,
+    rating: getComplexityRating(r.cyclomaticComplexity)
+  }));
+}
+
+// ─── Result formatting helpers ──────────────────────────────────
+
+function normalizeResult(r) {
+  const meta = r.metadata || r;
+  return {
+    path: meta.path,
+    module: meta.module,
+    type: meta.file_type || meta.type,
+    magentoType: meta.magento_type || meta.magentoType,
+    className: meta.class_name || meta.className,
+    methodName: meta.method_name || meta.methodName,
+    namespace: meta.namespace,
+    isPlugin: meta.is_plugin || meta.isPlugin,
+    isController: meta.is_controller || meta.isController,
+    isObserver: meta.is_observer || meta.isObserver,
+    isRepository: meta.is_repository || meta.isRepository,
+    isResolver: meta.is_resolver || meta.isResolver,
+    isModel: meta.is_model || meta.isModel,
+    isBlock: meta.is_block || meta.isBlock,
+    area: meta.area,
+    score: r.score
+  };
+}
+
+function formatSearchResults(results) {
+  if (!results || results.length === 0) {
+    return 'No results found.';
+  }
+
+  return results.map((r, i) => {
+    const header = `## Result ${i + 1} (score: ${r.score?.toFixed(3) || 'N/A'})`;
+
+    const meta = [
+      `**Path:** ${r.path || 'unknown'}`,
+      r.module ? `**Module:** ${r.module}` : null,
+      r.magentoType ? `**Magento Type:** ${r.magentoType}` : null,
+      r.area && r.area !== 'global' ? `**Area:** ${r.area}` : null,
+      r.className ? `**Class:** ${r.className}` : null,
+      r.namespace ? `**Namespace:** ${r.namespace}` : null,
+      r.methodName ? `**Method:** ${r.methodName}` : null,
+      r.type ? `**File Type:** ${r.type}` : null,
+    ].filter(Boolean).join('\n');
+
+    let badges = '';
+    if (r.isPlugin) badges += ' `plugin`';
+    if (r.isController) badges += ' `controller`';
+    if (r.isObserver) badges += ' `observer`';
+    if (r.isRepository) badges += ' `repository`';
+    if (r.isResolver) badges += ' `graphql-resolver`';
+
+    return `${header}\n${meta}${badges}`;
+  }).join('\n\n---\n\n');
+}
+
+// ─── MCP Server ─────────────────────────────────────────────────
 
 const server = new Server(
   {
@@ -53,16 +195,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'number',
             description: 'Maximum results to return (default: 10)',
             default: 10
-          },
-          type: {
-            type: 'string',
-            enum: ['php', 'xml', 'template', 'javascript', 'graphql'],
-            description: 'Filter by file type'
-          },
-          module: {
-            type: 'string',
-            description: 'Filter by Magento module (e.g., "Magento/Catalog", "Magento/Checkout")'
-          },
+          }
         },
         required: ['query']
       }
@@ -143,7 +276,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_index',
-      description: 'Index or re-index Magento codebase for semantic search',
+      description: 'Index or re-index Magento codebase for semantic search (uses Rust core)',
       inputSchema: {
         type: 'object',
         properties: {
@@ -156,7 +289,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_stats',
-      description: 'Get indexer statistics',
+      description: 'Get index statistics from Rust core',
       inputSchema: {
         type: 'object',
         properties: {}
@@ -319,23 +452,58 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ['moduleName']
       }
+    },
+    {
+      name: 'magento_analyze_diff',
+      description: 'Analyze git diffs for risk scoring, change classification, and per-file analysis. Works on commits or staged changes.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          commitHash: {
+            type: 'string',
+            description: 'Git commit hash to analyze. If omitted, analyzes staged changes.'
+          },
+          staged: {
+            type: 'boolean',
+            description: 'Analyze staged (git add) changes instead of a commit',
+            default: true
+          }
+        }
+      }
+    },
+    {
+      name: 'magento_complexity',
+      description: 'Analyze code complexity (cyclomatic complexity, function count, lines) for Magento files. Finds complex hotspots.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          module: {
+            type: 'string',
+            description: 'Magento module to analyze (e.g., "Magento_Catalog"). Finds all PHP files in the module.'
+          },
+          path: {
+            type: 'string',
+            description: 'Specific file or directory path to analyze'
+          },
+          threshold: {
+            type: 'number',
+            description: 'Minimum cyclomatic complexity to report (default: 0, show all)',
+            default: 0
+          }
+        }
+      }
     }
   ]
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-  const idx = await getIndexer();
 
   try {
     switch (name) {
       case 'magento_search': {
-        const options = { limit: args.limit || 10 };
-        if (args.type) options.filter = { type: args.type };
-        if (args.module) options.filter = { ...options.filter, module: args.module };
-
-        const results = await idx.search(args.query, options);
-
+        const raw = rustSearch(args.query, args.limit || 10);
+        const results = raw.map(normalizeResult);
         return {
           content: [{
             type: 'text',
@@ -346,27 +514,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'magento_find_class': {
         const query = `class ${args.className} ${args.namespace || ''}`.trim();
-        const results = await idx.search(query, { limit: 5, filter: { type: 'php' } });
+        const raw = rustSearch(query, 10);
+        const results = raw.map(normalizeResult).filter(r =>
+          r.className?.toLowerCase().includes(args.className.toLowerCase())
+        );
         return {
           content: [{
             type: 'text',
-            text: formatSearchResults(results.filter(r =>
-              r.className?.toLowerCase().includes(args.className.toLowerCase())
-            ))
+            text: formatSearchResults(results.slice(0, 5))
           }]
         };
       }
 
       case 'magento_find_method': {
         const query = `function ${args.methodName} ${args.className || ''}`.trim();
-        const results = await idx.search(query, { limit: 10, filter: { type: 'php' } });
+        const raw = rustSearch(query, 20);
+        const results = raw.map(normalizeResult).filter(r =>
+          r.methodName?.toLowerCase() === args.methodName.toLowerCase() ||
+          r.path?.toLowerCase().includes(args.methodName.toLowerCase())
+        );
         return {
           content: [{
             type: 'text',
-            text: formatSearchResults(results.filter(r =>
-              r.methodName?.toLowerCase() === args.methodName.toLowerCase() ||
-              r.content?.includes(`function ${args.methodName}`)
-            ))
+            text: formatSearchResults(results.slice(0, 10))
           }]
         };
       }
@@ -376,7 +546,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (args.configType && args.configType !== 'other') {
           query = `${args.configType}.xml ${args.query}`;
         }
-        const results = await idx.search(query, { limit: 10, filter: { type: 'xml' } });
+        const raw = rustSearch(query, 10);
+        const results = raw.map(normalizeResult);
         return {
           content: [{
             type: 'text',
@@ -388,7 +559,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'magento_find_template': {
         let query = args.query;
         if (args.area) query = `${args.area} ${query}`;
-        const results = await idx.search(query, { limit: 10, filter: { type: 'template' } });
+        query += ' template phtml';
+        const raw = rustSearch(query, 10);
+        const results = raw.map(normalizeResult);
         return {
           content: [{
             type: 'text',
@@ -398,22 +571,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'magento_index': {
-        const path = args.path || config.magentoRoot;
-        const stats = await idx.indexDirectory(path);
+        const root = args.path || config.magentoRoot;
+        const output = rustIndex(root);
         return {
           content: [{
             type: 'text',
-            text: `Indexing complete!\n- Files indexed: ${stats.indexed}\n- Files skipped: ${stats.skipped}\n- Total files: ${stats.total}`
+            text: `Indexing complete (Rust core).\n\n${output}`
           }]
         };
       }
 
       case 'magento_stats': {
-        const stats = await idx.getStats();
+        const stats = rustStats();
         return {
           content: [{
             type: 'text',
-            text: `Magector Stats:\n- Total indexed chunks: ${stats.totalVectors}\n- Database path: ${stats.dbPath}`
+            text: `Magector Stats (Rust core):\n- Total indexed vectors: ${stats.totalVectors}\n- Embedding dimensions: ${stats.embeddingDim}\n- Database path: ${stats.dbPath}`
           }]
         };
       }
@@ -423,58 +596,45 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (args.targetClass) query += ` ${args.targetClass}`;
         if (args.targetMethod) query += ` ${args.targetMethod} before after around`;
 
-        const results = await idx.search(query, { limit: 15, filter: { type: 'php' } });
-        const pluginResults = results.filter(r =>
-          r.content?.includes('[PLUGIN:') ||
-          r.magentoType === 'Plugin' ||
-          r.isPlugin ||
-          r.content?.match(/function\s+(before|after|around)\w+/)
+        const raw = rustSearch(query, 15);
+        const results = raw.map(normalizeResult).filter(r =>
+          r.isPlugin || r.path?.includes('/Plugin/') || r.path?.includes('di.xml')
         );
-
-        // Also search di.xml for plugin configs
-        const diResults = await idx.search(`plugin ${args.targetClass || ''}`, { limit: 10, filter: { type: 'xml' } });
-        const configResults = diResults.filter(r => r.content?.includes('[DI:plugin]'));
 
         return {
           content: [{
             type: 'text',
-            text: formatSearchResults([...pluginResults, ...configResults])
+            text: formatSearchResults(results)
           }]
         };
       }
 
       case 'magento_find_observer': {
         const query = `event ${args.eventName} observer`;
-
-        // Search events.xml
-        const xmlResults = await idx.search(query, { limit: 10, filter: { type: 'xml' } });
-        const eventConfigs = xmlResults.filter(r => r.content?.includes('[EVENT]'));
-
-        // Search observer PHP classes
-        const phpResults = await idx.search(`observer execute ${args.eventName}`, { limit: 10, filter: { type: 'php' } });
-        const observers = phpResults.filter(r => r.isObserver || r.magentoType === 'Observer');
+        const raw = rustSearch(query, 15);
+        const results = raw.map(normalizeResult).filter(r =>
+          r.isObserver || r.path?.includes('/Observer/') || r.path?.includes('events.xml')
+        );
 
         return {
           content: [{
             type: 'text',
-            text: `## Observers for event: ${args.eventName}\n\n` + formatSearchResults([...eventConfigs, ...observers])
+            text: `## Observers for event: ${args.eventName}\n\n` + formatSearchResults(results)
           }]
         };
       }
 
       case 'magento_find_preference': {
         const query = `preference ${args.interfaceName}`;
-        const results = await idx.search(query, { limit: 15, filter: { type: 'xml' } });
-        const preferences = results.filter(r =>
-          r.content?.includes('[DI:preference]') ||
-          r.content?.includes(`for="${args.interfaceName}`) ||
-          r.content?.includes(`for="\\${args.interfaceName}`)
+        const raw = rustSearch(query, 15);
+        const results = raw.map(normalizeResult).filter(r =>
+          r.path?.includes('di.xml')
         );
 
         return {
           content: [{
             type: 'text',
-            text: `## Preferences for: ${args.interfaceName}\n\n` + formatSearchResults(preferences)
+            text: `## Preferences for: ${args.interfaceName}\n\n` + formatSearchResults(results)
           }]
         };
       }
@@ -483,19 +643,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let query = `webapi route ${args.query}`;
         if (args.method) query += ` method="${args.method}"`;
 
-        const results = await idx.search(query, { limit: 15, filter: { type: 'xml' } });
-        const apiResults = results.filter(r =>
-          r.content?.includes('[API:route]') ||
-          r.path?.includes('webapi.xml')
-        );
-
-        // Also find the implementing service classes
-        const serviceResults = await idx.search(`service api ${args.query}`, { limit: 10, filter: { type: 'php' } });
+        const raw = rustSearch(query, 15);
+        const results = raw.map(normalizeResult);
 
         return {
           content: [{
             type: 'text',
-            text: `## API Endpoints matching: ${args.query}\n\n` + formatSearchResults([...apiResults, ...serviceResults])
+            text: `## API Endpoints matching: ${args.query}\n\n` + formatSearchResults(results)
           }]
         };
       }
@@ -504,64 +658,49 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const parts = args.route.split('/');
         const query = `controller ${parts.join(' ')} execute action`;
 
-        const results = await idx.search(query, { limit: 15, filter: { type: 'php' } });
-        let filtered = results.filter(r =>
-          r.isController ||
-          r.magentoType === 'Controller' ||
-          r.content?.includes('[CONTROLLER:execute]')
+        const raw = rustSearch(query, 15);
+        let results = raw.map(normalizeResult).filter(r =>
+          r.isController || r.path?.includes('/Controller/')
         );
 
         if (args.area) {
-          filtered = filtered.filter(r => r.area === args.area || r.path?.includes(`/${args.area}/`));
+          results = results.filter(r => r.area === args.area || r.path?.includes(`/${args.area}/`));
         }
-
-        // Also search routes.xml
-        const routeResults = await idx.search(`routes ${args.route}`, { limit: 5, filter: { type: 'xml' } });
 
         return {
           content: [{
             type: 'text',
-            text: `## Controllers for route: ${args.route}\n\n` + formatSearchResults([...filtered, ...routeResults])
+            text: `## Controllers for route: ${args.route}\n\n` + formatSearchResults(results)
           }]
         };
       }
 
       case 'magento_find_block': {
         const query = `block ${args.query}`;
-        const results = await idx.search(query, { limit: 15, filter: { type: 'php' } });
-        const blocks = results.filter(r =>
-          r.isBlock ||
-          r.magentoType === 'Block' ||
-          r.path?.includes('/Block/')
+        const raw = rustSearch(query, 15);
+        const results = raw.map(normalizeResult).filter(r =>
+          r.isBlock || r.path?.includes('/Block/')
         );
-
-        // Also search layout XML
-        const layoutResults = await idx.search(`block class ${args.query}`, { limit: 10, filter: { type: 'xml' } });
-        const layoutBlocks = layoutResults.filter(r => r.content?.includes('[LAYOUT:block]'));
 
         return {
           content: [{
             type: 'text',
-            text: formatSearchResults([...blocks, ...layoutBlocks])
+            text: formatSearchResults(results)
           }]
         };
       }
 
       case 'magento_find_cron': {
         const query = `cron job ${args.jobName}`;
-
-        // Search crontab.xml
-        const xmlResults = await idx.search(query, { limit: 10, filter: { type: 'xml' } });
-        const cronConfigs = xmlResults.filter(r => r.path?.includes('crontab.xml'));
-
-        // Search Cron PHP classes
-        const phpResults = await idx.search(`cron ${args.jobName} execute`, { limit: 10, filter: { type: 'php' } });
-        const cronClasses = phpResults.filter(r => r.path?.includes('/Cron/'));
+        const raw = rustSearch(query, 15);
+        const results = raw.map(normalizeResult).filter(r =>
+          r.path?.includes('crontab.xml') || r.path?.includes('/Cron/')
+        );
 
         return {
           content: [{
             type: 'text',
-            text: `## Cron jobs matching: ${args.jobName}\n\n` + formatSearchResults([...cronConfigs, ...cronClasses])
+            text: `## Cron jobs matching: ${args.jobName}\n\n` + formatSearchResults(results)
           }]
         };
       }
@@ -570,60 +709,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let query = `graphql ${args.query}`;
         if (args.schemaType) query += ` ${args.schemaType}`;
 
-        const schemaResults = await idx.search(query, { limit: 10, filter: { type: 'graphql' } });
-
-        // If looking for resolver, also search PHP
-        let resolverResults = [];
-        if (!args.schemaType || args.schemaType === 'resolver') {
-          const phpResults = await idx.search(`resolver ${args.query} resolve`, { limit: 10, filter: { type: 'php' } });
-          resolverResults = phpResults.filter(r =>
-            r.isResolver ||
-            r.magentoType === 'GraphQlResolver' ||
-            r.path?.includes('/Resolver/')
-          );
-        }
+        const raw = rustSearch(query, 15);
+        const results = raw.map(normalizeResult).filter(r =>
+          r.isResolver || r.path?.includes('/Resolver/') ||
+          r.path?.includes('.graphqls') || r.type === 'graphql'
+        );
 
         return {
           content: [{
             type: 'text',
-            text: `## GraphQL matching: ${args.query}\n\n` + formatSearchResults([...schemaResults, ...resolverResults])
+            text: `## GraphQL matching: ${args.query}\n\n` + formatSearchResults(results)
           }]
         };
       }
 
       case 'magento_find_db_schema': {
-        const query = `table ${args.tableName} column`;
-        const results = await idx.search(query, { limit: 15, filter: { type: 'xml' } });
-        const schemaResults = results.filter(r =>
-          r.path?.includes('db_schema.xml') ||
-          r.content?.includes('[SCHEMA:table]')
+        const query = `table ${args.tableName} column db_schema`;
+        const raw = rustSearch(query, 15);
+        const results = raw.map(normalizeResult).filter(r =>
+          r.path?.includes('db_schema.xml')
         );
 
         return {
           content: [{
             type: 'text',
-            text: `## Database schema for: ${args.tableName}\n\n` + formatSearchResults(schemaResults)
+            text: `## Database schema for: ${args.tableName}\n\n` + formatSearchResults(results)
           }]
         };
       }
 
       case 'magento_module_structure': {
-        const results = await idx.search(args.moduleName, { limit: 100 });
+        const raw = rustSearch(args.moduleName, 100);
         const moduleName = args.moduleName.replace('_', '/');
-        const moduleResults = results.filter(r =>
+        const results = raw.map(normalizeResult).filter(r =>
           r.path?.includes(moduleName) || r.module?.includes(args.moduleName)
         );
 
-        // Group by type
         const structure = {
-          controllers: moduleResults.filter(r => r.isController || r.path?.includes('/Controller/')),
-          models: moduleResults.filter(r => r.isModel || (r.path?.includes('/Model/') && !r.path?.includes('ResourceModel'))),
-          blocks: moduleResults.filter(r => r.isBlock || r.path?.includes('/Block/')),
-          plugins: moduleResults.filter(r => r.isPlugin || r.path?.includes('/Plugin/')),
-          observers: moduleResults.filter(r => r.isObserver || r.path?.includes('/Observer/')),
-          apis: moduleResults.filter(r => r.path?.includes('/Api/')),
-          configs: moduleResults.filter(r => r.type === 'xml'),
-          other: moduleResults.filter(r =>
+          controllers: results.filter(r => r.isController || r.path?.includes('/Controller/')),
+          models: results.filter(r => r.isModel || (r.path?.includes('/Model/') && !r.path?.includes('ResourceModel'))),
+          blocks: results.filter(r => r.isBlock || r.path?.includes('/Block/')),
+          plugins: results.filter(r => r.isPlugin || r.path?.includes('/Plugin/')),
+          observers: results.filter(r => r.isObserver || r.path?.includes('/Observer/')),
+          apis: results.filter(r => r.path?.includes('/Api/')),
+          configs: results.filter(r => r.type === 'xml'),
+          other: results.filter(r =>
             !r.isController && !r.isModel && !r.isBlock && !r.isPlugin && !r.isObserver &&
             !r.path?.includes('/Api/') && r.type !== 'xml' &&
             !r.path?.includes('/Controller/') && !r.path?.includes('/Model/') &&
@@ -645,8 +775,85 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
 
-        if (moduleResults.length === 0) {
+        if (results.length === 0) {
           text += 'No code found for this module. Try re-indexing or check the module name.';
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_analyze_diff': {
+        const analysis = await analyzeDiff({
+          commitHash: args.commitHash,
+          staged: args.staged !== false
+        });
+
+        let text = '## Diff Analysis\n\n';
+        text += `- **Total additions:** ${analysis.totalAdditions}\n`;
+        text += `- **Total deletions:** ${analysis.totalDeletions}\n`;
+        text += `- **Risk score:** ${(analysis.riskScore || 0).toFixed(2)}\n\n`;
+
+        if (analysis.message) {
+          text += `_${analysis.message}_\n\n`;
+        }
+
+        if (analysis.files && analysis.files.length > 0) {
+          text += '### Per-file Analysis\n\n';
+          for (const f of analysis.files) {
+            text += `**${f.file}**\n`;
+            text += `  - Category: \`${f.category || 'unknown'}\`\n`;
+            text += `  - Risk: ${(f.riskScore || 0).toFixed(2)}`;
+            text += ` | +${f.totalAdditions || 0} / -${f.totalDeletions || 0}\n`;
+          }
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_complexity': {
+        let filePaths = [];
+
+        if (args.path) {
+          const pathStat = await stat(args.path).catch(() => null);
+          if (pathStat && pathStat.isDirectory()) {
+            filePaths = await glob('**/*.php', { cwd: args.path, absolute: true, nodir: true });
+          } else if (pathStat) {
+            filePaths = [args.path];
+          }
+        } else if (args.module) {
+          const modulePath = args.module.replace('_', '/');
+          const root = config.magentoRoot;
+          const patterns = [
+            `vendor/magento/module-${args.module.split('_')[1]?.toLowerCase()}/**/*.php`,
+            `app/code/${modulePath}/**/*.php`
+          ];
+          for (const pattern of patterns) {
+            const found = await glob(pattern, { cwd: root, absolute: true, nodir: true });
+            filePaths.push(...found);
+          }
+        }
+
+        if (filePaths.length === 0) {
+          return { content: [{ type: 'text', text: 'No files found to analyze. Specify a module or path.' }] };
+        }
+
+        const results = await analyzeComplexity(filePaths);
+        const threshold = args.threshold || 0;
+        const filtered = results
+          .filter(r => r.cyclomaticComplexity >= threshold)
+          .sort((a, b) => b.cyclomaticComplexity - a.cyclomaticComplexity);
+
+        let text = `## Complexity Analysis (${filtered.length} files)\n\n`;
+        text += '| File | Complexity | Rating | Functions | Lines |\n';
+        text += '|------|-----------|--------|-----------|-------|\n';
+
+        for (const r of filtered.slice(0, 50)) {
+          const shortPath = r.file.replace(config.magentoRoot + '/', '');
+          text += `| ${shortPath} | ${r.cyclomaticComplexity} | ${r.rating} | ${r.functions} | ${r.lines} |\n`;
+        }
+
+        if (filtered.length > 50) {
+          text += `\n_...and ${filtered.length - 50} more files_\n`;
         }
 
         return { content: [{ type: 'text', text }] };
@@ -676,8 +883,8 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => ({
   resources: [
     {
       uri: 'magector://stats',
-      name: 'Indexer Statistics',
-      description: 'Current indexer statistics and status',
+      name: 'Index Statistics',
+      description: 'Current index statistics from Rust core',
       mimeType: 'application/json'
     }
   ]
@@ -687,8 +894,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   const { uri } = request.params;
 
   if (uri === 'magector://stats') {
-    const idx = await getIndexer();
-    const stats = await idx.getStats();
+    const stats = rustStats();
     return {
       contents: [{
         uri,
@@ -701,72 +907,10 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   throw new Error(`Unknown resource: ${uri}`);
 });
 
-function formatSearchResults(results) {
-  if (!results || results.length === 0) {
-    return 'No results found.';
-  }
-
-  return results.map((r, i) => {
-    const header = `## Result ${i + 1} (score: ${r.score?.toFixed(3) || 'N/A'})`;
-
-    // Build metadata array with Magento-specific info
-    const meta = [
-      `**Path:** ${r.path || 'unknown'}`,
-      r.module ? `**Module:** ${r.module}` : null,
-      r.magentoType ? `**Magento Type:** ${r.magentoType}` : null,
-      r.area && r.area !== 'global' ? `**Area:** ${r.area}` : null,
-      r.className ? `**Class:** ${r.className}` : null,
-      r.namespace ? `**Namespace:** ${r.namespace}` : null,
-      r.methodName ? `**Method:** ${r.methodName}` : null,
-      r.type ? `**File Type:** ${r.type}` : null,
-      r.relation ? `**Relation:** ${r.relation}` : null
-    ].filter(Boolean).join('\n');
-
-    // Add Magento pattern badges
-    let badges = '';
-    if (r.patterns && r.patterns.length > 0) {
-      badges = `\n**Patterns:** ${r.patterns.map(p => `\`${p}\``).join(' ')}`;
-    }
-    if (r.isPlugin) badges += ' `plugin`';
-    if (r.isController) badges += ' `controller`';
-    if (r.isObserver) badges += ' `observer`';
-    if (r.isRepository) badges += ' `repository`';
-    if (r.isResolver) badges += ' `graphql-resolver`';
-
-    // Additional context for specific types
-    let additionalInfo = '';
-    if (r.dependencies && r.dependencies.length > 0) {
-      const deps = r.dependencies.slice(0, 5).map(d => d.type).join(', ');
-      additionalInfo += `\n**DI Dependencies:** ${deps}${r.dependencies.length > 5 ? '...' : ''}`;
-    }
-    if (r.pluginMethods && r.pluginMethods.length > 0) {
-      additionalInfo += `\n**Plugin Methods:** ${r.pluginMethods.map(p => `${p.type}:${p.name}`).join(', ')}`;
-    }
-    if (r.configItems && r.configItems.length > 0) {
-      additionalInfo += `\n**Config Items:** ${r.configItems.slice(0, 5).join(', ')}${r.configItems.length > 5 ? '...' : ''}`;
-    }
-    if (r.apiRoutes && r.apiRoutes.length > 0) {
-      additionalInfo += `\n**API Routes:** ${r.apiRoutes.map(a => `${a.method} ${a.url}`).join(', ')}`;
-    }
-
-    const content = r.content?.substring(0, 600) || '';
-
-    // Determine code block language
-    let lang = '';
-    if (r.type === 'php' || r.content?.includes('<?php') || r.content?.includes('function ')) lang = 'php';
-    else if (r.type === 'xml' || r.content?.startsWith('<')) lang = 'xml';
-    else if (r.type === 'graphql' || r.content?.includes('type ') || r.content?.includes('query ')) lang = 'graphql';
-
-    const codeBlock = `\`\`\`${lang}\n${content}${content.length >= 600 ? '\n...(truncated)' : ''}\n\`\`\``;
-
-    return `${header}\n${meta}${badges}${additionalInfo}\n\n${codeBlock}`;
-  }).join('\n\n---\n\n');
-}
-
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Magector MCP server started');
+  console.error('Magector MCP server started (Rust core backend)');
 }
 
 main().catch(console.error);

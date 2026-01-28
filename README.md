@@ -31,11 +31,15 @@ Magector understands that a query about *"payment capture"* should return `Sales
 
 - **Semantic search** -- find code by meaning, not exact keywords
 - **94.4% accuracy** -- validated with 557 test cases across 50+ categories
+- **ONNX embeddings** -- native 384-dim transformer embeddings via ONNX Runtime for higher quality search
+- **Parallel processing** -- batch embedding with parallel intelligence for faster indexing
 - **Magento-aware** -- understands controllers, plugins, observers, blocks, resolvers, repositories, and 20+ Magento patterns
 - **AST-powered** -- tree-sitter parsing for PHP and JavaScript extracts classes, methods, namespaces, and inheritance
+- **Diff analysis** -- risk scoring and change classification for git commits and staged changes
+- **Complexity analysis** -- cyclomatic complexity, function count, and hotspot detection across modules
 - **Fast** -- 15-45ms queries, ~3 minute indexing for full Magento 2.4.7
-- **MCP server** -- integrates with Claude Code, Cursor, and any MCP-compatible AI tool
-- **Hybrid architecture** -- Rust core for performance, Node.js for MCP integration
+- **MCP server** -- 19 tools integrating with Claude Code, Cursor, and any MCP-compatible AI tool
+- **Clean architecture** -- Rust core handles all indexing/search, Node.js MCP server delegates to it
 
 ---
 
@@ -49,7 +53,7 @@ Magector understands that a query about *"payment capture"* should return `Sales
                     │                  │                       │
                     │  ┌────────────┐  │  ┌─────────────────┐  │
                     │  │ Tree-sitter│  │  │  MCP Server     │  │
-                    │  │ AST Parser │  │  │  (15 tools)     │  │
+                    │  │ AST Parser │  │  │  (19 tools)     │  │
                     │  │ PHP + JS   │  │  └────────┬────────┘  │
                     │  └─────┬──────┘  │           │           │
                     │        │         │  ┌────────┴────────┐  │
@@ -128,16 +132,8 @@ cd ..
 
 ### 2. Index a Magento Codebase
 
-Using the Rust CLI (faster, with progress output):
-
 ```bash
 ./rust-core/target/release/magector-core index -m /path/to/magento2
-```
-
-Or using the Node.js CLI:
-
-```bash
-MAGENTO_ROOT=/path/to/magento2 npm run index
 ```
 
 ### 3. Search
@@ -244,7 +240,7 @@ npx magector benchmark          # Run performance benchmarks
 
 ## MCP Server Tools
 
-The MCP server exposes 15 tools for AI-assisted Magento development:
+The MCP server exposes 19 tools for AI-assisted Magento development:
 
 ### Search Tools
 
@@ -269,13 +265,20 @@ The MCP server exposes 15 tools for AI-assisted Magento development:
 | `magento_find_cron` | Find cron job definitions |
 | `magento_find_db_schema` | Find database table definitions |
 
+### Analysis Tools
+
+| Tool | Description |
+|------|-------------|
+| `magento_analyze_diff` | Analyze git diffs for risk scoring and change classification |
+| `magento_complexity` | Analyze code complexity (cyclomatic, function count, lines) |
+
 ### Utility Tools
 
 | Tool | Description |
 |------|-------------|
 | `magento_module_structure` | Show module directory structure |
 | `magento_index` | Trigger re-indexing of the codebase |
-| `magento_stats` | View index statistics |
+| `magento_stats` | View index statistics (ONNX, parallel mode) |
 
 ### Query Examples
 
@@ -288,6 +291,8 @@ magento_find_plugin("save method")
 magento_find_observer("sales_order_place_after")
 magento_find_api("products REST endpoint")
 magento_find_graphql("cart mutation resolver")
+magento_analyze_diff({ commitHash: "abc123" })
+magento_complexity({ module: "Magento_Catalog", threshold: 10 })
 ```
 
 ---
@@ -341,8 +346,7 @@ npm run validate:verbose
 magector/
 ├── src/                          # Node.js source
 │   ├── cli.js                    # Node.js CLI entry point
-│   ├── mcp-server.js             # MCP server (15 tools)
-│   ├── indexer.js                # Node.js indexer (hybrid search, re-ranking)
+│   ├── mcp-server.js             # MCP server (19 tools, delegates to Rust core)
 │   ├── magento-patterns.js       # Magento pattern detection (JS)
 │   └── validation/               # JS validation suite
 │       ├── validator.js
@@ -351,7 +355,7 @@ magector/
 │       ├── test-data-generator.js
 │       └── accuracy-calculator.js
 ├── tests/                        # Automated tests
-│   └── mcp-server.test.js        # MCP server tests (129 tests)
+│   └── mcp-server.test.js        # MCP server tests (Rust core + analysis tools)
 ├── rust-core/                    # Rust high-performance core
 │   ├── Cargo.toml
 │   ├── src/
@@ -400,7 +404,7 @@ Magector scans every `.php`, `.js`, `.xml`, `.phtml`, and `.graphqls` file in a 
 
 ### 3. MCP Integration
 
-The Node.js MCP server wraps the indexer with 15 specialized tools. When an AI assistant like Claude Code or Cursor needs to find Magento code, it calls the appropriate tool:
+The MCP server delegates all search/index operations to the Rust core binary. Analysis tools (diff, complexity) use ruvector JS modules directly.
 
 ```
 Developer: "How does checkout totals calculation work?"
@@ -409,7 +413,7 @@ Developer: "How does checkout totals calculation work?"
 AI Assistant ──▶ magento_search("checkout totals collector calculate")
      │
      ▼
-MCP Server ──▶ Indexer.search() ──▶ HNSW lookup ──▶ Ranked results
+MCP Server ──▶ magector-core search (Rust) ──▶ HNSW lookup ──▶ Ranked results
      │
      ▼
 Results:

@@ -14,6 +14,8 @@ When looking for Magento code, ALWAYS use the magector MCP tools BEFORE reading 
 6. **Observers**: Use `magento_find_observer`
 7. **API endpoints**: Use `magento_find_api`
 8. **GraphQL**: Use `magento_find_graphql`
+9. **Diff risk analysis**: Use `magento_analyze_diff` to assess commit or staged change risk
+10. **Code complexity**: Use `magento_complexity` to find complex hotspots in modules
 
 ## Query Formulation Best Practices
 
@@ -181,6 +183,7 @@ If Magector returns no results:
 
 - Magector queries: 15-45ms
 - Index contains 17,891 vectors
-- Accuracy: 91.2% validated
+- Accuracy: 94.4% validated
+- 19 MCP tools available (including diff analysis and complexity)
 
 Always prefer Magector over file system searches for discovering Magento patterns and conventions.
