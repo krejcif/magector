@@ -1,0 +1,186 @@
+# Magento 2 Development Rules with Magector
+
+You are an expert Magento 2 developer with access to the Magector semantic code search tool via MCP.
+
+## Primary Rule: Use Magector First
+
+When looking for Magento code, ALWAYS use the magector MCP tools BEFORE reading files manually:
+
+1. **Semantic questions** ("how to...", "where is..."): Use `magento_search`
+2. **Specific classes**: Use `magento_find_class`
+3. **XML configurations**: Use `magento_find_config`
+4. **Templates**: Use `magento_find_template`
+5. **Plugins**: Use `magento_find_plugin`
+6. **Observers**: Use `magento_find_observer`
+7. **API endpoints**: Use `magento_find_api`
+8. **GraphQL**: Use `magento_find_graphql`
+
+## Query Formulation Best Practices
+
+Write queries as natural language questions to a Magento expert:
+
+### Effective Query Patterns
+
+| Intent | Query Example |
+|--------|---------------|
+| Find price logic | "product price calculation tier prices" |
+| Find cart code | "add product to cart programmatically" |
+| Find checkout flow | "checkout totals collector calculate" |
+| Find auth code | "customer login authentication session" |
+| Find plugin examples | "plugin before after around save repository" |
+| Find observer examples | "observer event sales_order_place_after" |
+| Find API endpoints | "webapi rest endpoint products" |
+| Find GraphQL | "graphql resolver products query mutation" |
+| Find cron jobs | "cron job catalog indexer schedule" |
+| Find admin grid | "adminhtml grid ui component listing" |
+
+### Query Tips
+
+1. **Be specific** - "product price calculation" not just "price"
+2. **Include concepts** - "controller execute action" not just "controller"
+3. **Name the pattern** - "plugin before save" not just "plugin"
+4. **Mention file types** - "di.xml preference" for config files
+
+## Interpreting Results
+
+When Magector returns results, analyze:
+
+1. **Path** - Understand which module owns the code
+2. **Score** - >0.5 indicates high relevance
+3. **Magento Type** - controller, model, block, plugin, observer, etc.
+4. **Class Name** - Follow Magento naming conventions
+
+## Code Generation Guidelines
+
+After finding code with Magector:
+
+### Follow Magento Patterns
+- Use dependency injection (constructor injection)
+- Prefer interfaces over concrete classes
+- Follow PSR-4 autoloading
+- Use service contracts for APIs
+
+### File Organization
+```
+app/code/Vendor/Module/
+├── Api/                    # Service contracts
+│   └── Data/              # Data interfaces
+├── Block/                  # View blocks
+├── Controller/
+│   ├── Adminhtml/         # Admin controllers
+│   └── [Frontname]/       # Frontend controllers
+├── etc/
+│   ├── adminhtml/         # Admin area config
+│   ├── frontend/          # Frontend config
+│   ├── di.xml             # Dependency injection
+│   ├── module.xml         # Module declaration
+│   └── webapi.xml         # REST API routes
+├── Model/
+│   ├── ResourceModel/     # Database operations
+│   └── [Entity].php       # Business logic
+├── Observer/              # Event observers
+├── Plugin/                # Interceptors
+├── Setup/                 # Install/upgrade scripts
+├── view/
+│   ├── adminhtml/
+│   └── frontend/
+│       ├── layout/        # XML layouts
+│       ├── templates/     # PHTML templates
+│       └── web/           # JS, CSS, images
+└── registration.php
+```
+
+## Common Development Workflows
+
+### Creating a Plugin
+
+1. Search: `magento_search "plugin example [target class]"`
+2. Search: `magento_find_config "di.xml plugin"`
+3. Create plugin class implementing before/after/around methods
+4. Register in `etc/di.xml`
+
+### Creating an Observer
+
+1. Search: `magento_search "observer [event_name]"`
+2. Search: `magento_find_config "events.xml"`
+3. Implement `ObserverInterface`
+4. Register in `etc/events.xml`
+
+### Adding REST API Endpoint
+
+1. Search: `magento_find_api "[similar_resource]"`
+2. Search: `magento_find_config "webapi.xml"`
+3. Create API interface in `Api/`
+4. Implement interface
+5. Configure in `etc/webapi.xml`
+6. Add DI preference in `etc/di.xml`
+
+### Creating Admin Grid
+
+1. Search: `magento_search "adminhtml grid ui component"`
+2. Search: `magento_find_config "ui_component listing"`
+3. Create `ui_component` XML definition
+4. Create data provider
+5. Add controller for the route
+
+### Customizing Checkout
+
+1. Search: `magento_search "checkout [step] component"`
+2. Check both PHP and JS results
+3. Use layout XML for structure changes
+4. Use plugins for behavior changes
+5. Use JS mixins for frontend customization
+
+## Magento Best Practices
+
+### Dependency Injection
+```php
+// Good - Constructor injection
+public function __construct(
+    ProductRepositoryInterface $productRepository,
+    SearchCriteriaBuilder $searchCriteriaBuilder
+) {
+    $this->productRepository = $productRepository;
+    $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+}
+```
+
+### Service Contracts
+```php
+// Good - Use interface
+private ProductRepositoryInterface $productRepository;
+
+// Avoid - Concrete class
+private ProductRepository $productRepository;
+```
+
+### Plugin Development
+```php
+// Always include $proceed for around plugins
+public function aroundSave(
+    ProductRepositoryInterface $subject,
+    callable $proceed,
+    ProductInterface $product
+) {
+    // Before logic
+    $result = $proceed($product);
+    // After logic
+    return $result;
+}
+```
+
+## Error Handling
+
+If Magector returns no results:
+1. Try broader query terms
+2. Check if index includes the module
+3. Use `magento_stats` to verify index status
+4. Try different MCP tools (class vs. search)
+
+## Performance Considerations
+
+- Magector queries: 15-45ms
+- Index contains 17,891 vectors
+- Accuracy: 91.2% validated
+
+Always prefer Magector over file system searches for discovering Magento patterns and conventions.

@@ -1,0 +1,40 @@
+{
+  "name": "magector",
+  "version": "1.0.0",
+  "description": "Magento source code indexer with ruvector and MCP server",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "magector": "./src/cli.js"
+  },
+  "scripts": {
+    "index": "node src/cli.js index",
+    "search": "node src/cli.js search",
+    "mcp": "node src/mcp-server.js",
+    "start": "node src/mcp-server.js",
+    "validate": "node src/validation/validator.js",
+    "validate:verbose": "node src/validation/validator.js --verbose",
+    "validate:keep": "node src/validation/validator.js --verbose --keep",
+    "validate:real": "node src/validation/real-validator.js",
+    "validate:dev": "node src/validation/developer-validator.js",
+    "benchmark": "node src/validation/benchmark.js",
+    "test": "npm run validate:dev && npm run validate:real"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@ruvector/gnn": "^0.1.22",
+    "@ruvector/gnn-darwin-arm64": "^0.1.19",
+    "@ruvector/graph-node": "^0.1.26",
+    "chalk": "^5.3.0",
+    "glob": "^10.3.10",
+    "ora": "^8.0.1",
+    "ruvector": "^0.1.96"
+  },
+  "keywords": [
+    "magento",
+    "indexer",
+    "vector-search",
+    "mcp",
+    "claude-code"
+  ]
+}

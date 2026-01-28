@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Databases and indexes
+*.db
+*.json.bkp
+validation.json
+validation_report.json
+ruvector.db
+
+# Rust build artifacts
+rust-core/target/
+
+# ONNX models (large binary, downloaded at runtime)
+rust-core/models/*.onnx
+
+# Magento source (downloaded for validation, not part of the project)
+rust-core/magento2/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Validation output
+validation-results/
+
+# Temporary files
+tmp/

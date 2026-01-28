@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "magector": {
+      "command": "node",
+      "args": ["src/mcp-server.js"],
+      "cwd": "/Users/file/Code/magector",
+      "env": {
+        "MAGENTO_ROOT": "/path/to/your/magento",
+        "MAGECTOR_DB": "/Users/file/Code/magector/magector.db"
+      }
+    }
+  }
+}
