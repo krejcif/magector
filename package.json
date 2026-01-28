@@ -32,7 +32,6 @@
   },
   "optionalDependencies": {
     "@magector/cli-darwin-arm64": "1.0.0",
-    "@magector/cli-darwin-x64": "1.0.0",
     "@magector/cli-linux-x64": "1.0.0",
     "@magector/cli-linux-arm64": "1.0.0",
     "@magector/cli-win32-x64": "1.0.0"
