@@ -44,7 +44,7 @@ tree-sitter-php = "0.23"
 tree-sitter-javascript = "0.23"
 
 # HTTP client for model downloads
-reqwest = { version = "0.12", features = ["blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 
 # Error handling
 anyhow = "1.0"
