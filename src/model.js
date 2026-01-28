@@ -101,10 +101,11 @@ function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
     const file = createWriteStream(dest);
 
-    function follow(url) {
-      httpsGet(url, (res) => {
+    function follow(currentUrl) {
+      httpsGet(currentUrl, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          follow(res.headers.location);
+          const next = new URL(res.headers.location, currentUrl).href;
+          follow(next);
           return;
         }
         if (res.statusCode !== 200) {
