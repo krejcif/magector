@@ -86,22 +86,41 @@ jobs:
         with:
           path: platforms/
 
-      - name: Publish platform packages
+      - name: Sync versions and publish platform packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "Publishing version: ${VERSION}"
           for dir in platforms/*/; do
             platform=$(basename "$dir")
-            echo "Publishing @magector/cli-${platform}..."
+            # Skip platforms without a binary (no artifact)
+            if [ ! -f "${dir}bin/magector-core" ] && [ ! -f "${dir}bin/magector-core.exe" ]; then
+              echo "Skipping ${platform} — no binary found"
+              continue
+            fi
+            # Sync version from root package.json into platform package.json
+            node -e "
+              const pkg = require('./${dir}package.json');
+              pkg.version = '${VERSION}';
+              require('fs').writeFileSync('./${dir}package.json', JSON.stringify(pkg, null, 2) + '\n');
+            "
+            echo "Publishing @magector/cli-${platform}@${VERSION}..."
             cd "$dir"
             npm publish --access public || echo "Failed to publish ${platform}, continuing..."
             cd ../..
           done
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Publish main package
+      - name: Sync optionalDependencies version and publish main package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          node -e "
+            const pkg = require('./package.json');
+            for (const key of Object.keys(pkg.optionalDependencies || {})) {
+              pkg.optionalDependencies[key] = '${VERSION}';
+            }
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          npm publish --access public
