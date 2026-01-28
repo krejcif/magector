@@ -95,6 +95,35 @@ function writeMcpConfig(projectPath, ides, dbPath) {
 /**
  * Write IDE rules files.
  */
+/**
+ * Replace the Magector section in an existing file, or append if not present.
+ * Magector sections are delimited by marker comments.
+ */
+function upsertMagectorSection(filePath, content, markerStart, markerEnd) {
+  if (!existsSync(filePath)) {
+    writeFileSync(filePath, markerStart + '\n' + content + markerEnd + '\n');
+    return 'created';
+  }
+  const existing = readFileSync(filePath, 'utf-8');
+  const startIdx = existing.indexOf(markerStart);
+  const endIdx = existing.indexOf(markerEnd);
+  if (startIdx !== -1 && endIdx !== -1) {
+    const updated = existing.slice(0, startIdx) + markerStart + '\n' + content + existing.slice(endIdx);
+    writeFileSync(filePath, updated);
+    return 'updated';
+  }
+  if (existing.includes('Magector')) {
+    // Legacy format without markers — append fresh section
+    appendFileSync(filePath, '\n\n' + markerStart + '\n' + content + markerEnd + '\n');
+    return 'updated';
+  }
+  appendFileSync(filePath, '\n\n' + markerStart + '\n' + content + markerEnd + '\n');
+  return 'appended';
+}
+
+const MARKER_START = '<!-- magector:start -->';
+const MARKER_END = '<!-- magector:end -->';
+
 function writeRules(projectPath, ides) {
   const written = [];
 
@@ -103,34 +132,14 @@ function writeRules(projectPath, ides) {
 
   if (writeCursor) {
     const rulesPath = path.join(projectPath, '.cursorrules');
-    if (!existsSync(rulesPath)) {
-      writeFileSync(rulesPath, CURSORRULES);
-      written.push('.cursorrules (created)');
-    } else {
-      const existing = readFileSync(rulesPath, 'utf-8');
-      if (!existing.includes('Magector')) {
-        appendFileSync(rulesPath, '\n\n' + CURSORRULES);
-        written.push('.cursorrules (appended)');
-      } else {
-        written.push('.cursorrules (already configured)');
-      }
-    }
+    const result = upsertMagectorSection(rulesPath, CURSORRULES, MARKER_START, MARKER_END);
+    written.push(`.cursorrules (${result})`);
   }
 
   if (writeClaude) {
     const claudePath = path.join(projectPath, 'CLAUDE.md');
-    if (!existsSync(claudePath)) {
-      writeFileSync(claudePath, CLAUDE_MD);
-      written.push('CLAUDE.md (created)');
-    } else {
-      const existing = readFileSync(claudePath, 'utf-8');
-      if (!existing.includes('Magector')) {
-        appendFileSync(claudePath, '\n\n' + CLAUDE_MD);
-        written.push('CLAUDE.md (appended)');
-      } else {
-        written.push('CLAUDE.md (already configured)');
-      }
-    }
+    const result = upsertMagectorSection(claudePath, CLAUDE_MD, MARKER_START, MARKER_END);
+    written.push(`CLAUDE.md (${result})`);
   }
 
   return written;
