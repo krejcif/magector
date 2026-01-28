@@ -38,7 +38,7 @@ enum Commands {
         database: PathBuf,
 
         /// Path to cache embedding model
-        #[arg(short, long, default_value = "./models")]
+        #[arg(short = 'c', long, default_value = "./models")]
         model_cache: PathBuf,
     },
 
@@ -52,7 +52,7 @@ enum Commands {
         database: PathBuf,
 
         /// Path to cache embedding model
-        #[arg(short, long, default_value = "./models")]
+        #[arg(short = 'c', long, default_value = "./models")]
         model_cache: PathBuf,
 
         /// Number of results to return
@@ -71,7 +71,7 @@ enum Commands {
         text: String,
 
         /// Path to cache embedding model
-        #[arg(short, long, default_value = "./models")]
+        #[arg(short = 'c', long, default_value = "./models")]
         model_cache: PathBuf,
     },
 
@@ -93,7 +93,7 @@ enum Commands {
         database: PathBuf,
 
         /// Path to cache embedding model
-        #[arg(short, long, default_value = "./models")]
+        #[arg(short = 'c', long, default_value = "./models")]
         model_cache: PathBuf,
 
         /// Path to save validation report (JSON)

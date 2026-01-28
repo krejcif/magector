@@ -8,7 +8,7 @@
  *
  * Downloads from HuggingFace if not found.
  */
-import { existsSync, mkdirSync, createWriteStream } from 'fs';
+import { existsSync, statSync, mkdirSync, createWriteStream, unlinkSync } from 'fs';
 import { get as httpsGet } from 'https';
 import path from 'path';
 import os from 'os';
@@ -60,7 +60,10 @@ export function resolveModels() {
 }
 
 function hasModels(dir) {
-  return MODEL_FILES.every(f => existsSync(path.join(dir, f.name)));
+  return MODEL_FILES.every(f => {
+    const p = path.join(dir, f.name);
+    return existsSync(p) && statSync(p).size > 0;
+  });
 }
 
 /**
@@ -79,7 +82,8 @@ export async function ensureModels({ silent = false } = {}) {
 
   for (const file of MODEL_FILES) {
     const dest = path.join(targetDir, file.name);
-    if (existsSync(dest)) continue;
+    if (existsSync(dest) && statSync(dest).size > 0) continue;
+    if (existsSync(dest)) unlinkSync(dest);
 
     if (!silent) {
       process.stdout.write(`  ${file.description} ... `);
