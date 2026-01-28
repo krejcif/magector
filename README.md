@@ -7,7 +7,7 @@ Magector indexes an entire Magento 2 codebase and lets you search it with natura
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
 [![Node.js](https://img.shields.io/badge/node-18+-green.svg)](https://nodejs.org)
 [![Magento](https://img.shields.io/badge/magento-2.4.x-blue.svg)](https://magento.com)
-[![Accuracy](https://img.shields.io/badge/accuracy-94.4%25-brightgreen.svg)](#validation)
+[![Accuracy](https://img.shields.io/badge/accuracy-96.1%25-brightgreen.svg)](#validation)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -27,10 +27,32 @@ Magector understands that a query about *"payment capture"* should return `Sales
 
 ---
 
+## Magector vs Built-in AI Search
+
+Claude Code and Cursor both have built-in code search — but they rely on keyword matching (`grep`/`ripgrep`) and file-tree heuristics. On a Magento 2 codebase with 18,000+ files, that approach breaks down fast.
+
+| Capability | Claude Code / Cursor (built-in) | Magector |
+|---|---|---|
+| **Search method** | Keyword grep / ripgrep | Semantic vector search (ONNX embeddings) |
+| **Understands intent** | No — literal string matching only | Yes — "payment capture" finds `CaptureOperation.php` |
+| **Magento pattern awareness** | None — treats all PHP the same | Detects controllers, plugins, observers, blocks, resolvers, cron, and 20+ patterns |
+| **Query speed (18K files)** | 200-1000ms per grep pass; multiple rounds needed | 15-45ms single pass |
+| **Context window cost** | Reads many wrong files → burns tokens | Returns ranked results → AI reads only what matters |
+| **Works offline** | Yes | Yes — local ONNX model, no API calls |
+| **Setup** | Built-in | `npx magector init` (one command) |
+
+### What this means in practice
+
+Without Magector, asking Claude Code or Cursor *"how are checkout totals calculated?"* triggers multiple grep searches, reads dozens of files, and still may miss the right ones. With Magector, the AI calls `magento_search("checkout totals calculation")` and gets the exact files ranked by relevance in one step — saving tokens and time.
+
+**Magector doesn't replace your AI tool — it gives it a better search engine.**
+
+---
+
 ## Features
 
 - **Semantic search** -- find code by meaning, not exact keywords
-- **94.4% accuracy** -- validated with 557 test cases across 50+ categories
+- **96.1% accuracy** -- validated with 557 test cases across 50+ categories
 - **ONNX embeddings** -- native 384-dim transformer embeddings via ONNX Runtime for higher quality search
 - **Parallel processing** -- batch embedding with parallel intelligence for faster indexing
 - **Magento-aware** -- understands controllers, plugins, observers, blocks, resolvers, repositories, and 20+ Magento patterns
@@ -271,6 +293,21 @@ magento_complexity({ module: "Magento_Catalog", threshold: 10 })
 
 ---
 
+## Supported Platforms
+
+Pre-built binaries are provided for the following platforms:
+
+| Platform | Architecture | Package |
+|----------|-------------|---------|
+| macOS | ARM64 (Apple Silicon) | `@magector/cli-darwin-arm64` |
+| Linux | x86_64 | `@magector/cli-linux-x64` |
+| Linux | ARM64 | `@magector/cli-linux-arm64` |
+| Windows | x86_64 | `@magector/cli-win32-x64` |
+
+> **Note:** macOS Intel (x86_64) is not supported as a pre-built binary. Intel Mac users can [build from source](#building-from-source).
+
+---
+
 ## Validation
 
 Magector is validated against the complete Magento 2.4.7 codebase with **557 test cases** across **50+ categories**.
@@ -279,8 +316,8 @@ Magector is validated against the complete Magento 2.4.7 codebase with **557 tes
 
 | Metric | Value |
 |--------|-------|
-| **Accuracy** | **94.4%** |
-| Tests passed | 526 / 557 |
+| **Accuracy** | **96.1%** |
+| Tests passed | 535 / 557 |
 | Index size | 17,891 vectors |
 | Query time | 15-45ms |
 | Indexing time | ~3 minutes |
@@ -338,7 +375,6 @@ magector/
 │   └── mcp-server.test.js        # MCP server tests (Rust core + analysis tools)
 ├── platforms/                    # Platform-specific binary packages
 │   ├── darwin-arm64/             # macOS ARM (Apple Silicon)
-│   ├── darwin-x64/               # macOS Intel
 │   ├── linux-x64/                # Linux x64
 │   ├── linux-arm64/              # Linux ARM64
 │   └── win32-x64/                # Windows x64
@@ -596,7 +632,7 @@ struct IndexMetadata {
 
 ## Roadmap
 
-- [ ] Hybrid search (semantic + BM25 keyword matching)
+- [x] Hybrid search (semantic + keyword re-ranking)
 - [ ] Query intent classification (auto-detect "give me XML" vs "give me PHP")
 - [ ] Filtered search by file type at the vector level
 - [ ] Incremental indexing (only re-index changed files)
