@@ -40,7 +40,26 @@ export function resolveBinary() {
       return binPath;
     }
   } catch {
-    // Package not installed — continue
+    // Package not installed — try to self-heal by installing it
+    try {
+      const pkgRoot = path.join(__dirname, '..');
+      execFileSync('npm', ['install', '--no-save', platformPkg], {
+        cwd: pkgRoot,
+        timeout: 60000,
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+      // Retry resolution after install
+      const pkgDir = path.dirname(require.resolve(`${platformPkg}/package.json`));
+      const binPath = path.join(pkgDir, 'bin', BINARY_NAME);
+      if (existsSync(binPath)) {
+        if (process.platform !== 'win32') {
+          try { chmodSync(binPath, 0o755); } catch {}
+        }
+        return binPath;
+      }
+    } catch {
+      // Self-heal failed — continue to other fallbacks
+    }
   }
 
   // 3. Dev fallback: local Rust build
