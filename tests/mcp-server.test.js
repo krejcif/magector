@@ -1,333 +1,289 @@
 /**
- * Automated tests for Magector MCP Server tools
+ * Magector MCP Server Integration Tests
  *
- * Tests verify:
- * - MCP tool schemas and handler presence (source analysis)
- * - Rust core binary existence and CLI interface
- * - Analysis tools (diff, complexity) via ruvector JS
- * - Clean architecture (no JS indexer dependency)
+ * Tests the MCP server via stdio JSON-RPC — exactly as Cursor/Claude Code calls it.
+ * Every response line on stdout must be valid JSON. Any stray output = test failure.
  *
  * Usage:
- *   node tests/mcp-server.test.js
+ *   node tests/mcp-server.test.js            # full suite (needs index)
+ *   node tests/mcp-server.test.js --no-index # skip tools that need an index
  */
 
+import { spawn } from 'child_process';
+import { createInterface } from 'readline';
 import { existsSync } from 'fs';
-import { readFile } from 'fs/promises';
-import { execFileSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SRC_DIR = path.join(__dirname, '..', 'src');
-const RUST_BINARY = path.join(__dirname, '..', 'rust-core', 'target', 'release', 'magector-core');
-const DB_PATH = process.env.MAGECTOR_DB || './magector.db';
+const SERVER_PATH = path.join(__dirname, '..', 'src', 'mcp-server.js');
+const PROJECT_ROOT = path.join(__dirname, '..');
+const DB_PATH = process.env.MAGECTOR_DB || path.join(PROJECT_ROOT, 'magector.db');
+const HAS_INDEX = existsSync(DB_PATH);
+const SKIP_INDEX = process.argv.includes('--no-index');
 
 let passed = 0;
 let failed = 0;
 let skipped = 0;
-const results = [];
 
 function log(status, name, detail = '') {
   const icon = status === 'PASS' ? '✓' : status === 'FAIL' ? '✗' : '○';
   const color = status === 'PASS' ? '\x1b[32m' : status === 'FAIL' ? '\x1b[31m' : '\x1b[33m';
   console.log(`  ${color}${icon}\x1b[0m ${name}${detail ? ` — ${detail}` : ''}`);
-  results.push({ status, name, detail });
   if (status === 'PASS') passed++;
   else if (status === 'FAIL') failed++;
   else skipped++;
 }
 
-function assert(condition, testName, detail = '') {
-  if (condition) {
-    log('PASS', testName, detail);
-  } else {
-    log('FAIL', testName, detail);
+// ─── MCP Client ─────────────────────────────────────────────────
+
+class McpTestClient {
+  constructor() {
+    this.nextId = 1;
+    this.pending = new Map();
+    this.rawStdout = '';
+    this.stderrOutput = '';
+    this.invalidLines = [];
   }
-}
 
-// ─── Rust Core Binary Tests ─────────────────────────────────────
-
-async function testRustBinaryExists() {
-  console.log('\n── Rust Core Binary ──');
-
-  assert(existsSync(RUST_BINARY), 'Rust binary exists at expected path');
-
-  // Test --help works
-  try {
-    const output = execFileSync(RUST_BINARY, ['--help'], {
-      encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe']
+  async start() {
+    this.child = spawn('node', [SERVER_PATH], {
+      cwd: PROJECT_ROOT,
+      env: {
+        ...process.env,
+        MAGENTO_ROOT: process.env.MAGENTO_ROOT || PROJECT_ROOT,
+        MAGECTOR_DB: DB_PATH,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
-    assert(output.includes('index') || output.includes('Index'), 'Binary has index command');
-    assert(output.includes('search') || output.includes('Search'), 'Binary has search command');
-    assert(output.includes('stats') || output.includes('Stats'), 'Binary has stats command');
-    assert(output.includes('validate') || output.includes('Validate'), 'Binary has validate command');
-  } catch (err) {
-    log('FAIL', 'Binary --help', err.message);
+
+    this.child.stderr.on('data', (d) => {
+      this.stderrOutput += d.toString();
+    });
+
+    this.rl = createInterface({ input: this.child.stdout });
+
+    this.rl.on('line', (line) => {
+      this.rawStdout += line + '\n';
+      let parsed;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        this.invalidLines.push(line);
+        return;
+      }
+      const id = parsed.id;
+      if (id != null && this.pending.has(id)) {
+        const { resolve } = this.pending.get(id);
+        this.pending.delete(id);
+        resolve(parsed);
+      }
+    });
+
+    // Wait for server to be ready
+    await new Promise((r) => setTimeout(r, 500));
   }
-}
 
-async function testRustStats() {
-  console.log('\n── Rust Core Stats ──');
-
-  try {
-    const output = execFileSync(RUST_BINARY, ['stats', '-d', DB_PATH], {
-      encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe']
+  send(method, params = {}) {
+    return new Promise((resolve, reject) => {
+      const id = this.nextId++;
+      const msg = JSON.stringify({ jsonrpc: '2.0', id, method, params });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Timeout waiting for response to ${method} (id=${id})`));
+      }, 30000);
+      this.pending.set(id, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+      });
+      this.child.stdin.write(msg + '\n');
     });
-    assert(output.includes('Total vectors'), 'Stats output contains total vectors');
-    assert(output.includes('Embedding dim'), 'Stats output contains embedding dim');
-    assert(output.includes('384'), 'Embedding dim is 384');
-  } catch (err) {
-    // Stats might fail if DB doesn't exist — that's ok
-    if (existsSync(DB_PATH)) {
-      log('FAIL', 'Rust stats', err.message);
-    } else {
-      log('SKIP', 'Rust stats', 'No database at ' + DB_PATH);
+  }
+
+  async callTool(name, args = {}) {
+    const resp = await this.send('tools/call', { name, arguments: args });
+    return resp.result;
+  }
+
+  stop() {
+    if (this.child) {
+      this.child.kill();
     }
   }
 }
 
-// ─── MCP Server Source Tests ────────────────────────────────────
-
-async function testMcpToolSchemas() {
-  console.log('\n── MCP Tool Schema Validation ──');
-
-  const source = await readFile(path.join(SRC_DIR, 'mcp-server.js'), 'utf-8');
-
-  const expectedTools = [
-    'magento_search',
-    'magento_find_class',
-    'magento_find_method',
-    'magento_find_config',
-    'magento_find_template',
-    'magento_index',
-    'magento_stats',
-    'magento_find_plugin',
-    'magento_find_observer',
-    'magento_find_preference',
-    'magento_find_api',
-    'magento_find_controller',
-    'magento_find_block',
-    'magento_find_cron',
-    'magento_find_graphql',
-    'magento_find_db_schema',
-    'magento_module_structure',
-    'magento_analyze_diff',
-    'magento_complexity'
-  ];
-
-  for (const tool of expectedTools) {
-    assert(source.includes(`name: '${tool}'`), `Tool '${tool}' defined in server`);
-  }
-
-  // Verify case handlers exist for all tools
-  for (const tool of expectedTools) {
-    assert(source.includes(`case '${tool}':`), `Handler exists for '${tool}'`);
-  }
-
-  assert(expectedTools.length === 19, `Total tools: 19 (got ${expectedTools.length})`);
-
-  // GNN tools should be removed
-  const removedTools = ['magento_dependencies', 'magento_graph_query'];
-  for (const tool of removedTools) {
-    assert(!source.includes(`name: '${tool}'`), `Removed tool '${tool}' not present`);
-  }
-}
-
-async function testMcpResources() {
-  console.log('\n── MCP Resources ──');
-
-  const source = await readFile(path.join(SRC_DIR, 'mcp-server.js'), 'utf-8');
-
-  assert(source.includes("uri: 'magector://stats'"), 'Stats resource defined');
-  assert(source.includes('ListResourcesRequestSchema'), 'ListResources handler exists');
-  assert(source.includes('ReadResourceRequestSchema'), 'ReadResource handler exists');
-}
-
-// ─── Clean Architecture Tests ───────────────────────────────────
-
-async function testNoJsIndexer() {
-  console.log('\n── Clean Architecture (No JS Indexer) ──');
-
-  const source = await readFile(path.join(SRC_DIR, 'mcp-server.js'), 'utf-8');
-
-  // MCP server should NOT import the JS indexer
-  assert(!source.includes("from './indexer.js'"), 'No import from indexer.js');
-  assert(!source.includes('MagentoIndexer'), 'No MagentoIndexer reference');
-  assert(!source.includes('new MagentoIndexer'), 'No MagentoIndexer instantiation');
-  assert(!source.includes('getIndexer'), 'No getIndexer function');
-
-  // MCP server should NOT use ruvector VectorDB or IntelligenceEngine
-  assert(!source.includes('VectorDB'), 'No VectorDB reference');
-  assert(!source.includes('createIntelligenceEngine'), 'No createIntelligenceEngine reference');
-
-  // Should use Rust binary
-  assert(source.includes('execFileSync'), 'Uses execFileSync for Rust core');
-  assert(source.includes('rustSearch'), 'Has rustSearch function');
-  assert(source.includes('rustIndex'), 'Has rustIndex function');
-  assert(source.includes('rustStats'), 'Has rustStats function');
-  assert(source.includes('magector-core'), 'References magector-core binary');
-
-  // Should still use ruvector for analysis tools only
-  assert(source.includes('ruvector/dist/core/diff-embeddings'), 'Uses ruvector diff-embeddings');
-  assert(source.includes('ruvector/dist/analysis/complexity'), 'Uses ruvector complexity analysis');
-
-  // GNN remnants should be gone
-  assert(!source.includes('GraphDatabase'), 'No GraphDatabase');
-  assert(!source.includes('RuvectorLayer'), 'No RuvectorLayer');
-  assert(!source.includes('isGnnAvailable'), 'No isGnnAvailable');
-  assert(!source.includes('searchWithGraph'), 'No searchWithGraph');
-  assert(!source.includes('findDependencies'), 'No findDependencies');
-  assert(!source.includes('GNN'), 'No GNN references');
-}
-
-async function testIndexerFileRemoved() {
-  console.log('\n── Indexer File Removed ──');
-
-  assert(!existsSync(path.join(SRC_DIR, 'indexer.js')), 'src/indexer.js does not exist');
-}
-
-// ─── Diff & Complexity Tool Tests ───────────────────────────────
-
-async function testAnalyzeDiffSchema() {
-  console.log('\n── MCP Tool: magento_analyze_diff ──');
-
-  const source = await readFile(path.join(SRC_DIR, 'mcp-server.js'), 'utf-8');
-
-  assert(source.includes("name: 'magento_analyze_diff'"), 'Tool defined');
-  assert(source.includes("case 'magento_analyze_diff':"), 'Handler exists');
-  assert(source.includes('commitHash'), 'Schema includes commitHash');
-  assert(source.includes('riskScore'), 'Handler returns risk score');
-  assert(source.includes('analyzeDiff'), 'Calls analyzeDiff function');
-}
-
-async function testComplexitySchema() {
-  console.log('\n── MCP Tool: magento_complexity ──');
-
-  const source = await readFile(path.join(SRC_DIR, 'mcp-server.js'), 'utf-8');
-
-  assert(source.includes("name: 'magento_complexity'"), 'Tool defined');
-  assert(source.includes("case 'magento_complexity':"), 'Handler exists');
-  assert(source.includes('threshold'), 'Schema includes threshold');
-  assert(source.includes('cyclomaticComplexity'), 'References cyclomatic complexity');
-  assert(source.includes('analyzeComplexity'), 'Calls analyzeComplexity function');
-}
-
-async function testAnalyzeDiffIntegration() {
-  console.log('\n── Diff Analysis Integration ──');
-
-  try {
-    const { analyzeCommit, getStagedDiff, analyzeFileDiff } = await import('ruvector/dist/core/diff-embeddings.js');
-
-    assert(typeof analyzeCommit === 'function', 'analyzeCommit is a function');
-    assert(typeof getStagedDiff === 'function', 'getStagedDiff is a function');
-    assert(typeof analyzeFileDiff === 'function', 'analyzeFileDiff is a function');
-
-    // Call getStagedDiff (should return empty string if nothing staged)
-    const diff = getStagedDiff();
-    assert(typeof diff === 'string', 'getStagedDiff returns a string');
-  } catch (err) {
-    log('FAIL', 'Diff analysis import', err.message);
-  }
-}
-
-async function testComplexityIntegration() {
-  console.log('\n── Complexity Analysis Integration ──');
-
-  try {
-    const { analyzeFiles, getComplexityRating } = await import('ruvector/dist/analysis/complexity.js');
-
-    assert(typeof analyzeFiles === 'function', 'analyzeFiles is a function');
-    assert(typeof getComplexityRating === 'function', 'getComplexityRating is a function');
-
-    // Analyze the MCP server source itself
-    const serverPath = path.join(SRC_DIR, 'mcp-server.js');
-    const results = analyzeFiles([serverPath]);
-    assert(Array.isArray(results), 'analyzeFiles returns array');
-
-    if (results.length > 0) {
-      const r = results[0];
-      assert(typeof r.cyclomaticComplexity === 'number', 'Has cyclomaticComplexity');
-      assert(typeof r.functions === 'number', 'Has function count');
-      assert(typeof r.lines === 'number', 'Has line count');
-
-      const rating = getComplexityRating(r.cyclomaticComplexity);
-      assert(typeof rating === 'string', 'getComplexityRating returns string');
-      assert(['low', 'medium', 'high', 'critical'].includes(rating), `Rating is valid: ${rating}`);
-    }
-  } catch (err) {
-    log('FAIL', 'Complexity analysis import', err.message);
-  }
-}
-
-// ─── Result Normalization Tests ─────────────────────────────────
-
-async function testResultNormalization() {
-  console.log('\n── Result Normalization ──');
-
-  const source = await readFile(path.join(SRC_DIR, 'mcp-server.js'), 'utf-8');
-
-  // Verify normalizeResult handles Rust snake_case to JS camelCase
-  assert(source.includes('meta.file_type'), 'Handles Rust file_type field');
-  assert(source.includes('meta.class_name'), 'Handles Rust class_name field');
-  assert(source.includes('meta.method_name'), 'Handles Rust method_name field');
-  assert(source.includes('meta.magento_type'), 'Handles Rust magento_type field');
-  assert(source.includes('meta.is_plugin'), 'Handles Rust is_plugin field');
-  assert(source.includes('meta.is_controller'), 'Handles Rust is_controller field');
-  assert(source.includes('meta.is_observer'), 'Handles Rust is_observer field');
-  assert(source.includes('meta.is_repository'), 'Handles Rust is_repository field');
-  assert(source.includes('meta.is_resolver'), 'Handles Rust is_resolver field');
-  assert(source.includes('meta.is_model'), 'Handles Rust is_model field');
-  assert(source.includes('meta.is_block'), 'Handles Rust is_block field');
-}
-
-// ─── Main ───────────────────────────────────────────────────────
+// ─── Tests ──────────────────────────────────────────────────────
 
 async function main() {
   console.log('╔═══════════════════════════════════════════════════════════╗');
-  console.log('║         MAGECTOR MCP SERVER AUTO TESTS                   ║');
-  console.log('║         (Rust core backend, no JS indexer)               ║');
+  console.log('║     MAGECTOR MCP SERVER INTEGRATION TESTS (stdio)       ║');
   console.log('╚═══════════════════════════════════════════════════════════╝');
+  console.log(`\n  Database: ${DB_PATH} (${HAS_INDEX ? 'exists' : 'not found'})`);
+  if (SKIP_INDEX) console.log('  Mode: --no-index (skipping search tools)');
 
-  // Rust core tests
-  await testRustBinaryExists();
-  await testRustStats();
+  const client = new McpTestClient();
 
-  // MCP source verification
-  await testMcpToolSchemas();
-  await testMcpResources();
+  try {
+    await client.start();
 
-  // Clean architecture
-  await testNoJsIndexer();
-  await testIndexerFileRemoved();
+    // ── Protocol tests ──────────────────────────────────────────
+    console.log('\n── MCP Protocol ──');
 
-  // Analysis tools
-  await testAnalyzeDiffSchema();
-  await testComplexitySchema();
-  await testAnalyzeDiffIntegration();
-  await testComplexityIntegration();
+    const initResp = await client.send('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'magector-test', version: '1.0' },
+    });
+    log(
+      initResp.result?.serverInfo?.name === 'magector' ? 'PASS' : 'FAIL',
+      'initialize returns server info',
+      `name=${initResp.result?.serverInfo?.name}`
+    );
 
-  // Result normalization
-  await testResultNormalization();
+    const toolsResp = await client.send('tools/list', {});
+    const tools = toolsResp.result?.tools || [];
+    const toolNames = tools.map((t) => t.name);
+    log(tools.length === 19 ? 'PASS' : 'FAIL', `tools/list returns 19 tools`, `got ${tools.length}`);
 
-  // Summary
+    // Verify all expected tools present
+    const expectedTools = [
+      'magento_search', 'magento_find_class', 'magento_find_method',
+      'magento_find_config', 'magento_find_template', 'magento_index',
+      'magento_stats', 'magento_find_plugin', 'magento_find_observer',
+      'magento_find_preference', 'magento_find_api', 'magento_find_controller',
+      'magento_find_block', 'magento_find_cron', 'magento_find_graphql',
+      'magento_find_db_schema', 'magento_module_structure',
+      'magento_analyze_diff', 'magento_complexity',
+    ];
+    for (const name of expectedTools) {
+      log(toolNames.includes(name) ? 'PASS' : 'FAIL', `tool '${name}' listed`);
+    }
+
+    // Verify tool schemas have required fields
+    console.log('\n── Tool Schema Validation ──');
+    for (const tool of tools) {
+      const hasDesc = typeof tool.description === 'string' && tool.description.length > 0;
+      const hasSchema = tool.inputSchema && tool.inputSchema.type === 'object';
+      log(
+        hasDesc && hasSchema ? 'PASS' : 'FAIL',
+        `${tool.name} has description + schema`
+      );
+    }
+
+    // Verify resources
+    console.log('\n── Resources ──');
+    const resResp = await client.send('resources/list', {});
+    const resources = resResp.result?.resources || [];
+    log(resources.length >= 1 ? 'PASS' : 'FAIL', 'resources/list returns resources', `got ${resources.length}`);
+    log(
+      resources.some((r) => r.uri === 'magector://stats') ? 'PASS' : 'FAIL',
+      'magector://stats resource exists'
+    );
+
+    // ── Tool call tests (need index) ────────────────────────────
+    console.log('\n── Tool Calls (stdio JSON-RPC) ──');
+
+    if (!HAS_INDEX || SKIP_INDEX) {
+      console.log('  (skipping search tools — no index)');
+    }
+
+    // Tools that call Rust binary — these are the ones that can produce stray output
+    const searchTools = [
+      { name: 'magento_stats', args: {} },
+      { name: 'magento_search', args: { query: 'product price', limit: 3 } },
+      { name: 'magento_find_class', args: { className: 'ProductRepository' } },
+      { name: 'magento_find_method', args: { methodName: 'execute' } },
+      { name: 'magento_find_config', args: { query: 'di.xml preference' } },
+      { name: 'magento_find_template', args: { query: 'product listing' } },
+      { name: 'magento_find_plugin', args: { targetClass: 'ProductRepository' } },
+      { name: 'magento_find_observer', args: { eventName: 'checkout_cart_add_product_complete' } },
+      { name: 'magento_find_preference', args: { interfaceName: 'ProductRepositoryInterface' } },
+      { name: 'magento_find_api', args: { query: '/V1/products' } },
+      { name: 'magento_find_controller', args: { route: 'catalog/product/view' } },
+      { name: 'magento_find_block', args: { query: 'product view' } },
+      { name: 'magento_find_cron', args: { jobName: 'indexer' } },
+      { name: 'magento_find_graphql', args: { query: 'products' } },
+      { name: 'magento_find_db_schema', args: { tableName: 'catalog_product' } },
+      { name: 'magento_module_structure', args: { moduleName: 'Magento_Catalog' } },
+    ];
+
+    for (const tc of searchTools) {
+      if ((!HAS_INDEX || SKIP_INDEX) && tc.name !== 'magento_stats') {
+        log('SKIP', `tools/call ${tc.name}`, 'no index');
+        continue;
+      }
+      try {
+        const result = await client.callTool(tc.name, tc.args);
+        const text = result?.content?.[0]?.text || '';
+        const isError = result?.isError;
+        if (isError) {
+          log('FAIL', `tools/call ${tc.name}`, `error: ${text.slice(0, 80)}`);
+        } else {
+          log('PASS', `tools/call ${tc.name}`, `${text.length} chars`);
+        }
+      } catch (e) {
+        log('FAIL', `tools/call ${tc.name}`, e.message);
+      }
+    }
+
+    // Analysis tools (JS-based, no Rust binary)
+    console.log('\n── Analysis Tool Calls ──');
+
+    try {
+      const diffResult = await client.callTool('magento_analyze_diff', { staged: true });
+      const diffText = diffResult?.content?.[0]?.text || '';
+      log(diffText.includes('Diff Analysis') ? 'PASS' : 'FAIL', 'tools/call magento_analyze_diff');
+    } catch (e) {
+      log('FAIL', 'tools/call magento_analyze_diff', e.message);
+    }
+
+    try {
+      const complexResult = await client.callTool('magento_complexity', {
+        path: SERVER_PATH,
+      });
+      const cText = complexResult?.content?.[0]?.text || '';
+      log(cText.includes('Complexity') ? 'PASS' : 'FAIL', 'tools/call magento_complexity');
+    } catch (e) {
+      log('FAIL', 'tools/call magento_complexity', e.message);
+    }
+
+    // ── stdout integrity ────────────────────────────────────────
+    console.log('\n── stdout Integrity (critical for Cursor/Claude Code) ──');
+
+    log(
+      client.invalidLines.length === 0 ? 'PASS' : 'FAIL',
+      'All stdout lines are valid JSON',
+      client.invalidLines.length > 0
+        ? `${client.invalidLines.length} invalid line(s): ${JSON.stringify(client.invalidLines[0]?.slice(0, 80))}`
+        : ''
+    );
+
+    // Check stderr doesn't contain anything unexpected
+    const stderrClean = client.stderrOutput.replace('Magector MCP server started (Rust core backend)\n', '').trim();
+    log(
+      stderrClean.length === 0 ? 'PASS' : 'FAIL',
+      'stderr contains only startup message',
+      stderrClean.length > 0 ? `unexpected: ${JSON.stringify(stderrClean.slice(0, 120))}` : ''
+    );
+
+  } finally {
+    client.stop();
+  }
+
+  // ── Summary ─────────────────────────────────────────────────
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed, ${skipped} skipped`);
   console.log(`  Total:   ${passed + failed + skipped} tests\n`);
 
   if (failed > 0) {
-    console.log('  FAILED tests:');
-    results.filter(r => r.status === 'FAIL').forEach(r => {
-      console.log(`    ✗ ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
-    });
-    console.log('');
+    console.log('  ❌ FAILED — MCP server produces invalid output for Cursor/Claude Code');
+  } else {
+    console.log('  ✅ All tests passed — MCP server output is clean JSON-RPC');
   }
 
-  const exitCode = failed > 0 ? 1 : 0;
-  console.log(failed === 0 ? '  All tests passed!' : `  ${failed} test(s) failed.`);
-  process.exit(exitCode);
+  process.exit(failed > 0 ? 1 : 0);
 }
 
-main().catch(err => {
-  console.error('Test runner error:', err);
+main().catch((e) => {
+  console.error('Test runner error:', e);
   process.exit(1);
 });
