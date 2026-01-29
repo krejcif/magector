@@ -57,7 +57,7 @@ pub struct SearchResult {
     pub metadata: IndexMetadata,
 }
 
-/// Persisted state — serialized with bincode for speed, JSON as fallback for loading
+/// Persisted state — serialized with bincode
 #[derive(Serialize, Deserialize)]
 struct PersistedState {
     metadata: HashMap<usize, IndexMetadata>,
@@ -104,36 +104,33 @@ impl VectorDB {
         }
     }
 
-    /// Load from disk or create new
+    /// Load from disk or create new.
+    ///
+    /// Reads directly from `path`. As a one-time migration fallback, also
+    /// checks for a legacy `.bin` file (e.g. `magector.bin` when path is
+    /// `magector.db`) and migrates it in place.
     pub fn open(path: &Path) -> Result<Self> {
-        // Try bincode first, then JSON fallback
-        let bincode_path = path.with_extension("bin");
-        let json_path = path.with_extension("json");
+        if path.exists() {
+            return Self::load(path);
+        }
 
-        if bincode_path.exists() {
-            return Self::load_bincode(&bincode_path);
+        // One-time migration: old versions saved to <stem>.bin
+        let legacy_bin = path.with_extension("bin");
+        if legacy_bin.exists() {
+            tracing::info!("Migrating legacy database {:?} -> {:?}", legacy_bin, path);
+            fs::rename(&legacy_bin, path)?;
+            return Self::load(path);
         }
-        if json_path.exists() {
-            return Self::load_json(&json_path);
-        }
+
         Ok(Self::new())
     }
 
-    /// Load from bincode format (fast)
-    fn load_bincode(path: &Path) -> Result<Self> {
-        let file = File::open(path).context("Failed to open bincode database")?;
+    /// Load database from a bincode file
+    fn load(path: &Path) -> Result<Self> {
+        let file = File::open(path).context("Failed to open database")?;
         let reader = BufReader::with_capacity(1 << 20, file); // 1MB buffer
         let state: PersistedState = bincode::deserialize_from(reader)
-            .context("Failed to parse bincode database")?;
-        Self::from_state(state)
-    }
-
-    /// Load from JSON format (legacy compatibility)
-    fn load_json(path: &Path) -> Result<Self> {
-        let file = File::open(path).context("Failed to open JSON database")?;
-        let reader = BufReader::new(file);
-        let state: PersistedState = serde_json::from_reader(reader)
-            .context("Failed to parse JSON database")?;
+            .context("Failed to parse database")?;
         Self::from_state(state)
     }
 
@@ -156,28 +153,27 @@ impl VectorDB {
         })
     }
 
-    /// Save database to disk (bincode format)
+    /// Save database to disk (bincode format) at the exact path given
     pub fn save(&self, path: &Path) -> Result<()> {
         fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
 
-        let bincode_path = path.with_extension("bin");
-
-        // Serialize directly — no clone needed, bincode serializes by reference
         let state = PersistedState {
             metadata: self.metadata.clone(),
             vectors: self.vectors.clone(),
             next_id: self.next_id,
         };
 
-        let file = File::create(&bincode_path)?;
+        let file = File::create(path)?;
         let writer = BufWriter::with_capacity(1 << 20, file); // 1MB buffer
         bincode::serialize_into(writer, &state)
             .context("Failed to serialize database")?;
 
-        // Remove legacy JSON file if it exists
-        let json_path = path.with_extension("json");
-        if json_path.exists() {
-            let _ = fs::remove_file(&json_path);
+        // Clean up legacy files from old versions
+        for ext in &["bin", "json"] {
+            let legacy = path.with_extension(ext);
+            if legacy != path && legacy.exists() {
+                let _ = fs::remove_file(&legacy);
+            }
         }
 
         Ok(())
