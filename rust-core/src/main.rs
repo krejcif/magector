@@ -6,9 +6,11 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use magector_core::{Indexer, VectorDB, Embedder, Validator, EMBEDDING_DIM};
+use magector_core::{Indexer, VectorDB, Embedder, Validator, WatcherStatus, EMBEDDING_DIM};
 
 const MAGENTO2_REPO: &str = "https://github.com/magento/magento2.git";
 const MAGENTO2_TAG: &str = "2.4.7"; // Latest stable version
@@ -126,6 +128,14 @@ enum Commands {
         /// Path to cache embedding model
         #[arg(short = 'c', long, default_value = "./models")]
         model_cache: PathBuf,
+
+        /// Path to Magento root directory (enables file watcher for incremental re-indexing)
+        #[arg(short, long)]
+        magento_root: Option<PathBuf>,
+
+        /// File watcher poll interval in seconds (default: 60)
+        #[arg(long, default_value = "60")]
+        watch_interval: u64,
     },
 }
 
@@ -218,8 +228,10 @@ fn main() -> Result<()> {
         Commands::Serve {
             database,
             model_cache,
+            magento_root,
+            watch_interval,
         } => {
-            run_serve(&database, &model_cache)?;
+            run_serve(&database, &model_cache, magento_root, watch_interval)?;
         }
     }
 
@@ -329,17 +341,63 @@ fn run_validation(
 /// Protocol (one JSON object per line):
 ///   Request:  {"command":"search","query":"...","limit":10}
 ///   Request:  {"command":"stats"}
+///   Request:  {"command":"watcher_status"}
 ///   Response: {"ok":true,"data":...}
 ///   Error:    {"ok":false,"error":"..."}
-fn run_serve(database: &PathBuf, model_cache: &PathBuf) -> Result<()> {
+fn run_serve(
+    database: &PathBuf,
+    model_cache: &PathBuf,
+    magento_root: Option<PathBuf>,
+    watch_interval: u64,
+) -> Result<()> {
     eprintln!("Loading model and index for serve mode...");
-    let mut indexer = Indexer::new(&PathBuf::new(), model_cache, database)?;
+    let mg_root = magento_root.clone().unwrap_or_default();
+    let indexer = Indexer::new(&mg_root, model_cache, database)?;
+    let vectors = indexer.stats().vectors_created;
+    let indexer = Arc::new(Mutex::new(indexer));
+
+    // Watcher status (shared with watcher thread)
+    let watcher_status = Arc::new(Mutex::new(WatcherStatus {
+        running: false,
+        tracked_files: 0,
+        last_scan_changes: 0,
+        interval_secs: watch_interval,
+    }));
+
+    // Spawn file watcher thread if magento_root is provided
+    if let Some(ref root) = magento_root {
+        let idx = Arc::clone(&indexer);
+        let root = root.clone();
+        let db = database.clone();
+        let interval = Duration::from_secs(watch_interval);
+        let status = Arc::clone(&watcher_status);
+
+        {
+            let mut s = status.lock().unwrap();
+            s.running = true;
+        }
+
+        std::thread::Builder::new()
+            .name("file-watcher".to_string())
+            .spawn(move || {
+                magector_core::watcher_loop(idx, root, db, interval, status);
+            })
+            .context("Failed to spawn watcher thread")?;
+
+        eprintln!("File watcher enabled (interval: {}s)", watch_interval);
+    }
+
     eprintln!("Ready. Listening on stdin for JSON queries.");
 
     // Signal readiness with a JSON line on stdout
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
-    writeln!(out, r#"{{"ok":true,"ready":true,"vectors":{}}}"#, indexer.stats().vectors_created)?;
+    let watcher_running = magento_root.is_some();
+    writeln!(
+        out,
+        r#"{{"ok":true,"ready":true,"vectors":{},"watcher":{}}}"#,
+        vectors, watcher_running
+    )?;
     out.flush()?;
 
     let stdin = io::stdin();
@@ -354,7 +412,7 @@ fn run_serve(database: &PathBuf, model_cache: &PathBuf) -> Result<()> {
         }
 
         let response = match serde_json::from_str::<serde_json::Value>(&line) {
-            Ok(req) => handle_serve_request(&mut indexer, &req),
+            Ok(req) => handle_serve_request(&indexer, &watcher_status, &req),
             Err(e) => format!(r#"{{"ok":false,"error":"Invalid JSON: {}"}}"#, e),
         };
 
@@ -365,7 +423,11 @@ fn run_serve(database: &PathBuf, model_cache: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn handle_serve_request(indexer: &mut Indexer, req: &serde_json::Value) -> String {
+fn handle_serve_request(
+    indexer: &Arc<Mutex<Indexer>>,
+    watcher_status: &Arc<Mutex<WatcherStatus>>,
+    req: &serde_json::Value,
+) -> String {
     let command = req.get("command").and_then(|v| v.as_str()).unwrap_or("");
 
     match command {
@@ -376,7 +438,8 @@ fn handle_serve_request(indexer: &mut Indexer, req: &serde_json::Value) -> Strin
             };
             let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
-            match indexer.search(query, limit) {
+            let mut idx = indexer.lock().unwrap();
+            match idx.search(query, limit) {
                 Ok(results) => {
                     match serde_json::to_string(&results) {
                         Ok(json) => format!(r#"{{"ok":true,"data":{}}}"#, json),
@@ -387,8 +450,16 @@ fn handle_serve_request(indexer: &mut Indexer, req: &serde_json::Value) -> Strin
             }
         }
         "stats" => {
-            let stats = indexer.stats();
+            let idx = indexer.lock().unwrap();
+            let stats = idx.stats();
             format!(r#"{{"ok":true,"data":{{"vectors":{}}}}}"#, stats.vectors_created)
+        }
+        "watcher_status" => {
+            let s = watcher_status.lock().unwrap();
+            match serde_json::to_string(&*s) {
+                Ok(json) => format!(r#"{{"ok":true,"data":{}}}"#, json),
+                Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
+            }
         }
         _ => format!(r#"{{"ok":false,"error":"Unknown command: {}"}}"#, command),
     }

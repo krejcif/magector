@@ -75,11 +75,17 @@ let serveReadline = null;
 
 function startServeProcess() {
   try {
-    const proc = spawn(config.rustBinary, [
+    const args = [
       'serve',
       '-d', config.dbPath,
       '-c', config.modelCache
-    ], { stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
+    ];
+    // Enable file watcher if magento root is configured
+    if (config.magentoRoot && existsSync(config.magentoRoot)) {
+      args.push('-m', config.magentoRoot);
+    }
+    const proc = spawn(config.rustBinary, args,
+      { stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
 
     proc.on('error', () => { serveProcess = null; serveReady = false; });
     proc.on('exit', () => { serveProcess = null; serveReady = false; });

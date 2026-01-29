@@ -18,10 +18,10 @@ use crate::magento::{
 use crate::vectordb::{IndexMetadata, VectorDB};
 
 /// File patterns to index
-const INCLUDE_EXTENSIONS: &[&str] = &["php", "xml", "phtml", "js", "graphqls"];
+pub(crate) const INCLUDE_EXTENSIONS: &[&str] = &["php", "xml", "phtml", "js", "graphqls"];
 
 /// Directories to skip
-const EXCLUDE_DIRS: &[&str] = &[
+pub(crate) const EXCLUDE_DIRS: &[&str] = &[
     "node_modules",
     "vendor/bin",
     ".git",
@@ -40,7 +40,7 @@ const EXCLUDE_DIRS: &[&str] = &[
 ];
 
 /// Maximum file size to index (100KB)
-const MAX_FILE_SIZE: u64 = 100_000;
+pub(crate) const MAX_FILE_SIZE: u64 = 100_000;
 
 /// Indexing statistics
 #[derive(Debug, Default)]
@@ -57,7 +57,7 @@ pub struct IndexStats {
 }
 
 /// Intermediate result from parsing (before embedding)
-struct ParsedFile {
+pub(crate) struct ParsedFile {
     embed_text: String,
     metadata: IndexMetadata,
 }
@@ -286,7 +286,7 @@ impl Indexer {
     }
 
     /// Discover files to index (no symlink following for speed)
-    fn discover_files(&self) -> Result<Vec<PathBuf>> {
+    pub(crate) fn discover_files(&self) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
 
         for entry in WalkDir::new(&self.magento_root)
@@ -316,7 +316,7 @@ impl Indexer {
     }
 
     /// Check if directory should be skipped
-    fn should_skip_dir(entry: &walkdir::DirEntry) -> bool {
+    pub(crate) fn should_skip_dir(entry: &walkdir::DirEntry) -> bool {
         if entry.file_type().is_dir() {
             let name = entry.file_name().to_string_lossy();
             return EXCLUDE_DIRS.iter().any(|&d| name == d);
@@ -325,7 +325,7 @@ impl Indexer {
     }
 
     /// Parse a single file (no embedding, can be parallelized with thread-local AST)
-    fn parse_file(
+    pub(crate) fn parse_file(
         path: &Path,
         magento_root: &Path,
         xml_analyzer: &XmlAnalyzer,
@@ -814,6 +814,66 @@ impl Indexer {
             js_dependencies,
             search_text,
         }
+    }
+
+    /// Incrementally index a specific set of files.
+    /// Returns a list of (relative_path, vector_ids) for manifest tracking.
+    pub(crate) fn index_files(&mut self, files: &[PathBuf]) -> Result<Vec<(String, Vec<usize>)>> {
+        let magento_root = self.magento_root.clone();
+        let xml_analyzer = &self.xml_analyzer;
+        let ast_php = self.ast_available.php;
+        let ast_js = self.ast_available.js;
+
+        // Parse files in parallel
+        let parsed_results: Vec<_> = files
+            .par_iter()
+            .filter_map(|file_path| {
+                match Self::parse_file(file_path, &magento_root, xml_analyzer, ast_php, ast_js) {
+                    Ok(Some(items)) => Some(items),
+                    _ => None,
+                }
+            })
+            .flatten()
+            .collect();
+
+        if parsed_results.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Embed and insert
+        let mut result = Vec::new();
+        for chunk in parsed_results.chunks(EMBED_BATCH_SIZE) {
+            let texts: Vec<&str> = chunk.iter().map(|p| p.embed_text.as_str()).collect();
+            let embeddings = self.embedder.embed_batch(&texts)?;
+
+            for (emb, parsed) in embeddings.into_iter().zip(chunk.iter()) {
+                let path = parsed.metadata.path.clone();
+                let id = self.vectordb.insert(&emb, parsed.metadata.clone());
+                // Group by path
+                if let Some(entry) = result.iter_mut().find(|(p, _): &&mut (String, Vec<usize>)| p == &path) {
+                    entry.1.push(id);
+                } else {
+                    result.push((path, vec![id]));
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Remove all vectors associated with a file path (tombstone)
+    pub(crate) fn remove_vectors_for_path(&mut self, path: &str) -> Vec<usize> {
+        self.vectordb.remove_by_path(path)
+    }
+
+    /// Get the tombstone ratio of the vector DB
+    pub(crate) fn vectordb_tombstone_ratio(&self) -> f64 {
+        self.vectordb.tombstone_ratio()
+    }
+
+    /// Compact the vector DB (rebuild HNSW, purge tombstones)
+    pub(crate) fn compact_vectordb(&mut self) {
+        self.vectordb.compact();
     }
 
     /// Save the index to disk

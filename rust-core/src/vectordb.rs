@@ -5,9 +5,9 @@
 use anyhow::{Context, Result};
 use hnsw_rs::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter};
+use std::io::BufWriter;
 use std::path::Path;
 
 use crate::embedder::EMBEDDING_DIM;
@@ -57,12 +57,24 @@ pub struct SearchResult {
     pub metadata: IndexMetadata,
 }
 
-/// Persisted state — serialized with bincode
+/// Persisted state V1 — legacy format (no tombstones)
 #[derive(Serialize, Deserialize)]
 struct PersistedState {
     metadata: HashMap<usize, IndexMetadata>,
     vectors: HashMap<usize, Vec<f32>>,
     next_id: usize,
+}
+
+/// Version tag written before V2 payloads
+const PERSIST_VERSION_V2: u8 = 2;
+
+/// Persisted state V2 — includes tombstone set
+#[derive(Serialize, Deserialize)]
+struct PersistedStateV2 {
+    metadata: HashMap<usize, IndexMetadata>,
+    vectors: HashMap<usize, Vec<f32>>,
+    next_id: usize,
+    tombstones: HashSet<usize>,
 }
 
 /// Vector database for semantic code search
@@ -71,6 +83,7 @@ pub struct VectorDB {
     metadata: HashMap<usize, IndexMetadata>,
     vectors: HashMap<usize, Vec<f32>>,
     next_id: usize,
+    tombstones: HashSet<usize>,
 }
 
 fn make_hnsw(capacity: usize) -> Hnsw<'static, f32, DistCosine> {
@@ -91,6 +104,7 @@ impl VectorDB {
             metadata: HashMap::new(),
             vectors: HashMap::new(),
             next_id: 0,
+            tombstones: HashSet::new(),
         }
     }
 
@@ -101,6 +115,7 @@ impl VectorDB {
             metadata: HashMap::with_capacity(capacity),
             vectors: HashMap::with_capacity(capacity),
             next_id: 0,
+            tombstones: HashSet::new(),
         }
     }
 
@@ -125,21 +140,31 @@ impl VectorDB {
         Ok(Self::new())
     }
 
-    /// Load database from a bincode file
+    /// Load database from a bincode file (V2 with tombstones, V1 fallback)
     fn load(path: &Path) -> Result<Self> {
-        let file = File::open(path).context("Failed to open database")?;
-        let reader = BufReader::with_capacity(1 << 20, file); // 1MB buffer
-        let state: PersistedState = bincode::deserialize_from(reader)
+        let bytes = fs::read(path).context("Failed to read database")?;
+        if bytes.is_empty() {
+            return Ok(Self::new());
+        }
+
+        // Try V2 first: first byte == PERSIST_VERSION_V2
+        if bytes[0] == PERSIST_VERSION_V2 {
+            let state: PersistedStateV2 = bincode::deserialize(&bytes[1..])
+                .context("Failed to parse V2 database")?;
+            return Self::from_state_v2(state);
+        }
+
+        // Fallback: V1 (no version byte)
+        let state: PersistedState = bincode::deserialize(&bytes)
             .context("Failed to parse database")?;
         Self::from_state(state)
     }
 
-    /// Rebuild HNSW from persisted state using parallel batch insert
+    /// Rebuild HNSW from persisted V1 state
     fn from_state(state: PersistedState) -> Result<Self> {
         let capacity = state.vectors.len().max(HNSW_MIN_CAPACITY);
         let hnsw = make_hnsw(capacity);
 
-        // Batch insert all vectors at once (parallel internally via hnsw_rs)
         let data: Vec<(&Vec<f32>, usize)> = state.vectors.iter()
             .map(|(&id, vec)| (vec, id))
             .collect();
@@ -150,21 +175,48 @@ impl VectorDB {
             metadata: state.metadata,
             vectors: state.vectors,
             next_id: state.next_id,
+            tombstones: HashSet::new(),
         })
     }
 
-    /// Save database to disk (bincode format) at the exact path given
+    /// Rebuild HNSW from persisted V2 state (skip tombstoned vectors)
+    fn from_state_v2(state: PersistedStateV2) -> Result<Self> {
+        let live_count = state.vectors.len().saturating_sub(state.tombstones.len());
+        let capacity = live_count.max(HNSW_MIN_CAPACITY);
+        let hnsw = make_hnsw(capacity);
+
+        // Only insert non-tombstoned vectors
+        let data: Vec<(&Vec<f32>, usize)> = state.vectors.iter()
+            .filter(|(id, _)| !state.tombstones.contains(id))
+            .map(|(&id, vec)| (vec, id))
+            .collect();
+        hnsw.parallel_insert(&data);
+
+        Ok(Self {
+            hnsw,
+            metadata: state.metadata,
+            vectors: state.vectors,
+            next_id: state.next_id,
+            tombstones: state.tombstones,
+        })
+    }
+
+    /// Save database to disk (V2 bincode format with tombstones)
     pub fn save(&self, path: &Path) -> Result<()> {
         fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
 
-        let state = PersistedState {
+        let state = PersistedStateV2 {
             metadata: self.metadata.clone(),
             vectors: self.vectors.clone(),
             next_id: self.next_id,
+            tombstones: self.tombstones.clone(),
         };
 
         let file = File::create(path)?;
-        let writer = BufWriter::with_capacity(1 << 20, file); // 1MB buffer
+        let mut writer = BufWriter::with_capacity(1 << 20, file);
+        // Write version byte, then V2 payload
+        use std::io::Write;
+        writer.write_all(&[PERSIST_VERSION_V2])?;
         bincode::serialize_into(writer, &state)
             .context("Failed to serialize database")?;
 
@@ -221,15 +273,19 @@ impl VectorDB {
         self.next_id = start_id + items.len();
     }
 
-    /// Search for similar vectors (pure semantic)
+    /// Search for similar vectors (pure semantic), filtering tombstoned IDs
     pub fn search(&self, query: &[f32], k: usize) -> Vec<SearchResult> {
         assert_eq!(query.len(), EMBEDDING_DIM);
 
-        let ef_search = (k * 2).max(50);
-        let results = self.hnsw.search(query, k, ef_search);
+        // Fetch extra candidates to compensate for tombstoned entries
+        let extra = if self.tombstones.is_empty() { 0 } else { self.tombstones.len().min(k) };
+        let fetch = k + extra;
+        let ef_search = (fetch * 2).max(50);
+        let results = self.hnsw.search(query, fetch, ef_search);
 
         results
             .into_iter()
+            .filter(|n| !self.tombstones.contains(&n.d_id))
             .filter_map(|n| {
                 let id = n.d_id;
                 self.metadata.get(&id).map(|meta| SearchResult {
@@ -238,6 +294,7 @@ impl VectorDB {
                     metadata: meta.clone(),
                 })
             })
+            .take(k)
             .collect()
     }
 
@@ -249,8 +306,9 @@ impl VectorDB {
     pub fn hybrid_search(&self, query: &[f32], query_text: &str, k: usize) -> Vec<SearchResult> {
         assert_eq!(query.len(), EMBEDDING_DIM);
 
-        // Fetch 3x candidates for re-ranking
-        let candidates = k * 3;
+        // Fetch 3x candidates for re-ranking (plus tombstone headroom)
+        let extra = if self.tombstones.is_empty() { 0 } else { self.tombstones.len().min(k) };
+        let candidates = k * 3 + extra;
         let ef_search = (candidates * 2).max(64);
         let results = self.hnsw.search(query, candidates, ef_search);
 
@@ -269,6 +327,7 @@ impl VectorDB {
 
         let mut scored: Vec<SearchResult> = results
             .into_iter()
+            .filter(|n| !self.tombstones.contains(&n.d_id))
             .filter_map(|n| {
                 let id = n.d_id;
                 self.metadata.get(&id).map(|meta| {
@@ -359,14 +418,66 @@ impl VectorDB {
         scored
     }
 
-    /// Get total number of vectors
-    pub fn len(&self) -> usize {
-        self.metadata.len()
+    /// Mark a vector ID as tombstoned (soft-delete)
+    pub fn tombstone(&mut self, id: usize) {
+        self.tombstones.insert(id);
     }
 
-    /// Check if empty
+    /// Remove all vectors whose metadata path matches the given path.
+    /// Returns the IDs that were tombstoned.
+    pub fn remove_by_path(&mut self, path: &str) -> Vec<usize> {
+        let ids: Vec<usize> = self.metadata.iter()
+            .filter(|(_, meta)| meta.path == path)
+            .map(|(&id, _)| id)
+            .collect();
+        for &id in &ids {
+            self.tombstones.insert(id);
+        }
+        ids
+    }
+
+    /// Ratio of tombstoned entries to total vectors (0.0 – 1.0)
+    pub fn tombstone_ratio(&self) -> f64 {
+        if self.vectors.is_empty() {
+            return 0.0;
+        }
+        self.tombstones.len() as f64 / self.vectors.len() as f64
+    }
+
+    /// Compact: rebuild HNSW and purge tombstoned entries from all maps.
+    /// This reclaims memory and restores search performance.
+    pub fn compact(&mut self) {
+        if self.tombstones.is_empty() {
+            return;
+        }
+
+        // Remove tombstoned entries from metadata and vectors
+        for &id in &self.tombstones {
+            self.metadata.remove(&id);
+            self.vectors.remove(&id);
+        }
+
+        // Rebuild HNSW from live vectors
+        let capacity = self.vectors.len().max(HNSW_MIN_CAPACITY);
+        self.hnsw = make_hnsw(capacity);
+        let data: Vec<(&Vec<f32>, usize)> = self.vectors.iter()
+            .map(|(&id, vec)| (vec, id))
+            .collect();
+        if !data.is_empty() {
+            self.hnsw.parallel_insert(&data);
+        }
+
+        self.tombstones.clear();
+    }
+
+    /// Get total number of live (non-tombstoned) vectors
+    pub fn len(&self) -> usize {
+        self.metadata.len().saturating_sub(self.tombstones.len())
+    }
+
+    /// Check if empty (no live vectors)
     pub fn is_empty(&self) -> bool {
-        self.metadata.is_empty()
+        self.len() == 0
     }
 
     /// Clear all data
@@ -374,6 +485,7 @@ impl VectorDB {
         self.hnsw = make_hnsw(HNSW_MIN_CAPACITY);
         self.metadata.clear();
         self.vectors.clear();
+        self.tombstones.clear();
         self.next_id = 0;
     }
 }
@@ -426,6 +538,108 @@ mod tests {
         let results = db.search(&vector, 1);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].metadata.path, "test.php");
+    }
+
+    fn make_test_meta(path: &str) -> IndexMetadata {
+        IndexMetadata {
+            path: path.to_string(),
+            file_type: "php".to_string(),
+            magento_type: None,
+            class_name: None,
+            class_type: None,
+            method_name: None,
+            methods: Vec::new(),
+            namespace: None,
+            module: None,
+            area: None,
+            extends: None,
+            implements: Vec::new(),
+            is_controller: false,
+            is_repository: false,
+            is_plugin: false,
+            is_observer: false,
+            is_model: false,
+            is_block: false,
+            is_resolver: false,
+            is_api_interface: false,
+            is_ui_component: false,
+            is_widget: false,
+            is_mixin: false,
+            js_dependencies: Vec::new(),
+            search_text: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_tombstone_filters_search() {
+        let mut db = VectorDB::new();
+
+        let v1 = vec![0.1f32; EMBEDDING_DIM];
+        let v2 = vec![0.2f32; EMBEDDING_DIM];
+        let id1 = db.insert(&v1, make_test_meta("file1.php"));
+        let _id2 = db.insert(&v2, make_test_meta("file2.php"));
+
+        // Before tombstone: both found
+        let results = db.search(&v1, 10);
+        assert!(results.len() >= 1);
+
+        // Tombstone id1
+        db.tombstone(id1);
+
+        // After tombstone: id1 should be filtered out
+        let results = db.search(&v1, 10);
+        assert!(results.iter().all(|r| r.id != id1));
+    }
+
+    #[test]
+    fn test_remove_by_path() {
+        let mut db = VectorDB::new();
+        let v = vec![0.1f32; EMBEDDING_DIM];
+        db.insert(&v, make_test_meta("remove_me.php"));
+        db.insert(&v, make_test_meta("keep_me.php"));
+
+        let removed = db.remove_by_path("remove_me.php");
+        assert_eq!(removed.len(), 1);
+        assert_eq!(db.len(), 1); // only keep_me.php remains live
+    }
+
+    #[test]
+    fn test_compact_rebuilds() {
+        let mut db = VectorDB::new();
+        let v = vec![0.1f32; EMBEDDING_DIM];
+        let id = db.insert(&v, make_test_meta("old.php"));
+        db.insert(&v, make_test_meta("new.php"));
+
+        db.tombstone(id);
+        assert!(db.tombstone_ratio() > 0.0);
+
+        db.compact();
+        assert_eq!(db.tombstones.len(), 0);
+        assert_eq!(db.vectors.len(), 1);
+        assert!(db.metadata.contains_key(&(id + 1))); // "new.php" still there
+    }
+
+    #[test]
+    fn test_v2_save_load_roundtrip() {
+        let dir = std::env::temp_dir().join("magector_test_v2");
+        let _ = fs::create_dir_all(&dir);
+        let db_path = dir.join("test_v2.db");
+
+        {
+            let mut db = VectorDB::new();
+            let v = vec![0.1f32; EMBEDDING_DIM];
+            let id = db.insert(&v, make_test_meta("a.php"));
+            db.insert(&v, make_test_meta("b.php"));
+            db.tombstone(id);
+            db.save(&db_path).unwrap();
+        }
+
+        // Reload and verify tombstone persisted
+        let db = VectorDB::open(&db_path).unwrap();
+        assert!(db.tombstones.contains(&0));
+        assert_eq!(db.len(), 1); // b.php live
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -57,6 +57,7 @@ Without Magector, asking Claude Code or Cursor *"how are checkout totals calcula
 - **Hybrid search** -- combines semantic vector similarity with keyword re-ranking for best-of-both-worlds results
 - **Structured JSON output** -- results include file path, class name, methods list, role badges, and content snippets for minimal round-trips
 - **Persistent serve mode** -- keeps ONNX model and HNSW index resident in memory, eliminating cold-start latency
+- **Incremental re-indexing** -- background file watcher detects changes and updates the index without restart (tombstone + compact strategy)
 - **ONNX embeddings** -- native 384-dim transformer embeddings via ONNX Runtime
 - **36K+ vectors** -- indexes the complete Magento 2 / Adobe Commerce codebase including framework internals
 - **Magento-aware** -- understands controllers, plugins, observers, blocks, resolvers, repositories, and 20+ Magento patterns
@@ -227,9 +228,13 @@ magector-core serve [OPTIONS]
 Options:
   -d, --database <PATH>       Index database path [default: ./magector.db]
   -c, --model-cache <PATH>    Model cache directory [default: ./models]
+  -m, --magento-root <PATH>   Magento root (enables file watcher)
+      --watch-interval <SECS> File watcher poll interval [default: 60]
 ```
 
 Starts a persistent process that reads JSON queries from stdin and writes JSON responses to stdout. Keeps the ONNX model and HNSW index resident in memory for fast repeated queries.
+
+When `--magento-root` is provided, a background file watcher polls for changed files every `--watch-interval` seconds and incrementally re-indexes them without restart. Modified and deleted files are soft-deleted (tombstoned) in the HNSW index; new vectors are appended. When tombstoned entries exceed 20% of total vectors, the index is automatically compacted by rebuilding the HNSW graph.
 
 **Protocol (one JSON object per line):**
 
@@ -242,6 +247,11 @@ Starts a persistent process that reads JSON queries from stdin and writes JSON r
 
 // Stats request:
 {"command":"stats"}
+
+// Watcher status:
+{"command":"watcher_status"}
+// Response:
+{"ok":true,"data":{"running":true,"tracked_files":18234,"last_scan_changes":3,"interval_secs":60}}
 ```
 
 ### Node.js CLI
@@ -523,7 +533,8 @@ magector/
 │   │   ├── lib.rs                # Library exports
 │   │   ├── indexer.rs             # Core indexing with progress output
 │   │   ├── embedder.rs            # ONNX embedding (MiniLM-L6-v2)
-│   │   ├── vectordb.rs            # HNSW vector database + hybrid search
+│   │   ├── vectordb.rs            # HNSW vector database + hybrid search + tombstones
+│   │   ├── watcher.rs             # File watcher for incremental re-indexing
 │   │   ├── ast.rs                 # Tree-sitter AST (PHP + JS)
 │   │   ├── magento.rs             # Magento pattern detection (Rust)
 │   │   └── validation.rs          # 557 test cases, validation framework
@@ -591,7 +602,32 @@ flowchart TD
   style fallback fill:#f4e8e8,color:#000
 ```
 
-### 4. MCP Integration
+### 4. File Watcher (Incremental Re-indexing)
+
+When the serve process is started with `--magento-root`, a background thread polls the filesystem for changes every 60 seconds (configurable via `--watch-interval`). Changed files are incrementally re-indexed without restarting the server.
+
+Since `hnsw_rs` does not support point deletion, Magector uses a **tombstone** strategy: old vectors for modified/deleted files are marked as tombstoned and filtered out of search results. New vectors are appended. When tombstoned entries exceed 20% of total vectors, the HNSW graph is automatically rebuilt (compacted) to reclaim memory and restore search performance.
+
+```mermaid
+flowchart TD
+  W1[Sleep 60s] --> W2[Scan Filesystem]
+  W2 --> W3{Changes?}
+  W3 -->|No| W1
+  W3 -->|Yes| W4[Tombstone Old Vectors]
+  W4 --> W5[Parse + Embed New Files]
+  W5 --> W6[Append to HNSW]
+  W6 --> W7{Tombstone > 20%?}
+  W7 -->|Yes| W8[Compact / Rebuild HNSW]
+  W7 -->|No| W9[Save to Disk]
+  W8 --> W9
+  W9 --> W1
+
+  style W4 fill:#f4e8e8,color:#000
+  style W5 fill:#e8f4e8,color:#000
+  style W8 fill:#e8e8f4,color:#000
+```
+
+### 5. MCP Integration
 
 The MCP server delegates all search/index operations to the Rust core binary. Analysis tools (diff, complexity) use ruvector JS modules directly.
 
@@ -788,7 +824,8 @@ npm run test:accuracy
 - **Parameters:** M=32, max_layers=16, ef_construction=200
 - **Distance metric:** Cosine similarity
 - **Hybrid search:** Semantic nearest-neighbor + keyword reranking in path and search text
-- **Persistence:** Bincode binary serialization
+- **Incremental updates:** Tombstone soft-delete + periodic HNSW rebuild (compact)
+- **Persistence:** Bincode V2 binary serialization (backward-compatible with V1)
 
 ### Index Structure
 
@@ -859,7 +896,7 @@ gantt
     Method chunking     :active, 2025-04, 30d
     Intent detection    :2025-05, 30d
     Type filtering      :2025-06, 30d
-    Incremental index   :2025-07, 30d
+    Incremental index   :done, 2025-04, 30d
   section Future
     VSCode extension    :2025-08, 60d
     Web UI              :2025-10, 60d
@@ -874,7 +911,7 @@ gantt
 - [ ] Method-level chunking (per-method vectors for direct method search)
 - [ ] Query intent classification (auto-detect "give me XML" vs "give me PHP")
 - [ ] Filtered search by file type at the vector level
-- [ ] Incremental indexing (only re-index changed files)
+- [x] Incremental indexing (background file watcher with tombstone + compact strategy)
 - [ ] VSCode extension
 - [ ] Web UI for browsing results
 
