@@ -37,7 +37,6 @@ const EXCLUDE_DIRS: &[&str] = &[
     "_files",
     "fixtures",
     "performance-toolkit",
-    "lib/internal",
 ];
 
 /// Maximum file size to index (100KB)

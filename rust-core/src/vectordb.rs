@@ -225,7 +225,7 @@ impl VectorDB {
     pub fn search(&self, query: &[f32], k: usize) -> Vec<SearchResult> {
         assert_eq!(query.len(), EMBEDDING_DIM);
 
-        let ef_search = (k * 2).max(100);
+        let ef_search = (k * 2).max(50);
         let results = self.hnsw.search(query, k, ef_search);
 
         results
@@ -251,7 +251,7 @@ impl VectorDB {
 
         // Fetch 3x candidates for re-ranking
         let candidates = k * 3;
-        let ef_search = (candidates * 2).max(100);
+        let ef_search = (candidates * 2).max(64);
         let results = self.hnsw.search(query, candidates, ef_search);
 
         // Lowercase query terms for matching

@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
+use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::process::Command;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -115,6 +116,17 @@ enum Commands {
         #[arg(short, long)]
         version: Option<String>,
     },
+
+    /// Start persistent server mode (reads JSON queries from stdin, writes JSON results to stdout)
+    Serve {
+        /// Path to the index database
+        #[arg(short, long, default_value = "./magector.db")]
+        database: PathBuf,
+
+        /// Path to cache embedding model
+        #[arg(short = 'c', long, default_value = "./models")]
+        model_cache: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -201,6 +213,13 @@ fn main() -> Result<()> {
 
         Commands::Download { target, version } => {
             download_magento(&target, version.as_deref())?;
+        }
+
+        Commands::Serve {
+            database,
+            model_cache,
+        } => {
+            run_serve(&database, &model_cache)?;
         }
     }
 
@@ -303,6 +322,76 @@ fn run_validation(
     }
 
     Ok(())
+}
+
+/// Persistent serve mode: load model+index once, handle JSON queries from stdin.
+///
+/// Protocol (one JSON object per line):
+///   Request:  {"command":"search","query":"...","limit":10}
+///   Request:  {"command":"stats"}
+///   Response: {"ok":true,"data":...}
+///   Error:    {"ok":false,"error":"..."}
+fn run_serve(database: &PathBuf, model_cache: &PathBuf) -> Result<()> {
+    eprintln!("Loading model and index for serve mode...");
+    let mut indexer = Indexer::new(&PathBuf::new(), model_cache, database)?;
+    eprintln!("Ready. Listening on stdin for JSON queries.");
+
+    // Signal readiness with a JSON line on stdout
+    let stdout = io::stdout();
+    let mut out = io::BufWriter::new(stdout.lock());
+    writeln!(out, r#"{{"ok":true,"ready":true,"vectors":{}}}"#, indexer.stats().vectors_created)?;
+    out.flush()?;
+
+    let stdin = io::stdin();
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        let line = line.trim().to_string();
+        if line.is_empty() {
+            continue;
+        }
+
+        let response = match serde_json::from_str::<serde_json::Value>(&line) {
+            Ok(req) => handle_serve_request(&mut indexer, &req),
+            Err(e) => format!(r#"{{"ok":false,"error":"Invalid JSON: {}"}}"#, e),
+        };
+
+        writeln!(out, "{}", response)?;
+        out.flush()?;
+    }
+
+    Ok(())
+}
+
+fn handle_serve_request(indexer: &mut Indexer, req: &serde_json::Value) -> String {
+    let command = req.get("command").and_then(|v| v.as_str()).unwrap_or("");
+
+    match command {
+        "search" => {
+            let query = match req.get("query").and_then(|v| v.as_str()) {
+                Some(q) => q,
+                None => return r#"{"ok":false,"error":"Missing 'query' field"}"#.to_string(),
+            };
+            let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+
+            match indexer.search(query, limit) {
+                Ok(results) => {
+                    match serde_json::to_string(&results) {
+                        Ok(json) => format!(r#"{{"ok":true,"data":{}}}"#, json),
+                        Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
+                    }
+                }
+                Err(e) => format!(r#"{{"ok":false,"error":"Search error: {}"}}"#, e),
+            }
+        }
+        "stats" => {
+            let stats = indexer.stats();
+            format!(r#"{{"ok":true,"data":{{"vectors":{}}}}}"#, stats.vectors_created)
+        }
+        _ => format!(r#"{{"ok":false,"error":"Unknown command: {}"}}"#, command),
+    }
 }
 
 fn download_magento(target: &PathBuf, version: Option<&str>) -> Result<()> {

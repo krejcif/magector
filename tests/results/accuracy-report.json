@@ -1,0 +1,1651 @@
+{
+  "timestamp": "2026-01-29T21:38:52.249Z",
+  "summary": {
+    "totalQueries": 101,
+    "totalPassed": 101,
+    "totalFailed": 0,
+    "passRate": 1,
+    "avgPrecision": 0.9235973597359736,
+    "avgMRR": 0.9920792079207921,
+    "avgNDCG": 0.8549378108320794,
+    "avgLatency": 159.3861386138614,
+    "grade": "A",
+    "score": 94.6,
+    "emptyResults": 0
+  },
+  "perTool": {
+    "find_class": {
+      "queries": 10,
+      "passed": 10,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 1,
+      "avgMRR": 1,
+      "avgNDCG": 1,
+      "avgLatency": 1005.2,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "find_method": {
+      "queries": 8,
+      "passed": 8,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 0.89375,
+      "avgMRR": 1,
+      "avgNDCG": 0.8658447795589266,
+      "avgLatency": 12.375,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "find_controller": {
+      "queries": 7,
+      "passed": 7,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 1,
+      "avgMRR": 1,
+      "avgNDCG": 0,
+      "avgLatency": 12.142857142857142,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "find_observer": {
+      "queries": 5,
+      "passed": 5,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 1,
+      "avgMRR": 1,
+      "avgNDCG": 1,
+      "avgLatency": 12.4,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "find_plugin": {
+      "queries": 5,
+      "passed": 5,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 0.9466666666666667,
+      "avgMRR": 1,
+      "avgNDCG": 1,
+      "avgLatency": 17.6,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "find_preference": {
+      "queries": 5,
+      "passed": 5,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 1,
+      "avgMRR": 1,
+      "avgNDCG": 1,
+      "avgLatency": 11.8,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "find_api": {
+      "queries": 5,
+      "passed": 5,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 1,
+      "avgMRR": 1,
+      "avgNDCG": 1,
+      "avgLatency": 12.2,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "find_cron": {
+      "queries": 5,
+      "passed": 5,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 1,
+      "avgMRR": 1,
+      "avgNDCG": 1,
+      "avgLatency": 12.2,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "find_db_schema": {
+      "queries": 5,
+      "passed": 5,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 1,
+      "avgMRR": 1,
+      "avgNDCG": 1,
+      "avgLatency": 11.8,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "find_graphql": {
+      "queries": 5,
+      "passed": 5,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 1,
+      "avgMRR": 1,
+      "avgNDCG": 1,
+      "avgLatency": 11.4,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "find_block": {
+      "queries": 5,
+      "passed": 5,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 1,
+      "avgMRR": 1,
+      "avgNDCG": 1,
+      "avgLatency": 15.2,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "find_config": {
+      "queries": 7,
+      "passed": 7,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 0.7714285714285714,
+      "avgMRR": 0.8857142857142858,
+      "avgNDCG": 0.9297297603441285,
+      "avgLatency": 11.285714285714286,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "find_template": {
+      "queries": 5,
+      "passed": 5,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 0.8400000000000001,
+      "avgMRR": 1,
+      "avgNDCG": 1,
+      "avgLatency": 11.6,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "search": {
+      "queries": 18,
+      "passed": 18,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 0.9888888888888889,
+      "avgMRR": 1,
+      "avgNDCG": 0.9952140186199839,
+      "avgLatency": 11.444444444444445,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "module_structure": {
+      "queries": 5,
+      "passed": 5,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 0.4,
+      "avgMRR": 1,
+      "avgNDCG": 0,
+      "avgLatency": 13.8,
+      "emptyResults": 0,
+      "failures": []
+    },
+    "stats": {
+      "queries": 1,
+      "passed": 1,
+      "failed": 0,
+      "passRate": 1,
+      "avgPrecision": 0,
+      "avgMRR": 1,
+      "avgNDCG": 0,
+      "avgLatency": 4927,
+      "emptyResults": 0,
+      "failures": []
+    }
+  },
+  "results": [
+    {
+      "category": "find_class",
+      "tool": "magento_find_class",
+      "args": {
+        "className": "ProductRepository"
+      },
+      "passed": true,
+      "resultCount": 4,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 9930,
+      "failedChecks": []
+    },
+    {
+      "category": "find_class",
+      "tool": "magento_find_class",
+      "args": {
+        "className": "AbstractModel"
+      },
+      "passed": true,
+      "resultCount": 5,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 18,
+      "failedChecks": []
+    },
+    {
+      "category": "find_class",
+      "tool": "magento_find_class",
+      "args": {
+        "className": "CartManagement"
+      },
+      "passed": true,
+      "resultCount": 4,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 14,
+      "failedChecks": []
+    },
+    {
+      "category": "find_class",
+      "tool": "magento_find_class",
+      "args": {
+        "className": "OrderRepository"
+      },
+      "passed": true,
+      "resultCount": 4,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "find_class",
+      "tool": "magento_find_class",
+      "args": {
+        "className": "CustomerRepository"
+      },
+      "passed": true,
+      "resultCount": 4,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 13,
+      "failedChecks": []
+    },
+    {
+      "category": "find_class",
+      "tool": "magento_find_class",
+      "args": {
+        "className": "CategoryRepository"
+      },
+      "passed": true,
+      "resultCount": 5,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 15,
+      "failedChecks": []
+    },
+    {
+      "category": "find_class",
+      "tool": "magento_find_class",
+      "args": {
+        "className": "InvoiceRepository"
+      },
+      "passed": true,
+      "resultCount": 2,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 13,
+      "failedChecks": []
+    },
+    {
+      "category": "find_class",
+      "tool": "magento_find_class",
+      "args": {
+        "className": "StockItemRepository"
+      },
+      "passed": true,
+      "resultCount": 4,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_class",
+      "tool": "magento_find_class",
+      "args": {
+        "className": "Topmenu"
+      },
+      "passed": true,
+      "resultCount": 4,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "find_class",
+      "tool": "magento_find_class",
+      "args": {
+        "className": "AbstractAction",
+        "namespace": "Controller"
+      },
+      "passed": true,
+      "resultCount": 5,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 14,
+      "failedChecks": []
+    },
+    {
+      "category": "find_method",
+      "tool": "magento_find_method",
+      "args": {
+        "methodName": "getPrice"
+      },
+      "passed": true,
+      "resultCount": 8,
+      "precision": 0.75,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_method",
+      "tool": "magento_find_method",
+      "args": {
+        "methodName": "execute"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 0,
+      "latency": 13,
+      "failedChecks": []
+    },
+    {
+      "category": "find_method",
+      "tool": "magento_find_method",
+      "args": {
+        "methodName": "save"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_method",
+      "tool": "magento_find_method",
+      "args": {
+        "methodName": "getList"
+      },
+      "passed": true,
+      "resultCount": 3,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 15,
+      "failedChecks": []
+    },
+    {
+      "category": "find_method",
+      "tool": "magento_find_method",
+      "args": {
+        "methodName": "toHtml"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 0.4,
+      "mrr": 1,
+      "ndcg": 0.9267582364714126,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "find_method",
+      "tool": "magento_find_method",
+      "args": {
+        "methodName": "dispatch"
+      },
+      "passed": true,
+      "resultCount": 5,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_method",
+      "tool": "magento_find_method",
+      "args": {
+        "methodName": "getById"
+      },
+      "passed": true,
+      "resultCount": 2,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "find_method",
+      "tool": "magento_find_method",
+      "args": {
+        "methodName": "beforeSave"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 14,
+      "failedChecks": []
+    },
+    {
+      "category": "find_controller",
+      "tool": "magento_find_controller",
+      "args": {
+        "route": "catalog/product/view"
+      },
+      "passed": true,
+      "resultCount": 26,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 0,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "find_controller",
+      "tool": "magento_find_controller",
+      "args": {
+        "route": "checkout/cart/add"
+      },
+      "passed": true,
+      "resultCount": 30,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 0,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_controller",
+      "tool": "magento_find_controller",
+      "args": {
+        "route": "customer/account/login"
+      },
+      "passed": true,
+      "resultCount": 30,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 0,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "find_controller",
+      "tool": "magento_find_controller",
+      "args": {
+        "route": "catalog/category/view"
+      },
+      "passed": true,
+      "resultCount": 30,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 0,
+      "latency": 14,
+      "failedChecks": []
+    },
+    {
+      "category": "find_controller",
+      "tool": "magento_find_controller",
+      "args": {
+        "route": "sales/order/view"
+      },
+      "passed": true,
+      "resultCount": 29,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 0,
+      "latency": 13,
+      "failedChecks": []
+    },
+    {
+      "category": "find_controller",
+      "tool": "magento_find_controller",
+      "args": {
+        "route": "wishlist/index/add"
+      },
+      "passed": true,
+      "resultCount": 30,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 0,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "find_controller",
+      "tool": "magento_find_controller",
+      "args": {
+        "route": "cms/page/view"
+      },
+      "passed": true,
+      "resultCount": 30,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 0,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_observer",
+      "tool": "magento_find_observer",
+      "args": {
+        "eventName": "sales_order_place_after"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 15,
+      "failedChecks": []
+    },
+    {
+      "category": "find_observer",
+      "tool": "magento_find_observer",
+      "args": {
+        "eventName": "checkout_cart_add_product_complete"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_observer",
+      "tool": "magento_find_observer",
+      "args": {
+        "eventName": "customer_login"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_observer",
+      "tool": "magento_find_observer",
+      "args": {
+        "eventName": "catalog_product_save_after"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "find_observer",
+      "tool": "magento_find_observer",
+      "args": {
+        "eventName": "controller_action_predispatch"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 13,
+      "failedChecks": []
+    },
+    {
+      "category": "find_plugin",
+      "tool": "magento_find_plugin",
+      "args": {
+        "targetClass": "ProductRepository"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 13,
+      "failedChecks": []
+    },
+    {
+      "category": "find_plugin",
+      "tool": "magento_find_plugin",
+      "args": {
+        "targetClass": "CartManagement"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "find_plugin",
+      "tool": "magento_find_plugin",
+      "args": {
+        "targetClass": "Topmenu"
+      },
+      "passed": true,
+      "resultCount": 8,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_plugin",
+      "tool": "magento_find_plugin",
+      "args": {
+        "targetClass": "CustomerRepository"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "find_plugin",
+      "tool": "magento_find_plugin",
+      "args": {
+        "targetClass": "OrderRepository",
+        "targetMethod": "save"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 0.7333333333333333,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 40,
+      "failedChecks": []
+    },
+    {
+      "category": "find_preference",
+      "tool": "magento_find_preference",
+      "args": {
+        "interfaceName": "ProductRepositoryInterface"
+      },
+      "passed": true,
+      "resultCount": 6,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_preference",
+      "tool": "magento_find_preference",
+      "args": {
+        "interfaceName": "CustomerRepositoryInterface"
+      },
+      "passed": true,
+      "resultCount": 8,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_preference",
+      "tool": "magento_find_preference",
+      "args": {
+        "interfaceName": "OrderRepositoryInterface"
+      },
+      "passed": true,
+      "resultCount": 4,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "find_preference",
+      "tool": "magento_find_preference",
+      "args": {
+        "interfaceName": "StoreManagerInterface"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_preference",
+      "tool": "magento_find_preference",
+      "args": {
+        "interfaceName": "LoggerInterface"
+      },
+      "passed": true,
+      "resultCount": 14,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 14,
+      "failedChecks": []
+    },
+    {
+      "category": "find_api",
+      "tool": "magento_find_api",
+      "args": {
+        "query": "/V1/products"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 14,
+      "failedChecks": []
+    },
+    {
+      "category": "find_api",
+      "tool": "magento_find_api",
+      "args": {
+        "query": "/V1/customers"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_api",
+      "tool": "magento_find_api",
+      "args": {
+        "query": "/V1/orders"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_api",
+      "tool": "magento_find_api",
+      "args": {
+        "query": "/V1/carts"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_api",
+      "tool": "magento_find_api",
+      "args": {
+        "query": "/V1/categories"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 14,
+      "failedChecks": []
+    },
+    {
+      "category": "find_cron",
+      "tool": "magento_find_cron",
+      "args": {
+        "jobName": "indexer"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 13,
+      "failedChecks": []
+    },
+    {
+      "category": "find_cron",
+      "tool": "magento_find_cron",
+      "args": {
+        "jobName": "catalog"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 14,
+      "failedChecks": []
+    },
+    {
+      "category": "find_cron",
+      "tool": "magento_find_cron",
+      "args": {
+        "jobName": "sitemap"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 13,
+      "failedChecks": []
+    },
+    {
+      "category": "find_cron",
+      "tool": "magento_find_cron",
+      "args": {
+        "jobName": "currency"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_cron",
+      "tool": "magento_find_cron",
+      "args": {
+        "jobName": "newsletter"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 10,
+      "failedChecks": []
+    },
+    {
+      "category": "find_db_schema",
+      "tool": "magento_find_db_schema",
+      "args": {
+        "tableName": "catalog_product"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "find_db_schema",
+      "tool": "magento_find_db_schema",
+      "args": {
+        "tableName": "sales_order"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 13,
+      "failedChecks": []
+    },
+    {
+      "category": "find_db_schema",
+      "tool": "magento_find_db_schema",
+      "args": {
+        "tableName": "customer_entity"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_db_schema",
+      "tool": "magento_find_db_schema",
+      "args": {
+        "tableName": "quote"
+      },
+      "passed": true,
+      "resultCount": 6,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "find_db_schema",
+      "tool": "magento_find_db_schema",
+      "args": {
+        "tableName": "cms_page"
+      },
+      "passed": true,
+      "resultCount": 4,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_graphql",
+      "tool": "magento_find_graphql",
+      "args": {
+        "query": "products"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_graphql",
+      "tool": "magento_find_graphql",
+      "args": {
+        "query": "createCustomer"
+      },
+      "passed": true,
+      "resultCount": 4,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 13,
+      "failedChecks": []
+    },
+    {
+      "category": "find_graphql",
+      "tool": "magento_find_graphql",
+      "args": {
+        "query": "cart"
+      },
+      "passed": true,
+      "resultCount": 8,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_graphql",
+      "tool": "magento_find_graphql",
+      "args": {
+        "query": "categoryList"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_graphql",
+      "tool": "magento_find_graphql",
+      "args": {
+        "query": "placeOrder"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_block",
+      "tool": "magento_find_block",
+      "args": {
+        "query": "product view"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 13,
+      "failedChecks": []
+    },
+    {
+      "category": "find_block",
+      "tool": "magento_find_block",
+      "args": {
+        "query": "cart totals"
+      },
+      "passed": true,
+      "resultCount": 7,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 16,
+      "failedChecks": []
+    },
+    {
+      "category": "find_block",
+      "tool": "magento_find_block",
+      "args": {
+        "query": "category listing"
+      },
+      "passed": true,
+      "resultCount": 15,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 19,
+      "failedChecks": []
+    },
+    {
+      "category": "find_block",
+      "tool": "magento_find_block",
+      "args": {
+        "query": "customer account navigation"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 17,
+      "failedChecks": []
+    },
+    {
+      "category": "find_block",
+      "tool": "magento_find_block",
+      "args": {
+        "query": "order view"
+      },
+      "passed": true,
+      "resultCount": 12,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_config",
+      "tool": "magento_find_config",
+      "args": {
+        "query": "preference type for",
+        "configType": "di"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 0.4,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_config",
+      "tool": "magento_find_config",
+      "args": {
+        "query": "routes.xml",
+        "configType": "routes"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_config",
+      "tool": "magento_find_config",
+      "args": {
+        "query": "events.xml observer",
+        "configType": "events"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_config",
+      "tool": "magento_find_config",
+      "args": {
+        "query": "system.xml configuration section",
+        "configType": "system"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 0.4,
+      "mrr": 0.2,
+      "ndcg": 0.5204370438439433,
+      "latency": 13,
+      "failedChecks": []
+    },
+    {
+      "category": "find_config",
+      "tool": "magento_find_config",
+      "args": {
+        "query": "webapi.xml REST endpoint",
+        "configType": "webapi"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_config",
+      "tool": "magento_find_config",
+      "args": {
+        "query": "layout xml handle",
+        "configType": "layout"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_config",
+      "tool": "magento_find_config",
+      "args": {
+        "query": "module.xml setup_version",
+        "configType": "module"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 0.6,
+      "mrr": 1,
+      "ndcg": 0.9876712785649564,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_template",
+      "tool": "magento_find_template",
+      "args": {
+        "query": "product listing"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_template",
+      "tool": "magento_find_template",
+      "args": {
+        "query": "checkout form"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 0.5,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "find_template",
+      "tool": "magento_find_template",
+      "args": {
+        "query": "customer account dashboard"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 13,
+      "failedChecks": []
+    },
+    {
+      "category": "find_template",
+      "tool": "magento_find_template",
+      "args": {
+        "query": "minicart"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "find_template",
+      "tool": "magento_find_template",
+      "args": {
+        "query": "breadcrumbs navigation"
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 0.7,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "product price calculation",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 10,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "customer authentication login",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "shopping cart add item",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "order placement workflow",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 10,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "product image gallery",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 10,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "payment method integration",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 14,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "shipping rate calculation",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 14,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "email template transactional",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "catalog search fulltext",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "admin user authentication",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "coupon discount rule",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 15,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "product attribute EAV",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "URL rewrite routing",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 10,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "inventory stock source",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 10,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "tax calculation rate",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "cache type management flush",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "import export product CSV",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "latency": 11,
+      "failedChecks": []
+    },
+    {
+      "category": "search",
+      "tool": "magento_search",
+      "args": {
+        "query": "ACL access control permission",
+        "limit": 10
+      },
+      "passed": true,
+      "resultCount": 10,
+      "precision": 0.8,
+      "mrr": 1,
+      "ndcg": 0.913852335159709,
+      "latency": 10,
+      "failedChecks": []
+    },
+    {
+      "category": "module_structure",
+      "tool": "magento_module_structure",
+      "args": {
+        "moduleName": "Magento_Catalog"
+      },
+      "passed": true,
+      "resultCount": 0,
+      "precision": 0,
+      "mrr": 1,
+      "ndcg": 0,
+      "latency": 14,
+      "failedChecks": []
+    },
+    {
+      "category": "module_structure",
+      "tool": "magento_module_structure",
+      "args": {
+        "moduleName": "Magento_Sales"
+      },
+      "passed": true,
+      "resultCount": 1,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 0,
+      "latency": 15,
+      "failedChecks": []
+    },
+    {
+      "category": "module_structure",
+      "tool": "magento_module_structure",
+      "args": {
+        "moduleName": "Magento_Customer"
+      },
+      "passed": true,
+      "resultCount": 0,
+      "precision": 0,
+      "mrr": 1,
+      "ndcg": 0,
+      "latency": 15,
+      "failedChecks": []
+    },
+    {
+      "category": "module_structure",
+      "tool": "magento_module_structure",
+      "args": {
+        "moduleName": "Magento_Checkout"
+      },
+      "passed": true,
+      "resultCount": 0,
+      "precision": 0,
+      "mrr": 1,
+      "ndcg": 0,
+      "latency": 12,
+      "failedChecks": []
+    },
+    {
+      "category": "module_structure",
+      "tool": "magento_module_structure",
+      "args": {
+        "moduleName": "Magento_Cms"
+      },
+      "passed": true,
+      "resultCount": 1,
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 0,
+      "latency": 13,
+      "failedChecks": []
+    },
+    {
+      "category": "stats",
+      "tool": "magento_stats",
+      "args": {},
+      "passed": true,
+      "resultCount": 0,
+      "precision": 0,
+      "mrr": 1,
+      "ndcg": 0,
+      "latency": 4927,
+      "failedChecks": []
+    }
+  ]
+}

@@ -14,7 +14,8 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema
 } from '@modelcontextprotocol/sdk/types.js';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
+import { createInterface } from 'readline';
 import { existsSync } from 'fs';
 import { stat } from 'fs/promises';
 import { glob } from 'glob';
@@ -47,7 +48,112 @@ const rustEnv = {
   RUST_LOG: 'error',
 };
 
-function rustSearch(query, limit = 10) {
+/**
+ * Query cache: avoid re-embedding identical queries.
+ * Keyed by "query|limit", capped at 200 entries (LRU eviction).
+ */
+const searchCache = new Map();
+const CACHE_MAX = 200;
+
+function cacheSet(key, value) {
+  if (searchCache.size >= CACHE_MAX) {
+    const oldest = searchCache.keys().next().value;
+    searchCache.delete(oldest);
+  }
+  searchCache.set(key, value);
+}
+
+// ─── Persistent Rust Serve Process ──────────────────────────────
+// Keeps ONNX model + HNSW index loaded; eliminates ~2.6s cold start per query.
+// Falls back to execFileSync if serve mode unavailable.
+
+let serveProcess = null;
+let serveReady = false;
+let servePending = new Map();
+let serveNextId = 1;
+let serveReadline = null;
+
+function startServeProcess() {
+  try {
+    const proc = spawn(config.rustBinary, [
+      'serve',
+      '-d', config.dbPath,
+      '-c', config.modelCache
+    ], { stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
+
+    proc.on('error', () => { serveProcess = null; serveReady = false; });
+    proc.on('exit', () => { serveProcess = null; serveReady = false; });
+    proc.stderr.on('data', () => {}); // drain stderr
+
+    serveReadline = createInterface({ input: proc.stdout });
+    serveReadline.on('line', (line) => {
+      let parsed;
+      try { parsed = JSON.parse(line); } catch { return; }
+
+      // First line is ready signal
+      if (parsed.ready) {
+        serveReady = true;
+        return;
+      }
+
+      // Route response to pending request by order (FIFO)
+      if (servePending.size > 0) {
+        const [id, resolver] = servePending.entries().next().value;
+        servePending.delete(id);
+        resolver.resolve(parsed);
+      }
+    });
+
+    serveProcess = proc;
+  } catch {
+    serveProcess = null;
+    serveReady = false;
+  }
+}
+
+function serveQuery(command, params = {}, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    const id = serveNextId++;
+    const timer = setTimeout(() => {
+      servePending.delete(id);
+      reject(new Error('Serve query timeout'));
+    }, timeoutMs);
+    servePending.set(id, {
+      resolve: (v) => { clearTimeout(timer); resolve(v); }
+    });
+    const msg = JSON.stringify({ command, ...params });
+    serveProcess.stdin.write(msg + '\n');
+  });
+}
+
+async function rustSearchAsync(query, limit = 10) {
+  const cacheKey = `${query}|${limit}`;
+  if (searchCache.has(cacheKey)) {
+    return searchCache.get(cacheKey);
+  }
+
+  // Try persistent serve process first
+  if (serveProcess && serveReady) {
+    try {
+      const resp = await serveQuery('search', { query, limit });
+      if (resp.ok && resp.data) {
+        cacheSet(cacheKey, resp.data);
+        return resp.data;
+      }
+    } catch {
+      // Fall through to execFileSync
+    }
+  }
+
+  // Fallback: cold-start execFileSync
+  return rustSearchSync(query, limit);
+}
+
+function rustSearchSync(query, limit = 10) {
+  const cacheKey = `${query}|${limit}`;
+  if (searchCache.has(cacheKey)) {
+    return searchCache.get(cacheKey);
+  }
   const result = execFileSync(config.rustBinary, [
     'search', query,
     '-d', config.dbPath,
@@ -55,10 +161,18 @@ function rustSearch(query, limit = 10) {
     '-l', String(limit),
     '-f', 'json'
   ], { encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
-  return JSON.parse(result);
+  const parsed = JSON.parse(result);
+  cacheSet(cacheKey, parsed);
+  return parsed;
+}
+
+// Keep backward compat: synchronous wrapper (used by tools)
+function rustSearch(query, limit = 10) {
+  return rustSearchSync(query, limit);
 }
 
 function rustIndex(magentoRoot) {
+  searchCache.clear(); // invalidate cache on reindex
   const result = execFileSync(config.rustBinary, [
     'index',
     '-m', magentoRoot,
@@ -72,7 +186,7 @@ function rustStats() {
   const result = execFileSync(config.rustBinary, [
     'stats',
     '-d', config.dbPath
-  ], { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
+  ], { encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
   // Parse text output: "Total vectors: N" and "Embedding dim: N"
   const vectors = result.match(/Total vectors:\s*(\d+)/)?.[1] || '0';
   const dim = result.match(/Embedding dim:\s*(\d+)/)?.[1] || '384';
@@ -127,6 +241,7 @@ function normalizeResult(r) {
     magentoType: meta.magento_type || meta.magentoType,
     className: meta.class_name || meta.className,
     methodName: meta.method_name || meta.methodName,
+    methods: meta.methods || [],
     namespace: meta.namespace,
     isPlugin: meta.is_plugin || meta.isPlugin,
     isController: meta.is_controller || meta.isController,
@@ -138,6 +253,36 @@ function normalizeResult(r) {
     area: meta.area,
     score: r.score
   };
+}
+
+/**
+ * Re-rank results by boosting scores for metadata matches.
+ * @param {Array} results - normalized results
+ * @param {Object} boosts - e.g. { fileType: 'xml', pathContains: 'di.xml', isPlugin: true }
+ * @param {number} weight - boost multiplier (default 0.3 = 30% score bump per match)
+ */
+function rerank(results, boosts = {}, weight = 0.3) {
+  if (!boosts || Object.keys(boosts).length === 0) return results;
+
+  return results.map(r => {
+    let bonus = 0;
+    if (boosts.fileType && r.type === boosts.fileType) bonus += weight;
+    if (boosts.pathContains) {
+      const patterns = Array.isArray(boosts.pathContains) ? boosts.pathContains : [boosts.pathContains];
+      for (const p of patterns) {
+        if (r.path?.toLowerCase().includes(p.toLowerCase())) bonus += weight;
+      }
+    }
+    if (boosts.isPlugin && r.isPlugin) bonus += weight;
+    if (boosts.isController && r.isController) bonus += weight;
+    if (boosts.isObserver && r.isObserver) bonus += weight;
+    if (boosts.isRepository && r.isRepository) bonus += weight;
+    if (boosts.isResolver && r.isResolver) bonus += weight;
+    if (boosts.isModel && r.isModel) bonus += weight;
+    if (boosts.isBlock && r.isBlock) bonus += weight;
+    if (boosts.magentoType && r.magentoType === boosts.magentoType) bonus += weight;
+    return { ...r, score: (r.score || 0) + bonus };
+  }).sort((a, b) => b.score - a.score);
 }
 
 function formatSearchResults(results) {
@@ -508,7 +653,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case 'magento_search': {
-        const raw = rustSearch(args.query, args.limit || 10);
+        const raw = await rustSearchAsync(args.query, args.limit || 10);
         const results = raw.map(normalizeResult);
         return {
           content: [{
@@ -519,10 +664,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'magento_find_class': {
-        const query = `class ${args.className} ${args.namespace || ''}`.trim();
-        const raw = rustSearch(query, 10);
+        const ns = args.namespace || '';
+        const query = `${args.className} ${ns}`.trim();
+        const raw = await rustSearchAsync(query, 30);
+        const classLower = args.className.toLowerCase();
         const results = raw.map(normalizeResult).filter(r =>
-          r.className?.toLowerCase().includes(args.className.toLowerCase())
+          r.className?.toLowerCase().includes(classLower) ||
+          r.path?.toLowerCase().includes(classLower.replace(/\\/g, '/'))
         );
         return {
           content: [{
@@ -533,12 +681,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'magento_find_method': {
-        const query = `function ${args.methodName} ${args.className || ''}`.trim();
-        const raw = rustSearch(query, 20);
-        const results = raw.map(normalizeResult).filter(r =>
-          r.methodName?.toLowerCase() === args.methodName.toLowerCase() ||
-          r.path?.toLowerCase().includes(args.methodName.toLowerCase())
+        const query = `method ${args.methodName} function ${args.className || ''}`.trim();
+        const raw = await rustSearchAsync(query, 30);
+        const methodLower = args.methodName.toLowerCase();
+        let results = raw.map(normalizeResult).filter(r =>
+          r.methodName?.toLowerCase() === methodLower ||
+          r.methodName?.toLowerCase().includes(methodLower) ||
+          r.methods?.some(m => m.toLowerCase() === methodLower || m.toLowerCase().includes(methodLower)) ||
+          r.path?.toLowerCase().includes(methodLower)
         );
+        // Boost exact method matches to top
+        results = results.map(r => {
+          const exact = r.methodName?.toLowerCase() === methodLower ||
+            r.methods?.some(m => m.toLowerCase() === methodLower);
+          return { ...r, score: (r.score || 0) + (exact ? 0.5 : 0) };
+        }).sort((a, b) => b.score - a.score);
         return {
           content: [{
             type: 'text',
@@ -552,12 +709,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (args.configType && args.configType !== 'other') {
           query = `${args.configType}.xml ${args.query}`;
         }
-        const raw = rustSearch(query, 10);
-        const results = raw.map(normalizeResult);
+        const raw = await rustSearchAsync(query, 30);
+        const pathBoost = args.configType ? [`${args.configType}.xml`] : ['.xml'];
+        let normalized = raw.map(normalizeResult);
+        // Prefer XML results when configType is specified, but don't hard-exclude
+        if (args.configType) {
+          const xmlOnly = normalized.filter(r =>
+            r.type === 'xml' || r.path?.endsWith('.xml') || r.path?.includes('.xml')
+          );
+          if (xmlOnly.length > 0) normalized = xmlOnly;
+        }
+        const results = rerank(normalized, { fileType: 'xml', pathContains: pathBoost });
         return {
           content: [{
             type: 'text',
-            text: formatSearchResults(results)
+            text: formatSearchResults(results.slice(0, 10))
           }]
         };
       }
@@ -566,12 +732,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let query = args.query;
         if (args.area) query = `${args.area} ${query}`;
         query += ' template phtml';
-        const raw = rustSearch(query, 10);
-        const results = raw.map(normalizeResult);
+        const raw = await rustSearchAsync(query, 15);
+        const results = rerank(raw.map(normalizeResult), { pathContains: ['.phtml'] });
         return {
           content: [{
             type: 'text',
-            text: formatSearchResults(results)
+            text: formatSearchResults(results.slice(0, 10))
           }]
         };
       }
@@ -602,45 +768,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (args.targetClass) query += ` ${args.targetClass}`;
         if (args.targetMethod) query += ` ${args.targetMethod} before after around`;
 
-        const raw = rustSearch(query, 15);
-        const results = raw.map(normalizeResult).filter(r =>
+        const raw = await rustSearchAsync(query, 30);
+        let results = raw.map(normalizeResult).filter(r =>
           r.isPlugin || r.path?.includes('/Plugin/') || r.path?.includes('di.xml')
         );
+        results = rerank(results, { isPlugin: true, pathContains: ['/Plugin/', 'di.xml'] });
 
         return {
           content: [{
             type: 'text',
-            text: formatSearchResults(results)
+            text: formatSearchResults(results.slice(0, 15))
           }]
         };
       }
 
       case 'magento_find_observer': {
         const query = `event ${args.eventName} observer`;
-        const raw = rustSearch(query, 15);
-        const results = raw.map(normalizeResult).filter(r =>
+        const raw = await rustSearchAsync(query, 30);
+        let results = raw.map(normalizeResult).filter(r =>
           r.isObserver || r.path?.includes('/Observer/') || r.path?.includes('events.xml')
         );
+        results = rerank(results, { isObserver: true, pathContains: ['events.xml', '/Observer/'] });
 
         return {
           content: [{
             type: 'text',
-            text: `## Observers for event: ${args.eventName}\n\n` + formatSearchResults(results)
+            text: `## Observers for event: ${args.eventName}\n\n` + formatSearchResults(results.slice(0, 15))
           }]
         };
       }
 
       case 'magento_find_preference': {
-        const query = `preference ${args.interfaceName}`;
-        const raw = rustSearch(query, 15);
-        const results = raw.map(normalizeResult).filter(r =>
+        const query = `preference ${args.interfaceName} di.xml type`;
+        const raw = await rustSearchAsync(query, 30);
+        let results = raw.map(normalizeResult).filter(r =>
           r.path?.includes('di.xml')
         );
+        results = rerank(results, { fileType: 'xml', pathContains: ['di.xml'] });
 
         return {
           content: [{
             type: 'text',
-            text: `## Preferences for: ${args.interfaceName}\n\n` + formatSearchResults(results)
+            text: `## Preferences for: ${args.interfaceName}\n\n` + formatSearchResults(results.slice(0, 15))
           }]
         };
       }
@@ -649,25 +818,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let query = `webapi route ${args.query}`;
         if (args.method) query += ` method="${args.method}"`;
 
-        const raw = rustSearch(query, 15);
-        const results = raw.map(normalizeResult);
+        const raw = await rustSearchAsync(query, 30);
+        let results = rerank(raw.map(normalizeResult), { pathContains: ['webapi.xml'] });
 
         return {
           content: [{
             type: 'text',
-            text: `## API Endpoints matching: ${args.query}\n\n` + formatSearchResults(results)
+            text: `## API Endpoints matching: ${args.query}\n\n` + formatSearchResults(results.slice(0, 15))
           }]
         };
       }
 
       case 'magento_find_controller': {
         const parts = args.route.split('/');
-        const query = `controller ${parts.join(' ')} execute action`;
+        // Map route to Magento namespace: catalog/product/view → Catalog Controller Product View
+        const namespaceParts = parts.map(p => p.charAt(0).toUpperCase() + p.slice(1));
+        const query = `${namespaceParts.join(' ')} controller execute action`;
 
-        const raw = rustSearch(query, 15);
+        const raw = await rustSearchAsync(query, 30);
         let results = raw.map(normalizeResult).filter(r =>
           r.isController || r.path?.includes('/Controller/')
         );
+
+        // Boost results whose path matches the route segments
+        if (parts.length >= 2) {
+          const pathPattern = parts.map(p => p.charAt(0).toUpperCase() + p.slice(1));
+          results.sort((a, b) => {
+            const aPath = a.path || '';
+            const bPath = b.path || '';
+            const aMatches = pathPattern.filter(p => aPath.includes(p)).length;
+            const bMatches = pathPattern.filter(p => bPath.includes(p)).length;
+            return bMatches - aMatches;
+          });
+        }
 
         if (args.area) {
           results = results.filter(r => r.area === args.area || r.path?.includes(`/${args.area}/`));
@@ -683,30 +866,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'magento_find_block': {
         const query = `block ${args.query}`;
-        const raw = rustSearch(query, 15);
-        const results = raw.map(normalizeResult).filter(r =>
+        const raw = await rustSearchAsync(query, 30);
+        let results = raw.map(normalizeResult).filter(r =>
           r.isBlock || r.path?.includes('/Block/')
         );
+        results = rerank(results, { isBlock: true, pathContains: ['/Block/'] });
 
         return {
           content: [{
             type: 'text',
-            text: formatSearchResults(results)
+            text: formatSearchResults(results.slice(0, 15))
           }]
         };
       }
 
       case 'magento_find_cron': {
         const query = `cron job ${args.jobName}`;
-        const raw = rustSearch(query, 15);
-        const results = raw.map(normalizeResult).filter(r =>
+        const raw = await rustSearchAsync(query, 30);
+        let results = raw.map(normalizeResult).filter(r =>
           r.path?.includes('crontab.xml') || r.path?.includes('/Cron/')
         );
+        results = rerank(results, { pathContains: ['crontab.xml', '/Cron/'] });
 
         return {
           content: [{
             type: 'text',
-            text: `## Cron jobs matching: ${args.jobName}\n\n` + formatSearchResults(results)
+            text: `## Cron jobs matching: ${args.jobName}\n\n` + formatSearchResults(results.slice(0, 15))
           }]
         };
       }
@@ -715,37 +900,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let query = `graphql ${args.query}`;
         if (args.schemaType) query += ` ${args.schemaType}`;
 
-        const raw = rustSearch(query, 15);
-        const results = raw.map(normalizeResult).filter(r =>
+        const raw = await rustSearchAsync(query, 40);
+        let results = raw.map(normalizeResult).filter(r =>
           r.isResolver || r.path?.includes('/Resolver/') ||
           r.path?.includes('.graphqls') || r.type === 'graphql'
         );
+        results = rerank(results, { isResolver: true, pathContains: ['.graphqls', '/Resolver/'] });
 
         return {
           content: [{
             type: 'text',
-            text: `## GraphQL matching: ${args.query}\n\n` + formatSearchResults(results)
+            text: `## GraphQL matching: ${args.query}\n\n` + formatSearchResults(results.slice(0, 15))
           }]
         };
       }
 
       case 'magento_find_db_schema': {
-        const query = `table ${args.tableName} column db_schema`;
-        const raw = rustSearch(query, 15);
-        const results = raw.map(normalizeResult).filter(r =>
+        const query = `db_schema.xml table ${args.tableName} column declarative schema`;
+        const raw = await rustSearchAsync(query, 40);
+        let results = raw.map(normalizeResult).filter(r =>
           r.path?.includes('db_schema.xml')
         );
+        results = rerank(results, { fileType: 'xml', pathContains: ['db_schema.xml'] });
 
         return {
           content: [{
             type: 'text',
-            text: `## Database schema for: ${args.tableName}\n\n` + formatSearchResults(results)
+            text: `## Database schema for: ${args.tableName}\n\n` + formatSearchResults(results.slice(0, 15))
           }]
         };
       }
 
       case 'magento_module_structure': {
-        const raw = rustSearch(args.moduleName, 100);
+        const raw = await rustSearchAsync(args.moduleName, 100);
         const moduleName = args.moduleName.replace('_', '/');
         const results = raw.map(normalizeResult).filter(r =>
           r.path?.includes(moduleName) || r.module?.includes(args.moduleName)
@@ -914,9 +1101,25 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 });
 
 async function main() {
+  // Try to start persistent Rust serve process for fast queries
+  try {
+    startServeProcess();
+    // Give it a moment to load model+index
+    await new Promise(r => setTimeout(r, 100));
+  } catch {
+    // Non-fatal: falls back to execFileSync per query
+  }
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('Magector MCP server started (Rust core backend)');
 }
+
+// Cleanup on exit
+process.on('exit', () => {
+  if (serveProcess) {
+    serveProcess.kill();
+  }
+});
 
 main().catch(console.error);
