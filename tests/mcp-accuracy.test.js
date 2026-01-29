@@ -665,7 +665,26 @@ class McpTestClient {
 // ─── Metrics ─────────────────────────────────────────────────────
 
 function extractResults(text) {
-  // Parse the formatted markdown results back into structured data
+  // Try JSON format first (new structured output)
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed.results && Array.isArray(parsed.results)) {
+      return parsed.results.map(r => ({
+        path: r.path || '',
+        className: r.className || '',
+        methodName: r.methodName || '',
+        module: r.module || '',
+        score: r.score || 0,
+        magentoType: r.magentoType || '',
+        methods: r.methods || [],
+        badges: r.badges || [],
+      }));
+    }
+  } catch {
+    // Not JSON — fall through to markdown parsing
+  }
+
+  // Fallback: parse markdown format (module_structure, stats, etc.)
   const results = [];
   const blocks = text.split(/---/).filter(b => b.includes('Result'));
 

@@ -243,6 +243,7 @@ function normalizeResult(r) {
     methodName: meta.method_name || meta.methodName,
     methods: meta.methods || [],
     namespace: meta.namespace,
+    searchText: meta.search_text || meta.searchText || '',
     isPlugin: meta.is_plugin || meta.isPlugin,
     isController: meta.is_controller || meta.isController,
     isObserver: meta.is_observer || meta.isObserver,
@@ -287,32 +288,46 @@ function rerank(results, boosts = {}, weight = 0.3) {
 
 function formatSearchResults(results) {
   if (!results || results.length === 0) {
-    return 'No results found.';
+    return JSON.stringify({ results: [], count: 0 });
   }
 
-  return results.map((r, i) => {
-    const header = `## Result ${i + 1} (score: ${r.score?.toFixed(3) || 'N/A'})`;
+  const formatted = results.map((r, i) => {
+    const entry = {
+      rank: i + 1,
+      score: r.score ? parseFloat(r.score.toFixed(3)) : null,
+      path: r.path || 'unknown',
+    };
+    if (r.module) entry.module = r.module;
+    if (r.className) entry.className = r.className;
+    if (r.namespace) entry.namespace = r.namespace;
+    if (r.methodName) entry.methodName = r.methodName;
+    if (r.methods && r.methods.length > 0) entry.methods = r.methods;
+    if (r.magentoType) entry.magentoType = r.magentoType;
+    if (r.type) entry.fileType = r.type;
+    if (r.area && r.area !== 'global') entry.area = r.area;
 
-    const meta = [
-      `**Path:** ${r.path || 'unknown'}`,
-      r.module ? `**Module:** ${r.module}` : null,
-      r.magentoType ? `**Magento Type:** ${r.magentoType}` : null,
-      r.area && r.area !== 'global' ? `**Area:** ${r.area}` : null,
-      r.className ? `**Class:** ${r.className}` : null,
-      r.namespace ? `**Namespace:** ${r.namespace}` : null,
-      r.methodName ? `**Method:** ${r.methodName}` : null,
-      r.type ? `**File Type:** ${r.type}` : null,
-    ].filter(Boolean).join('\n');
+    // Badges — concise role indicators
+    const badges = [];
+    if (r.isPlugin) badges.push('plugin');
+    if (r.isController) badges.push('controller');
+    if (r.isObserver) badges.push('observer');
+    if (r.isRepository) badges.push('repository');
+    if (r.isResolver) badges.push('graphql-resolver');
+    if (r.isModel) badges.push('model');
+    if (r.isBlock) badges.push('block');
+    if (badges.length > 0) entry.badges = badges;
 
-    let badges = '';
-    if (r.isPlugin) badges += ' `plugin`';
-    if (r.isController) badges += ' `controller`';
-    if (r.isObserver) badges += ' `observer`';
-    if (r.isRepository) badges += ' `repository`';
-    if (r.isResolver) badges += ' `graphql-resolver`';
+    // Snippet — first 300 chars of indexed content for quick assessment
+    if (r.searchText) {
+      entry.snippet = r.searchText.length > 300
+        ? r.searchText.slice(0, 300) + '...'
+        : r.searchText;
+    }
 
-    return `${header}\n${meta}${badges}`;
-  }).join('\n\n---\n\n');
+    return entry;
+  });
+
+  return JSON.stringify({ results: formatted, count: formatted.length });
 }
 
 // ─── MCP Server ─────────────────────────────────────────────────
@@ -334,17 +349,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'magento_search',
-      description: 'Search Magento codebase semantically. Find classes, methods, configurations, templates by describing what you need.',
+      description: 'Search Magento codebase semantically — find any PHP class, method, XML config, PHTML template, JS file, or GraphQL schema by describing what you need in natural language. Use this as a general-purpose search when no specialized tool fits. See also: magento_find_class, magento_find_method, magento_find_config for targeted searches.',
       inputSchema: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'Natural language search query (e.g., "product price calculation", "checkout controller", "customer authentication")'
+            description: 'Natural language search query describing what you want to find. Examples: "product price calculation logic", "checkout controller", "customer authentication", "add to cart", "order placement flow"'
           },
           limit: {
             type: 'number',
-            description: 'Maximum results to return (default: 10)',
+            description: 'Maximum results to return (default: 10, max: 100)',
             default: 10
           }
         },
@@ -353,17 +368,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_find_class',
-      description: 'Find a specific PHP class, interface, or trait in Magento',
+      description: 'Find a PHP class, interface, abstract class, or trait by name in Magento. Locates repositories, models, resource models, blocks, helpers, controllers, API interfaces, and data objects. See also: magento_find_plugin (interceptors for this class), magento_find_preference (DI overrides), magento_find_method (methods in the class).',
       inputSchema: {
         type: 'object',
         properties: {
           className: {
             type: 'string',
-            description: 'Class name to find (e.g., "ProductRepository", "AbstractModel")'
+            description: 'Full or partial PHP class name. Examples: "ProductRepository", "AbstractModel", "CartManagementInterface", "CustomerData", "StockItemRepository"'
           },
           namespace: {
             type: 'string',
-            description: 'Optional namespace filter'
+            description: 'Optional PHP namespace filter to narrow results. Example: "Magento\\Catalog\\Model"'
           }
         },
         required: ['className']
@@ -371,17 +386,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_find_method',
-      description: 'Find implementations of a specific method across Magento',
+      description: 'Find implementations of a PHP method or function across the Magento codebase. Searches method names, function definitions, and class method lists. See also: magento_find_class (parent class), magento_find_plugin (interceptors around this method).',
       inputSchema: {
         type: 'object',
         properties: {
           methodName: {
             type: 'string',
-            description: 'Method name to find (e.g., "execute", "getPrice", "save")'
+            description: 'PHP method or function name to find. Examples: "execute", "getPrice", "save", "getById", "getList", "beforeSave", "afterDelete", "toHtml", "dispatch"'
           },
           className: {
             type: 'string',
-            description: 'Optional class name filter'
+            description: 'Optional class name to narrow method search. Example: "ProductRepository"'
           }
         },
         required: ['methodName']
@@ -389,18 +404,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_find_config',
-      description: 'Find XML configuration files and nodes in Magento',
+      description: 'Find XML configuration files and nodes in Magento — di.xml (dependency injection), events.xml (observers), routes.xml (routing), system.xml (admin config), webapi.xml (REST/SOAP), module.xml (module declarations), layout XML. See also: magento_find_observer (events.xml), magento_find_preference (di.xml), magento_find_api (webapi.xml).',
       inputSchema: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'Configuration to find (e.g., "di.xml preference", "routes.xml", "system.xml field")'
+            description: 'What configuration to find. Examples: "di.xml preference for ProductRepository", "routes.xml catalog", "system.xml payment field", "events.xml checkout", "layout xml catalog_product_view"'
           },
           configType: {
             type: 'string',
             enum: ['di', 'routes', 'system', 'events', 'webapi', 'module', 'layout', 'other'],
-            description: 'Type of configuration'
+            description: 'Type of XML configuration: di (dependency injection/preferences/virtualTypes), routes (URL routing), system (admin config fields/sections), events (event observers/listeners), webapi (REST/SOAP endpoint definitions), module (module.xml declarations/setup_version), layout (page layout XML/blocks/containers)'
           }
         },
         required: ['query']
@@ -408,18 +423,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_find_template',
-      description: 'Find PHTML templates in Magento',
+      description: 'Find PHTML template files in Magento for frontend or admin rendering. Locates view templates for product pages, checkout, customer account, cart, CMS, catalog listing, and more. See also: magento_find_block (Block class rendering the template).',
       inputSchema: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'Template description (e.g., "product listing", "checkout form", "customer account")'
+            description: 'Template description or filename pattern. Examples: "product listing", "checkout form", "customer account dashboard", "minicart", "breadcrumbs", "category view", "order summary"'
           },
           area: {
             type: 'string',
             enum: ['frontend', 'adminhtml', 'base'],
-            description: 'Magento area'
+            description: 'Magento area: frontend (customer-facing storefront), adminhtml (admin panel), base (shared/fallback)'
           }
         },
         required: ['query']
@@ -427,20 +442,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_index',
-      description: 'Index or re-index Magento codebase for semantic search (uses Rust core)',
+      description: 'Index or re-index the Magento codebase for semantic search. Run this after code changes to update the search index. Indexes PHP, XML, JS, PHTML, and GraphQL files.',
       inputSchema: {
         type: 'object',
         properties: {
           path: {
             type: 'string',
-            description: 'Path to Magento root (uses configured path if not specified)'
+            description: 'Absolute path to Magento 2 root directory. Uses configured MAGENTO_ROOT if not specified.'
           },
         }
       }
     },
     {
       name: 'magento_stats',
-      description: 'Get index statistics from Rust core',
+      description: 'Get index statistics — total indexed vectors, embedding dimensions, and database path. Use this to verify the index is loaded and check its size.',
       inputSchema: {
         type: 'object',
         properties: {}
@@ -448,30 +463,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_find_plugin',
-      description: 'Find plugins (interceptors) for a class or method - before/after/around methods',
+      description: 'Find Magento plugins (interceptors) that modify class behavior via before/after/around methods. Locates Plugin classes and di.xml interceptor declarations. See also: magento_find_class (target class details), magento_find_method (intercepted method), magento_find_config with configType=di.',
       inputSchema: {
         type: 'object',
         properties: {
           targetClass: {
             type: 'string',
-            description: 'Class being intercepted (e.g., "ProductRepository", "CartManagement")'
+            description: 'Class being intercepted by plugins. Examples: "ProductRepository", "CartManagement", "CustomerRepository", "OrderRepository", "Topmenu"'
           },
           targetMethod: {
             type: 'string',
-            description: 'Method being intercepted (e.g., "save", "getList")'
+            description: 'Specific method being intercepted. Examples: "save", "getList", "getById", "getHtml", "dispatch"'
           }
         }
       }
     },
     {
       name: 'magento_find_observer',
-      description: 'Find observers for a specific event',
+      description: 'Find event observers (listeners) for a Magento event. Locates Observer classes and events.xml declarations. See also: magento_find_config with configType=events for raw XML.',
       inputSchema: {
         type: 'object',
         properties: {
           eventName: {
             type: 'string',
-            description: 'Event name (e.g., "checkout_cart_add_product_complete", "sales_order_place_after")'
+            description: 'Magento event name. Examples: "checkout_cart_add_product_complete", "sales_order_place_after", "catalog_product_save_after", "customer_login", "controller_action_predispatch"'
           }
         },
         required: ['eventName']
@@ -479,13 +494,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_find_preference',
-      description: 'Find DI preference overrides for an interface or class',
+      description: 'Find DI preference overrides — which concrete class implements an interface or replaces another class via di.xml. See also: magento_find_class (implementation details), magento_find_config with configType=di.',
       inputSchema: {
         type: 'object',
         properties: {
           interfaceName: {
             type: 'string',
-            description: 'Interface or class name to find preferences for (e.g., "ProductRepositoryInterface")'
+            description: 'Interface or class name to find preference/implementation for. Examples: "ProductRepositoryInterface", "StoreManagerInterface", "LoggerInterface", "OrderRepositoryInterface", "CustomerRepositoryInterface"'
           }
         },
         required: ['interfaceName']
@@ -493,18 +508,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_find_api',
-      description: 'Find REST/SOAP API endpoints and their implementations',
+      description: 'Find REST and SOAP API endpoint definitions in webapi.xml and their service class implementations. See also: magento_find_config with configType=webapi, magento_find_class (service class).',
       inputSchema: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'API endpoint URL pattern or service method (e.g., "/V1/products", "getList")'
+            description: 'API endpoint URL pattern or service method name. Examples: "/V1/products", "/V1/orders", "/V1/carts", "/V1/customers", "/V1/categories", "getList", "save"'
           },
           method: {
             type: 'string',
             enum: ['GET', 'POST', 'PUT', 'DELETE'],
-            description: 'HTTP method filter'
+            description: 'Filter by HTTP method: GET (read), POST (create), PUT (update), DELETE (remove)'
           }
         },
         required: ['query']
@@ -512,18 +527,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_find_controller',
-      description: 'Find controllers by route or action',
+      description: 'Find MVC controllers by frontend or admin route path. Maps URL routes to Controller action classes with execute() method. See also: magento_find_config with configType=routes.',
       inputSchema: {
         type: 'object',
         properties: {
           route: {
             type: 'string',
-            description: 'Route path (e.g., "catalog/product/view", "checkout/cart/add")'
+            description: 'URL route path in frontName/controller/action format. Examples: "catalog/product/view", "checkout/cart/add", "customer/account/login", "sales/order/view", "cms/page/view", "wishlist/index/add"'
           },
           area: {
             type: 'string',
             enum: ['frontend', 'adminhtml'],
-            description: 'Magento area'
+            description: 'Magento area: frontend (storefront routes) or adminhtml (admin panel routes)'
           }
         },
         required: ['route']
@@ -531,13 +546,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_find_block',
-      description: 'Find Block classes by name or template',
+      description: 'Find Magento Block classes used for view rendering and template logic. Blocks bridge controllers and templates. See also: magento_find_template (PHTML template rendered by the block), magento_find_config with configType=layout.',
       inputSchema: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'Block class name or functionality (e.g., "Product\\View", "cart totals")'
+            description: 'Block class name or functionality description. Examples: "Product\\View", "cart totals", "category listing", "customer account navigation", "order view", "Topmenu"'
           }
         },
         required: ['query']
@@ -545,13 +560,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_find_cron',
-      description: 'Find cron jobs by name or schedule',
+      description: 'Find scheduled cron jobs defined in crontab.xml and their handler classes in Cron/ directories. See also: magento_find_config for crontab.xml raw XML.',
       inputSchema: {
         type: 'object',
         properties: {
           jobName: {
             type: 'string',
-            description: 'Cron job name or pattern (e.g., "catalog_product", "indexer")'
+            description: 'Cron job name or keyword. Examples: "catalog_product", "indexer", "sitemap", "currency", "newsletter", "reindex", "aggregate", "clean"'
           }
         },
         required: ['jobName']
@@ -559,18 +574,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_find_graphql',
-      description: 'Find GraphQL types, queries, mutations, or resolvers',
+      description: 'Find GraphQL schema definitions (.graphqls), types, queries, mutations, and resolver PHP classes. See also: magento_find_class (resolver implementation), magento_find_method (resolver execute method).',
       inputSchema: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'GraphQL type, query, or mutation name (e.g., "products", "createCustomer", "CartItemInterface")'
+            description: 'GraphQL type, query, mutation, or interface name. Examples: "products", "createCustomer", "CartItemInterface", "cart", "categoryList", "placeOrder", "createEmptyCart"'
           },
           schemaType: {
             type: 'string',
             enum: ['type', 'query', 'mutation', 'interface', 'resolver'],
-            description: 'Type of GraphQL schema element'
+            description: 'Filter by GraphQL schema element: type (object types), query (read operations), mutation (write operations), interface (shared contracts), resolver (PHP resolver classes)'
           }
         },
         required: ['query']
@@ -578,13 +593,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_find_db_schema',
-      description: 'Find database table definitions and columns',
+      description: 'Find database table definitions, columns, indexes, and constraints declared in db_schema.xml (Magento declarative schema). See also: magento_find_class (model/resource model for the table).',
       inputSchema: {
         type: 'object',
         properties: {
           tableName: {
             type: 'string',
-            description: 'Table name pattern (e.g., "catalog_product", "sales_order")'
+            description: 'Database table name or pattern. Examples: "catalog_product_entity", "sales_order", "customer_entity", "quote", "cms_page", "inventory_source"'
           }
         },
         required: ['tableName']
@@ -592,13 +607,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_module_structure',
-      description: 'Get complete structure of a Magento module - all its classes, configs, templates',
+      description: 'Get the complete structure of a Magento module — lists all controllers, models, blocks, plugins, observers, API classes, XML configs, and templates. Provides an overview of module architecture.',
       inputSchema: {
         type: 'object',
         properties: {
           moduleName: {
             type: 'string',
-            description: 'Full module name (e.g., "Magento_Catalog", "Vendor_CustomModule")'
+            description: 'Full Magento module name in Vendor_Module format. Examples: "Magento_Catalog", "Magento_Sales", "Magento_Customer", "Magento_Checkout", "Vendor_CustomModule"'
           }
         },
         required: ['moduleName']
@@ -606,17 +621,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_analyze_diff',
-      description: 'Analyze git diffs for risk scoring, change classification, and per-file analysis. Works on commits or staged changes.',
+      description: 'Analyze git diffs for risk scoring, change classification, and per-file impact analysis. Works on specific commits or staged changes. Useful for code review.',
       inputSchema: {
         type: 'object',
         properties: {
           commitHash: {
             type: 'string',
-            description: 'Git commit hash to analyze. If omitted, analyzes staged changes.'
+            description: 'Git commit hash to analyze. If omitted, analyzes currently staged (git add) changes instead.'
           },
           staged: {
             type: 'boolean',
-            description: 'Analyze staged (git add) changes instead of a commit',
+            description: 'Set true to analyze staged changes, false to require commitHash. Default: true.',
             default: true
           }
         }
@@ -624,21 +639,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_complexity',
-      description: 'Analyze code complexity (cyclomatic complexity, function count, lines) for Magento files. Finds complex hotspots.',
+      description: 'Analyze code complexity — cyclomatic complexity, function count, and line count for PHP files. Identifies complex hotspots and rates each file. Use for refactoring prioritization.',
       inputSchema: {
         type: 'object',
         properties: {
           module: {
             type: 'string',
-            description: 'Magento module to analyze (e.g., "Magento_Catalog"). Finds all PHP files in the module.'
+            description: 'Magento module to analyze. Finds all PHP files in the module. Examples: "Magento_Catalog", "Magento_Checkout", "Magento_Sales"'
           },
           path: {
             type: 'string',
-            description: 'Specific file or directory path to analyze'
+            description: 'Specific file or directory path to analyze instead of a module name'
           },
           threshold: {
             type: 'number',
-            description: 'Minimum cyclomatic complexity to report (default: 0, show all)',
+            description: 'Minimum cyclomatic complexity to report. Set higher (e.g., 10) to only see complex files. Default: 0 (show all)',
             default: 0
           }
         }
@@ -793,7 +808,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `## Observers for event: ${args.eventName}\n\n` + formatSearchResults(results.slice(0, 15))
+            text: formatSearchResults(results.slice(0, 15))
           }]
         };
       }
@@ -809,7 +824,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `## Preferences for: ${args.interfaceName}\n\n` + formatSearchResults(results.slice(0, 15))
+            text: formatSearchResults(results.slice(0, 15))
           }]
         };
       }
@@ -824,7 +839,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `## API Endpoints matching: ${args.query}\n\n` + formatSearchResults(results.slice(0, 15))
+            text: formatSearchResults(results.slice(0, 15))
           }]
         };
       }
@@ -859,7 +874,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `## Controllers for route: ${args.route}\n\n` + formatSearchResults(results)
+            text: formatSearchResults(results)
           }]
         };
       }
@@ -891,7 +906,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `## Cron jobs matching: ${args.jobName}\n\n` + formatSearchResults(results.slice(0, 15))
+            text: formatSearchResults(results.slice(0, 15))
           }]
         };
       }
@@ -910,7 +925,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `## GraphQL matching: ${args.query}\n\n` + formatSearchResults(results.slice(0, 15))
+            text: formatSearchResults(results.slice(0, 15))
           }]
         };
       }
@@ -926,7 +941,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: `## Database schema for: ${args.tableName}\n\n` + formatSearchResults(results.slice(0, 15))
+            text: formatSearchResults(results.slice(0, 15))
           }]
         };
       }
