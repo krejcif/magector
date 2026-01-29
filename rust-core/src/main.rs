@@ -120,7 +120,7 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Initialize logging
+    // Initialize logging — always write to stderr to avoid polluting stdout (MCP/JSON)
     let filter = if cli.verbose {
         "debug"
     } else {
@@ -128,7 +128,7 @@ fn main() -> Result<()> {
     };
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(filter))
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
 
     match cli.command {

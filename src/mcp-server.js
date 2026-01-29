@@ -40,6 +40,13 @@ const config = {
 
 // ─── Rust Core Integration ──────────────────────────────────────
 
+// Env vars to suppress ONNX Runtime native logs that would pollute stdout/JSON-RPC
+const rustEnv = {
+  ...process.env,
+  ORT_LOG_LEVEL: 'error',
+  RUST_LOG: 'error',
+};
+
 function rustSearch(query, limit = 10) {
   const result = execFileSync(config.rustBinary, [
     'search', query,
@@ -47,7 +54,7 @@ function rustSearch(query, limit = 10) {
     '-c', config.modelCache,
     '-l', String(limit),
     '-f', 'json'
-  ], { encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] });
+  ], { encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
   return JSON.parse(result);
 }
 
@@ -57,7 +64,7 @@ function rustIndex(magentoRoot) {
     '-m', magentoRoot,
     '-d', config.dbPath,
     '-c', config.modelCache
-  ], { encoding: 'utf-8', timeout: 600000, stdio: ['pipe', 'pipe', 'pipe'] });
+  ], { encoding: 'utf-8', timeout: 600000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
   return result;
 }
 
@@ -65,7 +72,7 @@ function rustStats() {
   const result = execFileSync(config.rustBinary, [
     'stats',
     '-d', config.dbPath
-  ], { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
+  ], { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
   // Parse text output: "Total vectors: N" and "Embedding dim: N"
   const vectors = result.match(/Total vectors:\s*(\d+)/)?.[1] || '0';
   const dim = result.match(/Embedding dim:\s*(\d+)/)?.[1] || '384';
