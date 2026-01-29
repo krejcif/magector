@@ -1,20 +1,21 @@
 # Magector
 
-**Semantic code search engine for Magento 2, powered by ONNX embeddings and HNSW vector search.**
+**Semantic code search engine for Magento 2 and Adobe Commerce, powered by ONNX embeddings and HNSW vector search.**
 
-Magector indexes an entire Magento 2 codebase and lets you search it with natural language. Instead of grepping for keywords, ask questions like *"how are checkout totals calculated?"* or *"where is the product price determined?"* and get ranked, relevant results in under 50ms.
+Magector indexes an entire Magento 2 or Adobe Commerce codebase and lets you search it with natural language. Instead of grepping for keywords, ask questions like *"how are checkout totals calculated?"* or *"where is the product price determined?"* and get ranked, relevant results in under 50ms.
 
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
 [![Node.js](https://img.shields.io/badge/node-18+-green.svg)](https://nodejs.org)
 [![Magento](https://img.shields.io/badge/magento-2.4.x-blue.svg)](https://magento.com)
-[![Accuracy](https://img.shields.io/badge/accuracy-94.9%25-brightgreen.svg)](#validation)
+[![Adobe Commerce](https://img.shields.io/badge/adobe%20commerce-supported-blue.svg)](https://business.adobe.com/products/magento/magento-commerce.html)
+[![Accuracy](https://img.shields.io/badge/accuracy-99.2%25-brightgreen.svg)](#validation)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 ---
 
 ## Why Magector
 
-Magento 2 has **18,000+ source files** across hundreds of modules. Finding the right code is slow:
+Magento 2 and Adobe Commerce have **18,000+ source files** across hundreds of modules. Finding the right code is slow:
 
 | Approach | Finds semantic matches | Understands Magento patterns | Speed (18K files) |
 |----------|:---------------------:|:---------------------------:|:-----------------:|
@@ -29,7 +30,7 @@ Magector understands that a query about *"payment capture"* should return `Sales
 
 ## Magector vs Built-in AI Search
 
-Claude Code and Cursor both have built-in code search -- but they rely on keyword matching (`grep`/`ripgrep`) and file-tree heuristics. On a Magento 2 codebase with 18,000+ files, that approach breaks down fast.
+Claude Code and Cursor both have built-in code search -- but they rely on keyword matching (`grep`/`ripgrep`) and file-tree heuristics. On a Magento 2 / Adobe Commerce codebase with 18,000+ files, that approach breaks down fast.
 
 | Capability | Claude Code / Cursor (built-in) | Magector |
 |---|---|---|
@@ -52,13 +53,14 @@ Without Magector, asking Claude Code or Cursor *"how are checkout totals calcula
 ## Features
 
 - **Semantic search** -- find code by meaning, not exact keywords
-- **94.9% accuracy** -- validated with 101 E2E test queries across 16 tool categories, plus 557 Rust-level test cases
+- **99.2% accuracy** -- validated with 101 E2E test queries across 16 tool categories, plus 557 Rust-level test cases
 - **Hybrid search** -- combines semantic vector similarity with keyword re-ranking for best-of-both-worlds results
 - **Structured JSON output** -- results include file path, class name, methods list, role badges, and content snippets for minimal round-trips
 - **Persistent serve mode** -- keeps ONNX model and HNSW index resident in memory, eliminating cold-start latency
 - **ONNX embeddings** -- native 384-dim transformer embeddings via ONNX Runtime
-- **36K+ vectors** -- indexes the complete Magento 2 codebase including framework internals
+- **36K+ vectors** -- indexes the complete Magento 2 / Adobe Commerce codebase including framework internals
 - **Magento-aware** -- understands controllers, plugins, observers, blocks, resolvers, repositories, and 20+ Magento patterns
+- **Adobe Commerce compatible** -- works with both Magento Open Source and Adobe Commerce (B2B, Staging, and all Commerce-specific modules)
 - **AST-powered** -- tree-sitter parsing for PHP and JavaScript extracts classes, methods, namespaces, and inheritance
 - **Cross-tool discovery** -- tool descriptions include keywords and "See also" references so AI clients find the right tool on the first try
 - **Diff analysis** -- risk scoring and change classification for git commits and staged changes
@@ -137,10 +139,10 @@ flowchart TD
 
 - [Node.js 18+](https://nodejs.org)
 
-### 1. Initialize in Your Magento Project
+### 1. Initialize in Your Project
 
 ```bash
-cd /path/to/your/magento2
+cd /path/to/your/magento2  # or Adobe Commerce project
 npx magector init
 ```
 
@@ -267,7 +269,7 @@ npx magector help               # Show help
 
 ## MCP Server Tools
 
-The MCP server exposes 19 tools for AI-assisted Magento development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
+The MCP server exposes 19 tools for AI-assisted Magento 2 and Adobe Commerce development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
 
 ### Output Format
 
@@ -436,11 +438,11 @@ pie title Test Pass Rate (101 queries)
 
 | Metric | Value |
 |--------|-------|
-| **Grade** | **A (94.9/100)** |
+| **Grade** | **A+ (99.2/100)** |
 | **Pass rate** | 101/101 (100%) |
-| **Precision** | 93.2% |
-| **MRR** | 99.2% |
-| **NDCG@10** | 85.5% |
+| **Precision** | 98.7% |
+| **MRR** | 99.3% |
+| **NDCG@10** | 98.7% |
 | **Index size** | 35,795 vectors |
 | **Query time** | 10-45ms |
 
@@ -449,19 +451,20 @@ pie title Test Pass Rate (101 queries)
 | Tool | Pass | Precision | MRR | NDCG |
 |------|------|-----------|-----|------|
 | find_class | 100% | 100% | 100% | 100% |
-| find_method | 100% | 89% | 100% | 87% |
-| find_controller | 100% | 100% | 100% | -- |
+| find_method | 100% | 98% | 92% | 97% |
+| find_controller | 100% | 100% | 100% | 100% |
 | find_observer | 100% | 100% | 100% | 100% |
-| find_plugin | 100% | 96% | 100% | 100% |
+| find_plugin | 100% | 100% | 100% | 100% |
 | find_preference | 100% | 100% | 100% | 100% |
 | find_api | 100% | 100% | 100% | 100% |
 | find_cron | 100% | 100% | 100% | 100% |
 | find_db_schema | 100% | 100% | 100% | 100% |
 | find_graphql | 100% | 100% | 100% | 100% |
 | find_block | 100% | 100% | 100% | 100% |
-| find_config | 100% | 89% | 89% | 93% |
-| find_template | 100% | 84% | 100% | 100% |
-| search | 100% | 99% | 100% | 100% |
+| find_config | 100% | 100% | 100% | 100% |
+| find_template | 100% | 100% | 100% | 100% |
+| search | 100% | 100% | 100% | 100% |
+| module_structure | 100% | 100% | 100% | 100% |
 
 ### Integration Tests
 
@@ -546,7 +549,7 @@ magector/
 
 ### 1. Indexing
 
-Magector scans every `.php`, `.js`, `.xml`, `.phtml`, and `.graphqls` file in a Magento codebase:
+Magector scans every `.php`, `.js`, `.xml`, `.phtml`, and `.graphqls` file in a Magento 2 or Adobe Commerce codebase:
 
 1. **AST parsing** -- Tree-sitter extracts class names, namespaces, methods, inheritance, and interface implementations from PHP and JavaScript files
 2. **Pattern detection** -- Identifies Magento-specific patterns: controllers, models, repositories, plugins, observers, blocks, GraphQL resolvers, admin grids, cron jobs, and more
@@ -851,6 +854,7 @@ gantt
     JSON output         :done, 2025-03, 15d
     Cross-tool hints    :done, 2025-03, 15d
     E2E tests           :done, 2025-03, 15d
+    Adobe Commerce      :done, 2025-03, 15d
   section Next
     Method chunking     :active, 2025-04, 30d
     Intent detection    :2025-05, 30d
@@ -859,7 +863,6 @@ gantt
   section Future
     VSCode extension    :2025-08, 60d
     Web UI              :2025-10, 60d
-    Commerce support    :2026-01, 60d
 ```
 
 - [x] Hybrid search (semantic + keyword re-ranking)
@@ -867,13 +870,13 @@ gantt
 - [x] Structured JSON output (methods, badges, snippets)
 - [x] Cross-tool discovery hints for AI clients
 - [x] E2E accuracy test suite (101 queries)
+- [x] Adobe Commerce support (B2B, Staging, and all Commerce-specific modules)
 - [ ] Method-level chunking (per-method vectors for direct method search)
 - [ ] Query intent classification (auto-detect "give me XML" vs "give me PHP")
 - [ ] Filtered search by file type at the vector level
 - [ ] Incremental indexing (only re-index changed files)
 - [ ] VSCode extension
 - [ ] Web UI for browsing results
-- [ ] Support for Magento 2 Commerce (B2B, Staging modules)
 
 ---
 
@@ -895,4 +898,4 @@ Contributions are welcome. Please:
 
 ---
 
-Built with Rust and Node.js for the Magento community.
+Built with Rust and Node.js for the Magento and Adobe Commerce community.

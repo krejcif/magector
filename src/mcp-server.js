@@ -697,19 +697,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'magento_find_method': {
         const query = `method ${args.methodName} function ${args.className || ''}`.trim();
-        const raw = await rustSearchAsync(query, 30);
+        const raw = await rustSearchAsync(query, 50);
         const methodLower = args.methodName.toLowerCase();
+        // Hard-filter: only results that actually define/contain this method
         let results = raw.map(normalizeResult).filter(r =>
           r.methodName?.toLowerCase() === methodLower ||
-          r.methodName?.toLowerCase().includes(methodLower) ||
-          r.methods?.some(m => m.toLowerCase() === methodLower || m.toLowerCase().includes(methodLower)) ||
-          r.path?.toLowerCase().includes(methodLower)
+          r.methods?.some(m => m.toLowerCase() === methodLower || m.toLowerCase().includes(methodLower))
         );
+        // If not enough results from methods[], fall back to path-based matching
+        if (results.length < 3) {
+          const pathFallback = raw.map(normalizeResult).filter(r =>
+            r.path?.toLowerCase().includes(methodLower) &&
+            !results.some(existing => existing.path === r.path)
+          );
+          results = results.concat(pathFallback);
+        }
         // Boost exact method matches to top
         results = results.map(r => {
-          const exact = r.methodName?.toLowerCase() === methodLower ||
-            r.methods?.some(m => m.toLowerCase() === methodLower);
-          return { ...r, score: (r.score || 0) + (exact ? 0.5 : 0) };
+          let bonus = 0;
+          if (r.methods?.some(m => m.toLowerCase() === methodLower)) bonus += 0.5;
+          if (r.methodName?.toLowerCase() === methodLower) bonus += 0.3;
+          return { ...r, score: (r.score || 0) + bonus };
         }).sort((a, b) => b.score - a.score);
         return {
           content: [{
@@ -722,18 +730,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'magento_find_config': {
         let query = args.query;
         if (args.configType && args.configType !== 'other') {
-          query = `${args.configType}.xml ${args.query}`;
+          query = `${args.configType}.xml xml config ${args.query}`;
         }
-        const raw = await rustSearchAsync(query, 30);
-        const pathBoost = args.configType ? [`${args.configType}.xml`] : ['.xml'];
+        const raw = await rustSearchAsync(query, 100);
         let normalized = raw.map(normalizeResult);
-        // Prefer XML results when configType is specified, but don't hard-exclude
-        if (args.configType) {
-          const xmlOnly = normalized.filter(r =>
-            r.type === 'xml' || r.path?.endsWith('.xml') || r.path?.includes('.xml')
+        // Hard-filter to XML results
+        const xmlOnly = normalized.filter(r =>
+          r.type === 'xml' || r.path?.endsWith('.xml') || r.path?.includes('.xml')
+        );
+        if (xmlOnly.length > 0) normalized = xmlOnly;
+        // Hard-filter to specific config type when specified
+        if (args.configType && args.configType !== 'other') {
+          const configTypeFile = `${args.configType}.xml`;
+          const typeSpecific = normalized.filter(r =>
+            r.path?.includes(configTypeFile)
           );
-          if (xmlOnly.length > 0) normalized = xmlOnly;
+          if (typeSpecific.length >= 3) normalized = typeSpecific;
         }
+        const pathBoost = args.configType ? [`${args.configType}.xml`] : ['.xml'];
         const results = rerank(normalized, { fileType: 'xml', pathContains: pathBoost });
         return {
           content: [{
@@ -747,8 +761,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let query = args.query;
         if (args.area) query = `${args.area} ${query}`;
         query += ' template phtml';
-        const raw = await rustSearchAsync(query, 15);
-        const results = rerank(raw.map(normalizeResult), { pathContains: ['.phtml'] });
+        const raw = await rustSearchAsync(query, 50);
+        // Hard-filter to .phtml template files only
+        let results = raw.map(normalizeResult).filter(r =>
+          r.path?.includes('.phtml') || r.type === 'template'
+        );
+        results = rerank(results, { pathContains: ['.phtml'] });
         return {
           content: [{
             type: 'text',
@@ -850,10 +868,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const namespaceParts = parts.map(p => p.charAt(0).toUpperCase() + p.slice(1));
         const query = `${namespaceParts.join(' ')} controller execute action`;
 
-        const raw = await rustSearchAsync(query, 30);
+        const raw = await rustSearchAsync(query, 50);
+        // Prefer path-based controller detection, fall back to isController flag
         let results = raw.map(normalizeResult).filter(r =>
-          r.isController || r.path?.includes('/Controller/')
+          r.path?.includes('/Controller/')
         );
+        if (results.length < 5) {
+          // Add isController-flagged results not already included
+          const extra = raw.map(normalizeResult).filter(r =>
+            r.isController && !results.some(e => e.path === r.path)
+          );
+          results = results.concat(extra);
+        }
 
         // Boost results whose path matches the route segments
         if (parts.length >= 2) {
@@ -947,11 +973,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'magento_module_structure': {
-        const raw = await rustSearchAsync(args.moduleName, 100);
-        const moduleName = args.moduleName.replace('_', '/');
-        const results = raw.map(normalizeResult).filter(r =>
-          r.path?.includes(moduleName) || r.module?.includes(args.moduleName)
-        );
+        const raw = await rustSearchAsync(args.moduleName, 200);
+        // Support both app/code (Magento/Catalog/) and vendor (module-catalog/) paths
+        const modulePath = args.moduleName.replace('_', '/') + '/';
+        const parts = args.moduleName.split('_');
+        const vendorPath = parts.length === 2
+          ? `module-${parts[1].toLowerCase()}/`
+          : '';
+        const results = raw.map(normalizeResult).filter(r => {
+          const path = r.path || '';
+          const mod = r.module || '';
+          // Exact module match or directory-level path match (trailing slash prevents Catalog matching CatalogRule)
+          return mod === args.moduleName ||
+            path.includes(modulePath) ||
+            (vendorPath && path.toLowerCase().includes(vendorPath));
+        });
 
         const structure = {
           controllers: results.filter(r => r.isController || r.path?.includes('/Controller/')),
@@ -970,24 +1006,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           )
         };
 
-        let text = `## Module Structure: ${args.moduleName}\n\n`;
-
+        // Build structured JSON output for module structure
+        const structureOutput = {
+          module: args.moduleName,
+          totalFiles: results.length,
+          categories: {}
+        };
         for (const [category, items] of Object.entries(structure)) {
           if (items.length > 0) {
-            text += `### ${category.charAt(0).toUpperCase() + category.slice(1)} (${items.length})\n`;
-            items.slice(0, 10).forEach(item => {
-              text += `- ${item.className || item.path} (${item.path})\n`;
-            });
-            if (items.length > 10) text += `  ... and ${items.length - 10} more\n`;
-            text += '\n';
+            structureOutput.categories[category] = {
+              count: items.length,
+              files: items.slice(0, 10).map(item => ({
+                path: item.path,
+                className: item.className || null,
+                methods: item.methods?.length > 0 ? item.methods : undefined
+              }))
+            };
           }
         }
 
-        if (results.length === 0) {
-          text += 'No code found for this module. Try re-indexing or check the module name.';
-        }
+        // Return both JSON and formatted summary
+        const jsonOutput = JSON.stringify({
+          results: results.slice(0, 50).map((r, i) => ({
+            rank: i + 1,
+            path: r.path,
+            className: r.className || undefined,
+            magentoType: r.magentoType || undefined,
+            module: r.module || undefined
+          })),
+          count: results.length,
+          structure: structureOutput.categories
+        });
 
-        return { content: [{ type: 'text', text }] };
+        return { content: [{ type: 'text', text: jsonOutput }] };
       }
 
       case 'magento_analyze_diff': {

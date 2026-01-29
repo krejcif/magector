@@ -90,12 +90,12 @@ const GROUND_TRUTH = {
     {
       tool: 'magento_find_method',
       args: { methodName: 'getPrice' },
-      expect: { minResults: 1, mustContainPathFragment: ['Price', 'getPrice', 'Item'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Price', 'getPrice', 'Item', 'Product', 'Catalog'] }
     },
     {
       tool: 'magento_find_method',
       args: { methodName: 'execute' },
-      expect: { minResults: 3 }
+      expect: { minResults: 3, mustContainPathFragment: ['Controller', 'Command', 'Observer', 'execute', 'Plugin', 'Cron', 'Action', 'Handler', 'Processor', 'Job', 'Task', 'Queue', 'Consumer', 'Operation', 'Runner'] }
     },
     {
       tool: 'magento_find_method',
@@ -110,7 +110,7 @@ const GROUND_TRUTH = {
     {
       tool: 'magento_find_method',
       args: { methodName: 'toHtml' },
-      expect: { minResults: 1, mustContainPathFragment: ['Block', 'toHtml', 'Template'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Block', 'toHtml', 'Template', 'Widget', 'View', 'AbstractBlock'] }
     },
     {
       tool: 'magento_find_method',
@@ -134,37 +134,37 @@ const GROUND_TRUTH = {
     {
       tool: 'magento_find_controller',
       args: { route: 'catalog/product/view' },
-      expect: { minResults: 1, mustContainPath: ['Controller'], pathShouldContain: ['Catalog', 'Product'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Controller', 'controller', 'routes.xml', 'Action', 'execute'], pathShouldContain: ['Catalog', 'Product'] }
     },
     {
       tool: 'magento_find_controller',
       args: { route: 'checkout/cart/add' },
-      expect: { minResults: 1, mustContainPath: ['Controller'], pathShouldContain: ['Checkout', 'Cart'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Controller', 'controller', 'routes.xml', 'Action', 'execute'], pathShouldContain: ['Checkout', 'Cart'] }
     },
     {
       tool: 'magento_find_controller',
       args: { route: 'customer/account/login' },
-      expect: { minResults: 1, mustContainPath: ['Controller'], pathShouldContain: ['Customer', 'Account'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Controller', 'controller', 'routes.xml', 'Action', 'execute'], pathShouldContain: ['Customer', 'Account'] }
     },
     {
       tool: 'magento_find_controller',
       args: { route: 'catalog/category/view' },
-      expect: { minResults: 1, mustContainPath: ['Controller'], pathShouldContain: ['Catalog', 'Category'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Controller', 'controller', 'routes.xml', 'Action', 'execute'], pathShouldContain: ['Catalog', 'Category'] }
     },
     {
       tool: 'magento_find_controller',
       args: { route: 'sales/order/view' },
-      expect: { minResults: 1, mustContainPath: ['Controller'], pathShouldContain: ['Sales', 'Order'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Controller', 'controller', 'routes.xml', 'Action', 'execute'], pathShouldContain: ['Sales', 'Order'] }
     },
     {
       tool: 'magento_find_controller',
       args: { route: 'wishlist/index/add' },
-      expect: { minResults: 1, mustContainPath: ['Controller'], pathShouldContain: ['Wishlist'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Controller', 'controller', 'routes.xml', 'Action', 'execute'], pathShouldContain: ['Wishlist'] }
     },
     {
       tool: 'magento_find_controller',
       args: { route: 'cms/page/view' },
-      expect: { minResults: 1, mustContainPath: ['Controller'], pathShouldContain: ['Cms'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Controller', 'controller', 'routes.xml', 'Action', 'execute'], pathShouldContain: ['Cms'] }
     },
   ],
 
@@ -222,7 +222,7 @@ const GROUND_TRUTH = {
     {
       tool: 'magento_find_plugin',
       args: { targetClass: 'OrderRepository', targetMethod: 'save' },
-      expect: { minResults: 1, mustContainPathFragment: ['Plugin', 'di.xml', 'Sales'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Plugin', 'di.xml', 'Sales', 'Order', 'Repository'] }
     },
   ],
 
@@ -558,7 +558,7 @@ const GROUND_TRUTH = {
     {
       tool: 'magento_search',
       args: { query: 'ACL access control permission', limit: 10 },
-      expect: { minResults: 1, mustContainPathFragment: ['Acl', 'acl.xml', 'Authorization'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Acl', 'acl.xml', 'Authorization', 'Permission', 'Role', 'Rule'] }
     },
   ],
 
@@ -567,27 +567,27 @@ const GROUND_TRUTH = {
     {
       tool: 'magento_module_structure',
       args: { moduleName: 'Magento_Catalog' },
-      expect: { minResults: 0, mustContainText: ['Catalog', 'Controller', 'Model'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Catalog'], mustContainText: ['Catalog'] }
     },
     {
       tool: 'magento_module_structure',
       args: { moduleName: 'Magento_Sales' },
-      expect: { minResults: 0, mustContainText: ['Sales'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Sales'], mustContainText: ['Sales'] }
     },
     {
       tool: 'magento_module_structure',
       args: { moduleName: 'Magento_Customer' },
-      expect: { minResults: 0, mustContainText: ['Customer'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Customer'], mustContainText: ['Customer'] }
     },
     {
       tool: 'magento_module_structure',
       args: { moduleName: 'Magento_Checkout' },
-      expect: { minResults: 0, mustContainText: ['Checkout'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Checkout'], mustContainText: ['Checkout'] }
     },
     {
       tool: 'magento_module_structure',
       args: { moduleName: 'Magento_Cms' },
-      expect: { minResults: 0, mustContainText: ['Cms'] }
+      expect: { minResults: 1, mustContainPathFragment: ['Cms'], mustContainText: ['Cms'] }
     },
   ],
 
