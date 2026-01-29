@@ -7,7 +7,7 @@ Magector indexes an entire Magento 2 codebase and lets you search it with natura
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
 [![Node.js](https://img.shields.io/badge/node-18+-green.svg)](https://nodejs.org)
 [![Magento](https://img.shields.io/badge/magento-2.4.x-blue.svg)](https://magento.com)
-[![Accuracy](https://img.shields.io/badge/accuracy-96.1%25-brightgreen.svg)](#validation)
+[![Accuracy](https://img.shields.io/badge/accuracy-94.9%25-brightgreen.svg)](#validation)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -21,7 +21,7 @@ Magento 2 has **18,000+ source files** across hundreds of modules. Finding the r
 | `grep` / `ripgrep` | No | No | 100-500ms |
 | IDE search | No | No | 200-1000ms |
 | GitHub search | Partial | No | 500-2000ms |
-| **Magector** | **Yes** | **Yes** | **15-45ms** |
+| **Magector** | **Yes** | **Yes** | **10-45ms** |
 
 Magector understands that a query about *"payment capture"* should return `Sales/Model/Order/Payment/Operations/CaptureOperation.php`, not just files containing the word "capture".
 
@@ -29,37 +29,41 @@ Magector understands that a query about *"payment capture"* should return `Sales
 
 ## Magector vs Built-in AI Search
 
-Claude Code and Cursor both have built-in code search — but they rely on keyword matching (`grep`/`ripgrep`) and file-tree heuristics. On a Magento 2 codebase with 18,000+ files, that approach breaks down fast.
+Claude Code and Cursor both have built-in code search -- but they rely on keyword matching (`grep`/`ripgrep`) and file-tree heuristics. On a Magento 2 codebase with 18,000+ files, that approach breaks down fast.
 
 | Capability | Claude Code / Cursor (built-in) | Magector |
 |---|---|---|
 | **Search method** | Keyword grep / ripgrep | Semantic vector search (ONNX embeddings) |
-| **Understands intent** | No — literal string matching only | Yes — "payment capture" finds `CaptureOperation.php` |
-| **Magento pattern awareness** | None — treats all PHP the same | Detects controllers, plugins, observers, blocks, resolvers, cron, and 20+ patterns |
-| **Query speed (18K files)** | 200-1000ms per grep pass; multiple rounds needed | 15-45ms single pass |
-| **Context window cost** | Reads many wrong files → burns tokens | Returns ranked results → AI reads only what matters |
-| **Works offline** | Yes | Yes — local ONNX model, no API calls |
+| **Understands intent** | No -- literal string matching only | Yes -- "payment capture" finds `CaptureOperation.php` |
+| **Magento pattern awareness** | None -- treats all PHP the same | Detects controllers, plugins, observers, blocks, resolvers, cron, and 20+ patterns |
+| **Query speed (36K vectors)** | 200-1000ms per grep pass; multiple rounds needed | 10-45ms single pass |
+| **Context window cost** | Reads many wrong files, burns tokens | Returns structured JSON with ranked results, methods, and snippets |
+| **Works offline** | Yes | Yes -- local ONNX model, no API calls |
 | **Setup** | Built-in | `npx magector init` (one command) |
 
 ### What this means in practice
 
-Without Magector, asking Claude Code or Cursor *"how are checkout totals calculated?"* triggers multiple grep searches, reads dozens of files, and still may miss the right ones. With Magector, the AI calls `magento_search("checkout totals calculation")` and gets the exact files ranked by relevance in one step — saving tokens and time.
+Without Magector, asking Claude Code or Cursor *"how are checkout totals calculated?"* triggers multiple grep searches, reads dozens of files, and still may miss the right ones. With Magector, the AI calls `magento_search("checkout totals calculation")` and gets the exact files ranked by relevance in one step -- saving tokens and time.
 
-**Magector doesn't replace your AI tool — it gives it a better search engine.**
+**Magector doesn't replace your AI tool -- it gives it a better search engine.**
 
 ---
 
 ## Features
 
 - **Semantic search** -- find code by meaning, not exact keywords
-- **96.1% accuracy** -- validated with 557 test cases across 50+ categories
-- **ONNX embeddings** -- native 384-dim transformer embeddings via ONNX Runtime for higher quality search
-- **Parallel processing** -- batch embedding with parallel intelligence for faster indexing
+- **94.9% accuracy** -- validated with 101 E2E test queries across 16 tool categories, plus 557 Rust-level test cases
+- **Hybrid search** -- combines semantic vector similarity with keyword re-ranking for best-of-both-worlds results
+- **Structured JSON output** -- results include file path, class name, methods list, role badges, and content snippets for minimal round-trips
+- **Persistent serve mode** -- keeps ONNX model and HNSW index resident in memory, eliminating cold-start latency
+- **ONNX embeddings** -- native 384-dim transformer embeddings via ONNX Runtime
+- **36K+ vectors** -- indexes the complete Magento 2 codebase including framework internals
 - **Magento-aware** -- understands controllers, plugins, observers, blocks, resolvers, repositories, and 20+ Magento patterns
 - **AST-powered** -- tree-sitter parsing for PHP and JavaScript extracts classes, methods, namespaces, and inheritance
+- **Cross-tool discovery** -- tool descriptions include keywords and "See also" references so AI clients find the right tool on the first try
 - **Diff analysis** -- risk scoring and change classification for git commits and staged changes
 - **Complexity analysis** -- cyclomatic complexity, function count, and hotspot detection across modules
-- **Fast** -- 15-45ms queries, batched ONNX embedding with adaptive thread scaling
+- **Fast** -- 10-45ms queries via persistent serve process, batched ONNX embedding with adaptive thread scaling
 - **MCP server** -- 19 tools integrating with Claude Code, Cursor, and any MCP-compatible AI tool
 - **Clean architecture** -- Rust core handles all indexing/search, Node.js MCP server delegates to it
 
@@ -67,52 +71,48 @@ Without Magector, asking Claude Code or Cursor *"how are checkout totals calcula
 
 ## Architecture
 
-```
-                    ┌──────────────────────────────────────────┐
-                    │              Magector                     │
-                    ├──────────────────┬───────────────────────┤
-                    │   Rust Core      │   Node.js Layer       │
-                    │                  │                       │
-                    │  ┌────────────┐  │  ┌─────────────────┐  │
-                    │  │ Tree-sitter│  │  │  MCP Server     │  │
-                    │  │ AST Parser │  │  │  (19 tools)     │  │
-                    │  │ PHP + JS   │  │  └────────┬────────┘  │
-                    │  └─────┬──────┘  │           │           │
-                    │        │         │  ┌────────┴────────┐  │
-                    │  ┌─────┴──────┐  │  │  CLI Interface  │  │
-                    │  │ Magento    │  │  │  index/search/  │  │
-                    │  │ Pattern    │  │  │  validate       │  │
-                    │  │ Detection  │  │  └─────────────────┘  │
-                    │  └─────┬──────┘  │                       │
-                    │        │         │                       │
-                    │  ┌─────┴──────┐  │                       │
-                    │  │ ONNX       │  │                       │
-                    │  │ Embedder   │  │                       │
-                    │  │ MiniLM-L6  │  │                       │
-                    │  └─────┬──────┘  │                       │
-                    │        │         │                       │
-                    │  ┌─────┴──────┐  │                       │
-                    │  │ HNSW       │  │                       │
-                    │  │ Vector DB  │  │                       │
-                    │  └────────────┘  │                       │
-                    └──────────────────┴───────────────────────┘
+```mermaid
+block-beta
+  columns 2
+  block:rust["Rust Core"]:1
+    A["Tree-sitter AST Parser\nPHP + JS"]
+    B["Magento Pattern Detection\n20+ patterns"]
+    C["ONNX Embedder\nMiniLM-L6-v2 · 384 dim"]
+    D["HNSW Vector DB\n+ Hybrid Reranking"]
+  end
+  block:node["Node.js Layer"]:1
+    E["MCP Server\n19 tools · JSON output"]
+    F["Persistent Serve Process\nstdin/stdout JSON"]
+    G["CLI Interface\ninit · index · search · serve"]
+  end
+
+  style rust fill:#f4a460,color:#000
+  style node fill:#68b684,color:#000
 ```
 
-### Embedding Pipeline
+### Indexing Pipeline
 
+```mermaid
+flowchart LR
+  A[Source File\n.php .xml .js .phtml .graphqls] --> B[Tree-sitter\nAST Parser]
+  B --> C[Magento Pattern\nDetection]
+  C --> D[Search Text\nEnrichment]
+  D --> E[ONNX Runtime\nMiniLM-L6-v2]
+  E --> F[384-dim\nEmbedding]
+  A --> G[Metadata\npath · class · namespace\nmethods · patterns]
+  F --> H[(HNSW Index\n35,795 vectors)]
+  G --> H
 ```
-Source File ──▶ Tree-sitter AST ──▶ Magento Pattern Detection ──▶ Search Text Enrichment
-     │                                                                     │
-     │                                                                     ▼
-     │                                                            ONNX Runtime
-     │                                                            (MiniLM-L6-v2)
-     │                                                                     │
-     │                                                                     ▼
-     │                                                             384-dim embedding
-     │                                                                     │
-     ▼                                                                     ▼
-  Metadata ─────────────────────────────────────────────────────▶ HNSW Index
-  (path, class, namespace, type, methods, patterns)               (17,891 vectors)
+
+### Search Pipeline
+
+```mermaid
+flowchart LR
+  Q[Query Text] --> E1[Pattern Synonym\nEnrichment]
+  E1 --> E2[ONNX Embedding\n384-dim vector]
+  E2 --> H[HNSW\nNearest Neighbor]
+  H --> R[Hybrid\nReranking]
+  R --> J[Structured JSON\npath · class · methods\nbadges · snippet]
 ```
 
 ### Components
@@ -120,12 +120,12 @@ Source File ──▶ Tree-sitter AST ──▶ Magento Pattern Detection ──
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
 | Embeddings | `ort` (ONNX Runtime) | all-MiniLM-L6-v2, 384 dimensions |
-| Vector search | `hnsw_rs` | Approximate nearest neighbor |
+| Vector search | `hnsw_rs` + hybrid reranking | Approximate nearest neighbor + keyword boosting |
 | PHP parsing | `tree-sitter-php` | Class, method, namespace extraction |
 | JS parsing | `tree-sitter-javascript` | AMD/ES6 module detection |
 | Pattern detection | Custom Rust | 20+ Magento-specific patterns |
-| CLI | `clap` | Command-line interface |
-| MCP server | `@modelcontextprotocol/sdk` | AI tool integration |
+| CLI | `clap` | Command-line interface (index, search, serve, validate) |
+| MCP server | `@modelcontextprotocol/sdk` | AI tool integration with structured JSON output |
 
 ---
 
@@ -142,14 +142,17 @@ cd /path/to/your/magento2
 npx magector init
 ```
 
-This single command:
-- Verifies the Magento project
-- Downloads the ONNX model (~86MB, cached globally in `~/.magector/models/`)
-- Indexes the entire codebase
-- Detects your IDE (Cursor / Claude Code)
-- Writes MCP server configuration
-- Writes IDE rules (`.cursorrules` / `CLAUDE.md`)
-- Adds `magector.db` to `.gitignore`
+This single command handles the entire setup:
+
+```mermaid
+flowchart LR
+  A["npx magector init"] --> B[Verify Magento\nProject]
+  B --> C[Download ONNX Model\n~86MB · cached]
+  C --> D[Index Codebase\n36K+ vectors]
+  D --> E[Detect IDE\nCursor / Claude Code]
+  E --> F[Write Config\nMCP + IDE rules]
+  F --> G[Update .gitignore]
+```
 
 ### 2. Search
 
@@ -182,6 +185,7 @@ magector-core <COMMAND>
 Commands:
   index       Index a Magento codebase
   search      Search the index semantically
+  serve       Start persistent server mode (stdin/stdout JSON protocol)
   validate    Run validation suite (downloads Magento if needed)
   download    Download Magento 2 Open Source
   stats       Show index statistics
@@ -211,6 +215,31 @@ Options:
   -f, --format <FORMAT>   Output format: text, json [default: text]
 ```
 
+#### `serve`
+
+```bash
+magector-core serve [OPTIONS]
+
+Options:
+  -d, --database <PATH>       Index database path [default: ./magector.db]
+  -c, --model-cache <PATH>    Model cache directory [default: ./models]
+```
+
+Starts a persistent process that reads JSON queries from stdin and writes JSON responses to stdout. Keeps the ONNX model and HNSW index resident in memory for fast repeated queries.
+
+**Protocol (one JSON object per line):**
+
+```json
+// Request:
+{"command":"search","query":"product price","limit":10}
+
+// Response:
+{"ok":true,"data":[{"id":123,"score":0.85,"metadata":{...}}]}
+
+// Stats request:
+{"command":"stats"}
+```
+
 ### Node.js CLI
 
 ```bash
@@ -236,45 +265,112 @@ npx magector help               # Show help
 
 ## MCP Server Tools
 
-The MCP server exposes 19 tools for AI-assisted Magento development:
+The MCP server exposes 19 tools for AI-assisted Magento development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
+
+### Output Format
+
+All search tools return structured JSON:
+
+```json
+{
+  "results": [
+    {
+      "rank": 1,
+      "score": 0.892,
+      "path": "vendor/magento/module-catalog/Model/ProductRepository.php",
+      "module": "Magento_Catalog",
+      "className": "ProductRepository",
+      "namespace": "Magento\\Catalog\\Model",
+      "methods": ["save", "getById", "getList", "delete", "deleteById"],
+      "magentoType": "repository",
+      "fileType": "php",
+      "badges": ["repository"],
+      "snippet": "class ProductRepository implements ProductRepositoryInterface..."
+    }
+  ],
+  "count": 1
+}
+```
+
+**Key fields:**
+- `methods` -- list of method names in the class (avoids needing to read the file)
+- `badges` -- role indicators: `plugin`, `controller`, `observer`, `repository`, `graphql-resolver`, `model`, `block`
+- `snippet` -- first 300 characters of indexed content for quick assessment
 
 ### Search Tools
 
 | Tool | Description |
 |------|-------------|
-| `magento_search` | Semantic code search with natural language queries |
-| `magento_find_class` | Find PHP class, interface, or trait by name |
+| `magento_search` | Semantic search -- find any PHP class, method, XML config, template, or GraphQL schema by natural language |
+| `magento_find_class` | Find PHP class, interface, abstract class, or trait by name |
 | `magento_find_method` | Find method implementations across the codebase |
 
 ### Magento-Specific Finders
 
 | Tool | Description |
 |------|-------------|
-| `magento_find_config` | Find XML configuration files (di.xml, events.xml, etc.) |
-| `magento_find_template` | Find PHTML template files |
-| `magento_find_plugin` | Find interceptor plugins and their targets |
-| `magento_find_observer` | Find event observers |
-| `magento_find_controller` | Find controllers by route or action |
-| `magento_find_block` | Find Block classes |
-| `magento_find_graphql` | Find GraphQL resolvers and schema |
-| `magento_find_api` | Find REST API endpoints and webapi.xml routes |
-| `magento_find_cron` | Find cron job definitions |
-| `magento_find_db_schema` | Find database table definitions |
+| `magento_find_config` | Find XML configuration (di.xml, events.xml, routes.xml, system.xml, webapi.xml, module.xml, layout) |
+| `magento_find_template` | Find PHTML template files for frontend or admin rendering |
+| `magento_find_plugin` | Find interceptor plugins (before/after/around methods) and di.xml declarations |
+| `magento_find_observer` | Find event observers and events.xml declarations |
+| `magento_find_preference` | Find DI preference overrides -- which class implements an interface |
+| `magento_find_controller` | Find MVC controllers by frontend or admin route path |
+| `magento_find_block` | Find Block classes for view rendering |
+| `magento_find_graphql` | Find GraphQL schema definitions, resolvers, types, queries, and mutations |
+| `magento_find_api` | Find REST/SOAP API endpoints in webapi.xml |
+| `magento_find_cron` | Find cron job definitions in crontab.xml |
+| `magento_find_db_schema` | Find database table definitions in db_schema.xml (declarative schema) |
 
 ### Analysis Tools
 
 | Tool | Description |
 |------|-------------|
 | `magento_analyze_diff` | Analyze git diffs for risk scoring and change classification |
-| `magento_complexity` | Analyze code complexity (cyclomatic, function count, lines) |
+| `magento_complexity` | Analyze cyclomatic complexity, function count, and line count |
 
 ### Utility Tools
 
 | Tool | Description |
 |------|-------------|
-| `magento_module_structure` | Show module directory structure |
+| `magento_module_structure` | Show complete module structure -- controllers, models, blocks, plugins, observers, configs |
 | `magento_index` | Trigger re-indexing of the codebase |
-| `magento_stats` | View index statistics (ONNX, parallel mode) |
+| `magento_stats` | View index statistics |
+
+### Tool Cross-References
+
+Each tool description includes "See also" hints to help AI clients chain tools effectively:
+
+```mermaid
+graph LR
+  class["find_class"] --> plugin["find_plugin"]
+  class --> pref["find_preference"]
+  class --> method["find_method"]
+  config["find_config"] --> observer["find_observer"]
+  config --> pref
+  config --> api["find_api"]
+  plugin --> class
+  plugin --> method
+  template["find_template"] --> block["find_block"]
+  block --> template
+  block --> config
+  db["find_db_schema"] --> class
+  graphql["find_graphql"] --> class
+  graphql --> method
+  controller["find_controller"] --> config
+
+  style class fill:#4a90d9,color:#fff
+  style method fill:#4a90d9,color:#fff
+  style config fill:#e8a838,color:#000
+  style plugin fill:#d94a4a,color:#fff
+  style observer fill:#d94a4a,color:#fff
+  style pref fill:#e8a838,color:#000
+  style api fill:#e8a838,color:#000
+  style template fill:#68b684,color:#000
+  style block fill:#68b684,color:#000
+  style db fill:#9b59b6,color:#fff
+  style graphql fill:#9b59b6,color:#fff
+  style controller fill:#4a90d9,color:#fff
+```
 
 ### Query Examples
 
@@ -282,11 +378,18 @@ The MCP server exposes 19 tools for AI-assisted Magento development:
 magento_search("how are checkout totals calculated")
 magento_search("product price with tier pricing and catalog rules")
 magento_find_class("ProductRepositoryInterface")
+magento_find_method("getById")
 magento_find_config("di.xml plugin for ProductRepository")
-magento_find_plugin("save method")
+magento_find_plugin({ targetClass: "Topmenu" })
 magento_find_observer("sales_order_place_after")
-magento_find_api("products REST endpoint")
-magento_find_graphql("cart mutation resolver")
+magento_find_preference("StoreManagerInterface")
+magento_find_api("/V1/orders")
+magento_find_controller("catalog/product/view")
+magento_find_graphql("placeOrder")
+magento_find_db_schema("sales_order")
+magento_find_cron("indexer")
+magento_find_block("cart totals")
+magento_find_template("minicart")
 magento_analyze_diff({ commitHash: "abc123" })
 magento_complexity({ module: "Magento_Catalog", threshold: 10 })
 ```
@@ -310,43 +413,74 @@ Pre-built binaries are provided for the following platforms:
 
 ## Validation
 
-Magector is validated against the complete Magento 2.4.7 codebase with **557 test cases** across **50+ categories**.
+Magector is validated at two levels:
 
-### Overall Results
+1. **E2E MCP accuracy tests** -- 101 queries across 16 tool categories via stdio JSON-RPC
+2. **Rust-level validation** -- 557 test cases across 50+ categories against Magento 2.4.7
+
+### E2E Accuracy (MCP Tools)
+
+```mermaid
+---
+config:
+  themeVariables:
+    pie1: "#4caf50"
+    pie2: "#ff9800"
+    pie3: "#2196f3"
+    pie4: "#9c27b0"
+---
+pie title Accuracy Breakdown (94.9/100)
+  "Pass Rate (100%)" : 100
+  "Precision (93.2%)" : 93.2
+  "MRR (99.2%)" : 99.2
+  "NDCG@10 (85.5%)" : 85.5
+```
 
 | Metric | Value |
 |--------|-------|
-| **Accuracy** | **96.1%** |
-| Tests passed | 535 / 557 |
-| Index size | 17,891 vectors |
-| Query time | 15-45ms |
-| Indexing time | ~3 minutes |
+| **Grade** | **A (94.9/100)** |
+| **Pass rate** | 101/101 (100%) |
+| **Precision** | 93.2% |
+| **MRR** | 99.2% |
+| **NDCG@10** | 85.5% |
+| **Index size** | 35,795 vectors |
+| **Query time** | 10-45ms |
 
-### Category Performance
+#### Per-Tool Performance
 
-**100% accuracy (34 categories):**
-Controllers, Blocks, Observers, GraphQL, API, Shipping, Tax, Payment, EAV, Indexers, Cron, Email, Import, Export, Cache, Queue, Admin, CMS, Promotions, Debugging, Architecture, Order Management, Plugin Advanced, GraphQL Advanced, API Advanced, Admin Advanced, Email Advanced, Cron Advanced, Queue Advanced, Import Advanced, Payment Advanced, URL Rewrite, SEO, Marketing
+| Tool | Pass | Precision | MRR | NDCG |
+|------|------|-----------|-----|------|
+| find_class | 100% | 100% | 100% | 100% |
+| find_method | 100% | 89% | 100% | 87% |
+| find_controller | 100% | 100% | 100% | -- |
+| find_observer | 100% | 100% | 100% | 100% |
+| find_plugin | 100% | 96% | 100% | 100% |
+| find_preference | 100% | 100% | 100% | 100% |
+| find_api | 100% | 100% | 100% | 100% |
+| find_cron | 100% | 100% | 100% | 100% |
+| find_db_schema | 100% | 100% | 100% | 100% |
+| find_graphql | 100% | 100% | 100% | 100% |
+| find_block | 100% | 100% | 100% | 100% |
+| find_config | 100% | 89% | 89% | 93% |
+| find_template | 100% | 84% | 100% | 100% |
+| search | 100% | 99% | 100% | 100% |
 
-**90-99% accuracy:**
-Catalog Product (96%), Customer Advanced (95%), Checkout Flow (95%), Shipping Advanced (93.3%), Category (93.3%), Frontend JS (90%), Search (90%)
+### Integration Tests
 
-**Known limitations:**
-- XML configuration file search (di.xml, plugin configs) -- semantic search favors PHP files with richer content
-- Very generic single-word queries -- include more context for better results
+62 integration tests covering MCP protocol compliance, tool schemas, tool calls, analysis tools, and stdout JSON integrity.
 
-### Running Validation
+### Running Tests
 
 ```bash
-# Full validation (downloads Magento, indexes, validates)
-cd rust-core
-cargo run --release -- validate
+# E2E accuracy tests (101 queries, requires indexed codebase)
+npm run test:accuracy
+npm run test:accuracy:verbose
 
-# Skip indexing (use existing index)
-cargo run --release -- validate -m ./magento2 --skip-index
+# Integration tests (62 tests)
+npm test
 
-# Node.js validation suite
-npm run validate
-npm run validate:verbose
+# Rust validation (557 test cases)
+cd rust-core && cargo run --release -- validate -m ./magento2 --skip-index
 ```
 
 ---
@@ -357,7 +491,7 @@ npm run validate:verbose
 magector/
 ├── src/                          # Node.js source
 │   ├── cli.js                    # CLI entry point (npx magector <command>)
-│   ├── mcp-server.js             # MCP server (19 tools, delegates to Rust core)
+│   ├── mcp-server.js             # MCP server (19 tools, structured JSON output)
 │   ├── binary.js                 # Platform binary resolver
 │   ├── model.js                  # ONNX model resolver/downloader
 │   ├── init.js                   # Full init command (index + IDE config)
@@ -372,7 +506,10 @@ magector/
 │       ├── test-data-generator.js
 │       └── accuracy-calculator.js
 ├── tests/                        # Automated tests
-│   └── mcp-server.test.js        # MCP server tests (Rust core + analysis tools)
+│   ├── mcp-server.test.js        # Integration tests (62 tests)
+│   ├── mcp-accuracy.test.js      # E2E accuracy tests (101 queries)
+│   └── results/                  # Test result artifacts
+│       └── accuracy-report.json
 ├── platforms/                    # Platform-specific binary packages
 │   ├── darwin-arm64/             # macOS ARM (Apple Silicon)
 │   ├── linux-x64/                # Linux x64
@@ -381,11 +518,11 @@ magector/
 ├── rust-core/                    # Rust high-performance core
 │   ├── Cargo.toml
 │   ├── src/
-│   │   ├── main.rs               # Rust CLI (index, search, validate)
+│   │   ├── main.rs               # Rust CLI (index, search, serve, validate)
 │   │   ├── lib.rs                # Library exports
 │   │   ├── indexer.rs             # Core indexing with progress output
 │   │   ├── embedder.rs            # ONNX embedding (MiniLM-L6-v2)
-│   │   ├── vectordb.rs            # HNSW vector database
+│   │   ├── vectordb.rs            # HNSW vector database + hybrid search
 │   │   ├── ast.rs                 # Tree-sitter AST (PHP + JS)
 │   │   ├── magento.rs             # Magento pattern detection (Rust)
 │   │   └── validation.rs          # 557 test cases, validation framework
@@ -424,31 +561,99 @@ Magector scans every `.php`, `.js`, `.xml`, `.phtml`, and `.graphqls` file in a 
 1. Query text is enriched with pattern synonyms (e.g., "controller" adds "action execute http request dispatch")
 2. The enriched query is embedded into the same 384-dimensional vector space
 3. HNSW finds the nearest neighbors by cosine similarity
-4. Results are ranked and returned with file path, class name, Magento type, and relevance score
+4. **Hybrid reranking** boosts results with keyword matches in path and search text
+5. Results are returned as structured JSON with file path, class name, methods, role badges, and content snippet
 
-### 3. MCP Integration
+### 3. Persistent Serve Mode
+
+The MCP server spawns a persistent Rust process (`magector-core serve`) that keeps the ONNX model and HNSW index loaded in memory. Queries are sent as JSON over stdin and responses returned via stdout -- eliminating the ~2.6s cold-start overhead of loading the model per query. Falls back to single-shot `execFileSync` if the serve process is unavailable.
+
+```mermaid
+flowchart TB
+  subgraph startup ["Startup (once)"]
+    S1[Load ONNX Model\n~500ms] --> S2[Load HNSW Index\n~1s]
+    S2 --> S3["Send ready signal\n{ok:true, ready:true}"]
+  end
+
+  subgraph query ["Per Query (~10-45ms)"]
+    Q1["stdin: JSON query"] --> Q2[Embed query\n~2ms]
+    Q2 --> Q3[HNSW search\n~5-15ms]
+    Q3 --> Q4[Hybrid rerank\n~1ms]
+    Q4 --> Q5["stdout: JSON response"]
+  end
+
+  startup --> query
+
+  subgraph fallback ["Fallback (if serve unavailable)"]
+    F1["execFileSync\n~2.6s cold start"]
+  end
+
+  style startup fill:#e8f4e8,color:#000
+  style query fill:#e8e8f4,color:#000
+  style fallback fill:#f4e8e8,color:#000
+```
+
+### 4. MCP Integration
 
 The MCP server delegates all search/index operations to the Rust core binary. Analysis tools (diff, complexity) use ruvector JS modules directly.
 
-```
-Developer: "How does checkout totals calculation work?"
-     │
-     ▼
-AI Assistant ──▶ magento_search("checkout totals collector calculate")
-     │
-     ▼
-MCP Server ──▶ magector-core search (Rust) ──▶ HNSW lookup ──▶ Ranked results
-     │
-     ▼
-Results:
-  1. Quote/Model/Quote/TotalsCollector.php (0.554)
-  2. Quote/Model/Quote/Address/Total/Collector.php (0.524)
-  3. Quote/Model/Quote/Address/Total/Subtotal.php (0.517)
+```mermaid
+sequenceDiagram
+  participant Dev as Developer
+  participant AI as AI Assistant
+  participant MCP as MCP Server<br/>(Node.js)
+  participant Rust as Persistent Rust<br/>Process
+  participant HNSW as HNSW Index<br/>(35K vectors)
+
+  Dev->>AI: "How does checkout totals calculation work?"
+  AI->>MCP: magento_search("checkout totals collector")
+  MCP->>Rust: {"command":"search","query":"...","limit":10}
+  Rust->>HNSW: Embed query → nearest neighbor
+  HNSW-->>Rust: Top candidates + scores
+  Rust-->>MCP: {"ok":true,"data":[...]}
+  MCP-->>AI: Structured JSON with paths,<br/>methods, badges, snippets
+  AI-->>Dev: TotalsCollector.php,<br/>Address/Total/Collector.php, ...
 ```
 
 ---
 
 ## Magento Patterns Detected
+
+```mermaid
+mindmap
+  root((Magento 2\nPatterns))
+    PHP Classes
+      Controller
+      Model
+      Repository
+      Block
+      Helper
+      ViewModel
+      Console Command
+      Data Provider
+    Interception
+      Plugin
+      Observer
+      Preference
+    XML Config
+      di.xml
+      events.xml
+      webapi.xml
+      routes.xml
+      system.xml
+      layout XML
+      module.xml
+      crontab.xml
+      db_schema.xml
+    Frontend
+      PHTML Template
+      JavaScript
+      GraphQL Schema
+      GraphQL Resolver
+    Database
+      Setup Patch
+      Declarative Schema
+```
 
 Magector understands these Magento 2 architectural patterns:
 
@@ -490,7 +695,7 @@ Copy `.cursorrules` to your Magento project root for optimized AI-assisted devel
 
 ### Model Configuration
 
-The ONNX model (`all-MiniLM-L6-v2`) is automatically downloaded on first run to `rust-core/models/`. To use a different location:
+The ONNX model (`all-MiniLM-L6-v2`) is automatically downloaded on first run to `~/.magector/models/`. To use a different location:
 
 ```bash
 magector-core index -m /path/to/magento -c /custom/model/path
@@ -535,16 +740,20 @@ cargo run --release -- validate
 ### Testing
 
 ```bash
-# Run MCP server auto tests (129 tests, requires indexed codebase)
+# Integration tests (62 tests, requires indexed codebase)
 npm test
+
+# E2E accuracy tests (101 queries)
+npm run test:accuracy
+npm run test:accuracy:verbose
 
 # Run without index (unit + schema tests only)
 npm run test:no-index
 
-# Run Rust unit tests
+# Rust unit tests
 cd rust-core && cargo test
 
-# Run Rust validation (557 test cases)
+# Rust validation (557 test cases)
 cd rust-core && cargo run --release -- validate -m ./magento2 --skip-index
 ```
 
@@ -553,18 +762,23 @@ cd rust-core && cargo run --release -- validate -m ./magento2 --skip-index
 1. Add pattern detection in `rust-core/src/magento.rs`
 2. Add search text enrichment in `rust-core/src/indexer.rs`
 3. Add validation test cases in `rust-core/src/validation.rs`
-4. Rebuild and run validation to verify:
+4. Add E2E accuracy test cases in `tests/mcp-accuracy.test.js`
+5. Rebuild and run validation to verify:
 
 ```bash
 cargo build --release
 ./target/release/magector-core validate -m ./magento2 --skip-index
+npm run test:accuracy
 ```
 
 ### Adding MCP Tools
 
 1. Define the tool schema in `src/mcp-server.js` (ListToolsRequestSchema handler)
-2. Implement the handler in the CallToolRequestSchema handler
-3. Test with Claude Code or the MCP inspector
+2. Include keyword-rich descriptions and cross-tool "See also" references
+3. Implement the handler in the CallToolRequestSchema handler
+4. Return structured JSON via `formatSearchResults()`
+5. Add E2E test cases in `tests/mcp-accuracy.test.js`
+6. Test with Claude Code or the MCP inspector
 
 ---
 
@@ -582,8 +796,10 @@ cargo build --release
 
 - **Algorithm:** HNSW (Hierarchical Navigable Small World)
 - **Library:** `hnsw_rs`
+- **Parameters:** M=32, max_layers=16, ef_construction=200
 - **Distance metric:** Cosine similarity
-- **Persistence:** JSON serialization (HNSW + metadata)
+- **Hybrid search:** Semantic nearest-neighbor + keyword reranking in path and search text
+- **Persistence:** Bincode binary serialization
 
 ### Index Structure
 
@@ -596,13 +812,15 @@ struct IndexMetadata {
     magento_type: String,       // controller, model, block, plugin, ...
     class_name: Option<String>,
     namespace: Option<String>,
-    methods: Vec<String>,
-    search_text: String,        // Enriched searchable text
+    methods: Vec<String>,       // extracted method names
+    search_text: String,        // enriched searchable text
     is_controller: bool,
     is_plugin: bool,
     is_observer: bool,
     is_model: bool,
     is_block: bool,
+    is_repository: bool,
+    is_resolver: bool,
     // ... 20+ pattern flags
 }
 ```
@@ -611,8 +829,9 @@ struct IndexMetadata {
 
 | Operation | Time | Notes |
 |-----------|------|-------|
-| Full index (18K files) | ~1 min | Parallel parsing + batched ONNX embedding |
-| Single query | 15-45ms | HNSW approximate nearest neighbor |
+| Full index (36K vectors) | ~1 min | Parallel parsing + batched ONNX embedding |
+| Single query (warm) | 10-45ms | Persistent serve process, HNSW + rerank |
+| Single query (cold) | ~2.6s | Includes ONNX model + index load |
 | Embedding generation | ~2ms | ONNX Runtime with CoreML/CUDA |
 | Batch embedding (32) | ~30ms | Batched ONNX inference |
 | Model load | ~500ms | One-time at startup |
@@ -620,19 +839,48 @@ struct IndexMetadata {
 
 ### Performance Optimizations
 
+- **Persistent serve mode** -- Rust process keeps ONNX model + HNSW index in memory via stdin/stdout JSON protocol
+- **Query cache** -- LRU cache (200 entries) avoids re-embedding identical queries
+- **Hybrid reranking** -- combines semantic similarity with keyword matching for better precision
 - **Batched ONNX embedding** -- 32 texts per inference call (vs. 1-at-a-time), 3-5x faster embedding
-- **Dynamic thread scaling** -- ONNX intra-op threads scale to CPU core count (vs. hardcoded 4)
+- **Dynamic thread scaling** -- ONNX intra-op threads scale to CPU core count
 - **Thread-local AST parsers** -- each rayon thread gets its own tree-sitter parser (no mutex contention)
 - **Bincode persistence** -- binary serialization replaces JSON (3-5x faster save/load, ~5x smaller files)
-- **Adaptive HNSW capacity** -- pre-sized to actual vector count (no wasted memory)
+- **Adaptive HNSW capacity** -- pre-sized to actual vector count
 - **Parallel HNSW insert** -- batch insert uses hnsw_rs parallel insertion on load and index
-- **Optimized file discovery** -- no symlink following, uses cached DirEntry metadata
+- **Tuned ef_search** -- optimized search parameters for 36K vector index (ef_search=50 for search, 64 for hybrid)
 
 ---
 
 ## Roadmap
 
+```mermaid
+gantt
+  title Magector Development Roadmap
+  dateFormat YYYY-MM
+  axisFormat %b %Y
+  section Completed
+    Hybrid search (semantic + keyword)       :done, 2025-01, 2025-02
+    Persistent serve mode                    :done, 2025-02, 2025-03
+    Structured JSON output                   :done, 2025-03, 2025-03
+    Cross-tool discovery hints               :done, 2025-03, 2025-03
+    E2E accuracy test suite (101 queries)    :done, 2025-03, 2025-03
+  section Planned
+    Method-level chunking                    :active, 2025-04, 2025-05
+    Query intent classification              :2025-05, 2025-06
+    Vector-level file type filtering         :2025-06, 2025-07
+    Incremental indexing                     :2025-07, 2025-08
+    VSCode extension                         :2025-08, 2025-10
+    Web UI for browsing results              :2025-10, 2025-12
+    Magento Commerce support                 :2026-01, 2026-03
+```
+
 - [x] Hybrid search (semantic + keyword re-ranking)
+- [x] Persistent serve mode (eliminates cold-start latency)
+- [x] Structured JSON output (methods, badges, snippets)
+- [x] Cross-tool discovery hints for AI clients
+- [x] E2E accuracy test suite (101 queries)
+- [ ] Method-level chunking (per-method vectors for direct method search)
 - [ ] Query intent classification (auto-detect "give me XML" vs "give me PHP")
 - [ ] Filtered search by file type at the vector level
 - [ ] Incremental indexing (only re-index changed files)
@@ -655,7 +903,7 @@ Contributions are welcome. Please:
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/improvement`)
 3. Add tests for new functionality
-4. Run validation to ensure accuracy doesn't regress
+4. Run validation to ensure accuracy doesn't regress: `npm run test:accuracy`
 5. Submit a pull request
 
 ---
