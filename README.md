@@ -72,19 +72,22 @@ Without Magector, asking Claude Code or Cursor *"how are checkout totals calcula
 ## Architecture
 
 ```mermaid
-block-beta
-  columns 2
-  block:rust["Rust Core"]:1
-    A["Tree-sitter AST Parser\nPHP + JS"]
-    B["Magento Pattern Detection\n20+ patterns"]
-    C["ONNX Embedder\nMiniLM-L6-v2 · 384 dim"]
-    D["HNSW Vector DB\n+ Hybrid Reranking"]
+flowchart TD
+  subgraph rust ["Rust Core"]
+    A["AST Parser · PHP + JS"]
+    B["Pattern Detection · 20+"]
+    C["ONNX Embedder · 384d"]
+    D["HNSW + Reranking"]
+    A --> B --> C --> D
   end
-  block:node["Node.js Layer"]:1
-    E["MCP Server\n19 tools · JSON output"]
-    F["Persistent Serve Process\nstdin/stdout JSON"]
-    G["CLI Interface\ninit · index · search · serve"]
+  subgraph node ["Node.js Layer"]
+    E["MCP Server · 19 tools"]
+    F["Persistent Serve"]
+    G["CLI · init/index/search"]
+    E --> F
+    G --> F
   end
+  node -->|stdin/stdout JSON| rust
 
   style rust fill:#f4a460,color:#000
   style node fill:#68b684,color:#000
@@ -93,26 +96,25 @@ block-beta
 ### Indexing Pipeline
 
 ```mermaid
-flowchart LR
-  A[Source File\n.php .xml .js .phtml .graphqls] --> B[Tree-sitter\nAST Parser]
-  B --> C[Magento Pattern\nDetection]
-  C --> D[Search Text\nEnrichment]
-  D --> E[ONNX Runtime\nMiniLM-L6-v2]
-  E --> F[384-dim\nEmbedding]
-  A --> G[Metadata\npath · class · namespace\nmethods · patterns]
-  F --> H[(HNSW Index\n35,795 vectors)]
-  G --> H
+flowchart TD
+  A[Source File] --> B[AST Parser]
+  B --> C[Pattern Detection]
+  C --> D[Text Enrichment]
+  D --> E[ONNX Embedding]
+  E --> F[(HNSW Index)]
+  A --> G[Metadata]
+  G --> F
 ```
 
 ### Search Pipeline
 
 ```mermaid
-flowchart LR
-  Q[Query Text] --> E1[Pattern Synonym\nEnrichment]
-  E1 --> E2[ONNX Embedding\n384-dim vector]
-  E2 --> H[HNSW\nNearest Neighbor]
-  H --> R[Hybrid\nReranking]
-  R --> J[Structured JSON\npath · class · methods\nbadges · snippet]
+flowchart TD
+  Q[Query] --> E1[Synonym Enrichment]
+  E1 --> E2[ONNX Embedding]
+  E2 --> H[HNSW Search]
+  H --> R[Hybrid Reranking]
+  R --> J[Structured JSON]
 ```
 
 ### Components
@@ -145,12 +147,12 @@ npx magector init
 This single command handles the entire setup:
 
 ```mermaid
-flowchart LR
-  A["npx magector init"] --> B[Verify Magento\nProject]
-  B --> C[Download ONNX Model\n~86MB · cached]
-  C --> D[Index Codebase\n36K+ vectors]
-  D --> E[Detect IDE\nCursor / Claude Code]
-  E --> F[Write Config\nMCP + IDE rules]
+flowchart TD
+  A["npx magector init"] --> B[Verify Project]
+  B --> C[Download Model]
+  C --> D[Index Codebase]
+  D --> E[Detect IDE]
+  E --> F[Write Config]
   F --> G[Update .gitignore]
 ```
 
@@ -341,35 +343,35 @@ All search tools return structured JSON:
 Each tool description includes "See also" hints to help AI clients chain tools effectively:
 
 ```mermaid
-graph LR
-  class["find_class"] --> plugin["find_plugin"]
-  class --> pref["find_preference"]
-  class --> method["find_method"]
-  config["find_config"] --> observer["find_observer"]
-  config --> pref
-  config --> api["find_api"]
-  plugin --> class
-  plugin --> method
-  template["find_template"] --> block["find_block"]
-  block --> template
-  block --> config
-  db["find_db_schema"] --> class
-  graphql["find_graphql"] --> class
-  graphql --> method
-  controller["find_controller"] --> config
+graph TD
+  cls["find_class"] --> plg["find_plugin"]
+  cls --> prf["find_preference"]
+  cls --> mtd["find_method"]
+  cfg["find_config"] --> obs["find_observer"]
+  cfg --> prf
+  cfg --> api["find_api"]
+  plg --> cls
+  plg --> mtd
+  tpl["find_template"] --> blk["find_block"]
+  blk --> tpl
+  blk --> cfg
+  dbs["find_db_schema"] --> cls
+  gql["find_graphql"] --> cls
+  gql --> mtd
+  ctl["find_controller"] --> cfg
 
-  style class fill:#4a90d9,color:#fff
-  style method fill:#4a90d9,color:#fff
-  style config fill:#e8a838,color:#000
-  style plugin fill:#d94a4a,color:#fff
-  style observer fill:#d94a4a,color:#fff
-  style pref fill:#e8a838,color:#000
+  style cls fill:#4a90d9,color:#fff
+  style mtd fill:#4a90d9,color:#fff
+  style cfg fill:#e8a838,color:#000
+  style plg fill:#d94a4a,color:#fff
+  style obs fill:#d94a4a,color:#fff
+  style prf fill:#e8a838,color:#000
   style api fill:#e8a838,color:#000
-  style template fill:#68b684,color:#000
-  style block fill:#68b684,color:#000
-  style db fill:#9b59b6,color:#fff
-  style graphql fill:#9b59b6,color:#fff
-  style controller fill:#4a90d9,color:#fff
+  style tpl fill:#68b684,color:#000
+  style blk fill:#68b684,color:#000
+  style dbs fill:#9b59b6,color:#fff
+  style gql fill:#9b59b6,color:#fff
+  style ctl fill:#4a90d9,color:#fff
 ```
 
 ### Query Examples
@@ -425,15 +427,11 @@ Magector is validated at two levels:
 config:
   themeVariables:
     pie1: "#4caf50"
-    pie2: "#ff9800"
-    pie3: "#2196f3"
-    pie4: "#9c27b0"
+    pie2: "#f44336"
 ---
-pie title Accuracy Breakdown (94.9/100)
-  "Pass Rate (100%)" : 100
-  "Precision (93.2%)" : 93.2
-  "MRR (99.2%)" : 99.2
-  "NDCG@10 (85.5%)" : 85.5
+pie title Test Pass Rate (101 queries)
+  "Passed (101)" : 101
+  "Failed (0)" : 0
 ```
 
 | Metric | Value |
@@ -569,23 +567,20 @@ Magector scans every `.php`, `.js`, `.xml`, `.phtml`, and `.graphqls` file in a 
 The MCP server spawns a persistent Rust process (`magector-core serve`) that keeps the ONNX model and HNSW index loaded in memory. Queries are sent as JSON over stdin and responses returned via stdout -- eliminating the ~2.6s cold-start overhead of loading the model per query. Falls back to single-shot `execFileSync` if the serve process is unavailable.
 
 ```mermaid
-flowchart TB
+flowchart TD
   subgraph startup ["Startup (once)"]
-    S1[Load ONNX Model\n~500ms] --> S2[Load HNSW Index\n~1s]
-    S2 --> S3["Send ready signal\n{ok:true, ready:true}"]
+    S1[Load Model] --> S2[Load Index]
+    S2 --> S3[Ready Signal]
   end
-
-  subgraph query ["Per Query (~10-45ms)"]
-    Q1["stdin: JSON query"] --> Q2[Embed query\n~2ms]
-    Q2 --> Q3[HNSW search\n~5-15ms]
-    Q3 --> Q4[Hybrid rerank\n~1ms]
-    Q4 --> Q5["stdout: JSON response"]
+  subgraph query ["Per Query (10-45ms)"]
+    Q1[stdin JSON] --> Q2[Embed]
+    Q2 --> Q3[HNSW Search]
+    Q3 --> Q4[Rerank]
+    Q4 --> Q5[stdout JSON]
   end
-
   startup --> query
-
-  subgraph fallback ["Fallback (if serve unavailable)"]
-    F1["execFileSync\n~2.6s cold start"]
+  subgraph fallback ["Fallback"]
+    F1[execFileSync ~2.6s]
   end
 
   style startup fill:#e8f4e8,color:#000
@@ -599,20 +594,20 @@ The MCP server delegates all search/index operations to the Rust core binary. An
 
 ```mermaid
 sequenceDiagram
-  participant Dev as Developer
-  participant AI as AI Assistant
-  participant MCP as MCP Server<br/>(Node.js)
-  participant Rust as Persistent Rust<br/>Process
-  participant HNSW as HNSW Index<br/>(35K vectors)
+  participant Dev
+  participant AI
+  participant MCP
+  participant Rust
+  participant HNSW
 
-  Dev->>AI: "How does checkout totals calculation work?"
-  AI->>MCP: magento_search("checkout totals collector")
-  MCP->>Rust: {"command":"search","query":"...","limit":10}
-  Rust->>HNSW: Embed query → nearest neighbor
-  HNSW-->>Rust: Top candidates + scores
-  Rust-->>MCP: {"ok":true,"data":[...]}
-  MCP-->>AI: Structured JSON with paths,<br/>methods, badges, snippets
-  AI-->>Dev: TotalsCollector.php,<br/>Address/Total/Collector.php, ...
+  Dev->>AI: "checkout totals?"
+  AI->>MCP: magento_search(...)
+  MCP->>Rust: JSON query
+  Rust->>HNSW: embed + search
+  HNSW-->>Rust: candidates
+  Rust-->>MCP: JSON results
+  MCP-->>AI: paths, methods, badges
+  AI-->>Dev: TotalsCollector.php
 ```
 
 ---
@@ -621,38 +616,29 @@ sequenceDiagram
 
 ```mermaid
 mindmap
-  root((Magento 2\nPatterns))
-    PHP Classes
+  root((Patterns))
+    PHP
       Controller
       Model
       Repository
       Block
       Helper
       ViewModel
-      Console Command
-      Data Provider
     Interception
       Plugin
       Observer
       Preference
-    XML Config
+    XML
       di.xml
       events.xml
       webapi.xml
       routes.xml
-      system.xml
-      layout XML
-      module.xml
       crontab.xml
       db_schema.xml
     Frontend
-      PHTML Template
+      Template
       JavaScript
-      GraphQL Schema
-      GraphQL Resolver
-    Database
-      Setup Patch
-      Declarative Schema
+      GraphQL
 ```
 
 Magector understands these Magento 2 architectural patterns:
@@ -856,23 +842,24 @@ struct IndexMetadata {
 
 ```mermaid
 gantt
-  title Magector Development Roadmap
+  title Roadmap
   dateFormat YYYY-MM
-  axisFormat %b %Y
-  section Completed
-    Hybrid search (semantic + keyword)       :done, 2025-01, 2025-02
-    Persistent serve mode                    :done, 2025-02, 2025-03
-    Structured JSON output                   :done, 2025-03, 2025-03
-    Cross-tool discovery hints               :done, 2025-03, 2025-03
-    E2E accuracy test suite (101 queries)    :done, 2025-03, 2025-03
-  section Planned
-    Method-level chunking                    :active, 2025-04, 2025-05
-    Query intent classification              :2025-05, 2025-06
-    Vector-level file type filtering         :2025-06, 2025-07
-    Incremental indexing                     :2025-07, 2025-08
-    VSCode extension                         :2025-08, 2025-10
-    Web UI for browsing results              :2025-10, 2025-12
-    Magento Commerce support                 :2026-01, 2026-03
+  axisFormat %b
+  section Done
+    Hybrid search       :done, 2025-01, 30d
+    Serve mode          :done, 2025-02, 30d
+    JSON output         :done, 2025-03, 15d
+    Cross-tool hints    :done, 2025-03, 15d
+    E2E tests           :done, 2025-03, 15d
+  section Next
+    Method chunking     :active, 2025-04, 30d
+    Intent detection    :2025-05, 30d
+    Type filtering      :2025-06, 30d
+    Incremental index   :2025-07, 30d
+  section Future
+    VSCode extension    :2025-08, 60d
+    Web UI              :2025-10, 60d
+    Commerce support    :2026-01, 60d
 ```
 
 - [x] Hybrid search (semantic + keyword re-ranking)
