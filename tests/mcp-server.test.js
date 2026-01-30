@@ -142,7 +142,7 @@ async function main() {
     const toolsResp = await client.send('tools/list', {});
     const tools = toolsResp.result?.tools || [];
     const toolNames = tools.map((t) => t.name);
-    log(tools.length === 19 ? 'PASS' : 'FAIL', `tools/list returns 19 tools`, `got ${tools.length}`);
+    log(tools.length === 20 ? 'PASS' : 'FAIL', `tools/list returns 20 tools`, `got ${tools.length}`);
 
     // Verify all expected tools present
     const expectedTools = [
@@ -152,7 +152,7 @@ async function main() {
       'magento_find_preference', 'magento_find_api', 'magento_find_controller',
       'magento_find_block', 'magento_find_cron', 'magento_find_graphql',
       'magento_find_db_schema', 'magento_module_structure',
-      'magento_analyze_diff', 'magento_complexity',
+      'magento_analyze_diff', 'magento_complexity', 'magento_trace_flow',
     ];
     for (const name of expectedTools) {
       log(toolNames.includes(name) ? 'PASS' : 'FAIL', `tool '${name}' listed`);

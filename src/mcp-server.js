@@ -302,6 +302,285 @@ function rerank(results, boosts = {}, weight = 0.3) {
   }).sort((a, b) => b.score - a.score);
 }
 
+// ─── Trace Flow helpers ─────────────────────────────────────────
+
+function detectEntryType(entryPoint) {
+  if (/^\/?V\d/.test(entryPoint)) return 'api';
+  if (!entryPoint.includes('/') && /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/.test(entryPoint)) return 'event';
+  if (!entryPoint.includes('/') && /^[a-z]/.test(entryPoint) && /[A-Z]/.test(entryPoint)) return 'graphql';
+  if (entryPoint.includes('/')) return 'route';
+  return 'route';
+}
+
+/** Wrapper that never throws — returns [] on failure so trace steps are independent. */
+async function safeSearch(query, limit = 10) {
+  try {
+    return await rustSearchAsync(query, limit);
+  } catch {
+    return [];
+  }
+}
+
+async function traceRoute(entryPoint, depth) {
+  const parts = entryPoint.replace(/^\//, '').split('/');
+  const nameParts = parts.map(p => p.charAt(0).toUpperCase() + p.slice(1));
+  const trace = {};
+
+  // Controller + route config (independent, run in parallel)
+  const [controllerRaw, routeRaw] = await Promise.all([
+    safeSearch(`${nameParts.join(' ')} controller execute action`, 30),
+    safeSearch(`routes.xml ${parts[0]}`, 20)
+  ]);
+  const controllers = controllerRaw.map(normalizeResult).filter(r => r.path?.includes('/Controller/'));
+  // Boost results matching route path segments
+  const ranked = controllers.map(r => {
+    const bonus = nameParts.filter(p => r.path?.includes(p)).length * 0.3;
+    return { ...r, score: (r.score || 0) + bonus };
+  }).sort((a, b) => b.score - a.score);
+  const best = ranked[0];
+  if (best) {
+    trace.controller = { path: best.path, className: best.className || null, methods: best.methods || [] };
+  }
+
+  const routeConfigs = routeRaw.map(normalizeResult).filter(r => r.path?.includes('routes.xml'));
+  if (routeConfigs.length > 0) {
+    trace.routeConfig = routeConfigs.slice(0, 5).map(r => ({ path: r.path, snippet: (r.searchText || '').slice(0, 200) }));
+  }
+
+  // Plugins on controller
+  if (best?.className) {
+    const pluginRaw = await safeSearch(`plugin interceptor ${best.className}`, 20);
+    const plugins = pluginRaw.map(normalizeResult).filter(r => r.isPlugin || r.path?.includes('/Plugin/') || r.path?.includes('di.xml'));
+    if (plugins.length > 0) {
+      trace.plugins = plugins.slice(0, 10).map(r => ({ path: r.path, className: r.className || null, methods: r.methods || [] }));
+    }
+  }
+
+  if (depth === 'deep') {
+    const moduleName = best?.module || nameParts[0];
+    const eventName = parts.join('_');
+    const layoutHandle = parts.join('_');
+
+    // All deep searches are independent — run in parallel
+    const [diRaw, obsRaw, layoutRaw, tplRaw] = await Promise.all([
+      safeSearch(`di.xml preference ${moduleName}`, 20),
+      safeSearch(`event ${eventName} observer`, 20),
+      safeSearch(`layout ${layoutHandle}`, 20),
+      safeSearch(`${nameParts.join(' ')} template phtml`, 20)
+    ]);
+
+    const prefs = diRaw.map(normalizeResult).filter(r => r.path?.includes('di.xml'));
+    if (prefs.length > 0) {
+      trace.preferences = prefs.slice(0, 10).map(r => ({ path: r.path, snippet: (r.searchText || '').slice(0, 200) }));
+    }
+
+    const observers = obsRaw.map(normalizeResult).filter(r => r.isObserver || r.path?.includes('/Observer/') || r.path?.includes('events.xml'));
+    if (observers.length > 0) {
+      trace.observers = observers.slice(0, 10).map(r => ({ eventName: r.searchText?.match(/event\s+name="([^"]+)"/)?.[1] || eventName, path: r.path, className: r.className || null }));
+    }
+
+    const layouts = layoutRaw.map(normalizeResult).filter(r => r.path?.includes('/layout/'));
+    if (layouts.length > 0) {
+      trace.layout = layouts.slice(0, 10).map(r => ({ path: r.path }));
+    }
+
+    const templates = tplRaw.map(normalizeResult).filter(r => r.path?.includes('.phtml'));
+    if (templates.length > 0) {
+      trace.templates = templates.slice(0, 10).map(r => ({ path: r.path }));
+    }
+  }
+
+  return trace;
+}
+
+async function traceApi(entryPoint, depth) {
+  const trace = {};
+
+  // webapi.xml
+  const webapiRaw = await safeSearch(`webapi route ${entryPoint}`, 20);
+  const webapis = webapiRaw.map(normalizeResult).filter(r => r.path?.includes('webapi.xml'));
+  if (webapis.length > 0) {
+    trace.webapiConfig = webapis.slice(0, 5).map(r => ({ path: r.path, snippet: (r.searchText || '').slice(0, 300) }));
+  }
+
+  // Service class — extract from webapi searchText
+  let serviceClassName = null;
+  for (const w of webapis) {
+    const match = (w.searchText || '').match(/service\s+class="([^"]+)"/);
+    if (match) { serviceClassName = match[1]; break; }
+  }
+  let serviceShortName = null;
+  if (serviceClassName) {
+    serviceShortName = serviceClassName.split('\\').pop();
+    const svcRaw = await safeSearch(serviceShortName, 10);
+    const svcs = svcRaw.map(normalizeResult).filter(r => r.className?.includes(serviceShortName));
+    if (svcs.length > 0) {
+      trace.serviceClass = { path: svcs[0].path, className: svcs[0].className || serviceClassName, methods: svcs[0].methods || [] };
+    }
+  }
+
+  if (depth === 'deep') {
+    const resource = entryPoint.replace(/^\/?V\d+\//, '').split('/')[0];
+
+    // Plugins + observers are independent — run in parallel
+    const searches = [safeSearch(`event ${resource} observer`, 20)];
+    if (serviceClassName) {
+      searches.push(safeSearch(`plugin interceptor ${serviceClassName}`, 20));
+    }
+    const [obsRaw, pluginRaw] = await Promise.all(searches);
+
+    if (pluginRaw) {
+      const plugins = pluginRaw.map(normalizeResult).filter(r => r.isPlugin || r.path?.includes('/Plugin/') || r.path?.includes('di.xml'));
+      if (plugins.length > 0) {
+        trace.plugins = plugins.slice(0, 10).map(r => ({ path: r.path, className: r.className || null, methods: r.methods || [] }));
+      }
+    }
+
+    const observers = obsRaw.map(normalizeResult).filter(r => r.isObserver || r.path?.includes('/Observer/') || r.path?.includes('events.xml'));
+    if (observers.length > 0) {
+      trace.observers = observers.slice(0, 10).map(r => ({ eventName: resource, path: r.path, className: r.className || null }));
+    }
+  }
+
+  return trace;
+}
+
+async function traceGraphql(entryPoint, depth) {
+  const trace = {};
+
+  // Schema + resolver (independent, run in parallel)
+  const [schemaRaw, resolverRaw] = await Promise.all([
+    safeSearch(`graphql ${entryPoint} mutation query`, 20),
+    safeSearch(`${entryPoint} resolver`, 20)
+  ]);
+  const schemas = schemaRaw.map(normalizeResult).filter(r => r.path?.includes('.graphqls') || r.type === 'graphql');
+  if (schemas.length > 0) {
+    trace.schema = schemas.slice(0, 5).map(r => ({ path: r.path, snippet: (r.searchText || '').slice(0, 300) }));
+  }
+
+  const resolvers = resolverRaw.map(normalizeResult).filter(r => r.isResolver || r.path?.includes('/Resolver/'));
+  if (resolvers.length > 0) {
+    trace.resolver = { path: resolvers[0].path, className: resolvers[0].className || null, methods: resolvers[0].methods || [] };
+  }
+
+  if (depth === 'deep' && resolvers[0]?.className) {
+    const pluginRaw = await safeSearch(`plugin interceptor ${resolvers[0].className}`, 20);
+    const plugins = pluginRaw.map(normalizeResult).filter(r => r.isPlugin || r.path?.includes('/Plugin/') || r.path?.includes('di.xml'));
+    if (plugins.length > 0) {
+      trace.plugins = plugins.slice(0, 10).map(r => ({ path: r.path, className: r.className || null, methods: r.methods || [] }));
+    }
+  }
+
+  return trace;
+}
+
+async function traceEvent(entryPoint, depth) {
+  const trace = {};
+
+  // Observers
+  const obsRaw = await safeSearch(`event ${entryPoint} observer`, 30);
+  const observers = obsRaw.map(normalizeResult).filter(r => r.isObserver || r.path?.includes('/Observer/') || r.path?.includes('events.xml'));
+  if (observers.length > 0) {
+    trace.observers = observers.slice(0, 15).map(r => ({ eventName: entryPoint, path: r.path, className: r.className || null }));
+  }
+
+  if (depth === 'deep') {
+    // Origin — infer source model from event prefix
+    const prefix = entryPoint.split('_').slice(0, 2).join('_');
+    const originParts = prefix.split('_').map(p => p.charAt(0).toUpperCase() + p.slice(1));
+    const originRaw = await safeSearch(`${originParts.join(' ')} model`, 10);
+    const origins = originRaw.map(normalizeResult).filter(r => r.isModel || r.path?.includes('/Model/'));
+    if (origins.length > 0) {
+      trace.origin = { path: origins[0].path, className: origins[0].className || null, methods: origins[0].methods || [] };
+    }
+  }
+
+  return trace;
+}
+
+async function traceCron(entryPoint, depth) {
+  const trace = {};
+
+  // crontab.xml + handler class (independent, run in parallel)
+  const handlerParts = entryPoint.split('_').map(p => p.charAt(0).toUpperCase() + p.slice(1));
+  const [cronRaw, handlerRaw] = await Promise.all([
+    safeSearch(`cron job ${entryPoint}`, 20),
+    safeSearch(`${handlerParts.join(' ')} cron`, 20)
+  ]);
+  const cronConfigs = cronRaw.map(normalizeResult).filter(r => r.path?.includes('crontab.xml'));
+  if (cronConfigs.length > 0) {
+    trace.cronConfig = cronConfigs.slice(0, 5).map(r => ({ path: r.path, snippet: (r.searchText || '').slice(0, 200) }));
+  }
+
+  const handlers = handlerRaw.map(normalizeResult).filter(r => r.path?.includes('/Cron/'));
+  if (handlers.length > 0) {
+    trace.handler = { path: handlers[0].path, className: handlers[0].className || null, methods: handlers[0].methods || [] };
+  }
+
+  if (depth === 'deep' && handlers[0]?.className) {
+    const pluginRaw = await safeSearch(`plugin interceptor ${handlers[0].className}`, 20);
+    const plugins = pluginRaw.map(normalizeResult).filter(r => r.isPlugin || r.path?.includes('/Plugin/') || r.path?.includes('di.xml'));
+    if (plugins.length > 0) {
+      trace.plugins = plugins.slice(0, 10).map(r => ({ path: r.path, className: r.className || null, methods: r.methods || [] }));
+    }
+  }
+
+  return trace;
+}
+
+async function traceFlow(entryPoint, entryType, depth) {
+  const type = entryType === 'auto' ? detectEntryType(entryPoint) : entryType;
+
+  let trace;
+  switch (type) {
+    case 'route': trace = await traceRoute(entryPoint, depth); break;
+    case 'api': trace = await traceApi(entryPoint, depth); break;
+    case 'graphql': trace = await traceGraphql(entryPoint, depth); break;
+    case 'event': trace = await traceEvent(entryPoint, depth); break;
+    case 'cron': trace = await traceCron(entryPoint, depth); break;
+    default: trace = await traceRoute(entryPoint, depth); break;
+  }
+
+  return { entryPoint, entryType: type, trace };
+}
+
+function buildTraceSummary(result) {
+  const { entryPoint, entryType, trace } = result;
+  const parts = [];
+
+  switch (entryType) {
+    case 'route':
+      parts.push(`Route ${entryPoint}`);
+      if (trace.controller) parts.push(trace.controller.className ? `${trace.controller.className}::execute()` : trace.controller.path);
+      break;
+    case 'api':
+      parts.push(`API ${entryPoint}`);
+      if (trace.serviceClass) parts.push(trace.serviceClass.className || trace.serviceClass.path);
+      break;
+    case 'graphql':
+      parts.push(`GraphQL ${entryPoint}`);
+      if (trace.resolver) parts.push(trace.resolver.className || trace.resolver.path);
+      break;
+    case 'event':
+      parts.push(`Event ${entryPoint}`);
+      break;
+    case 'cron':
+      parts.push(`Cron ${entryPoint}`);
+      if (trace.handler) parts.push(trace.handler.className || trace.handler.path);
+      break;
+  }
+
+  const counts = [];
+  if (trace.plugins?.length) counts.push(`${trace.plugins.length} plugin${trace.plugins.length > 1 ? 's' : ''}`);
+  if (trace.observers?.length) counts.push(`${trace.observers.length} observer${trace.observers.length > 1 ? 's' : ''}`);
+  if (trace.templates?.length) counts.push(`${trace.templates.length} template${trace.templates.length > 1 ? 's' : ''}`);
+  if (trace.layout?.length) counts.push(`${trace.layout.length} layout${trace.layout.length > 1 ? 's' : ''}`);
+  if (trace.preferences?.length) counts.push(`${trace.preferences.length} preference${trace.preferences.length > 1 ? 's' : ''}`);
+  if (counts.length > 0) parts.push(counts.join(', '));
+
+  return parts.join(' → ');
+}
+
 function formatSearchResults(results) {
   if (!results || results.length === 0) {
     return JSON.stringify({ results: [], count: 0 });
@@ -673,6 +952,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             default: 0
           }
         }
+      }
+    },
+    {
+      name: 'magento_trace_flow',
+      description: 'Trace Magento execution flow from an entry point (route, API endpoint, GraphQL mutation, event, or cron job). Chains multiple searches to map controller → plugins → observers → templates for a given request path. Use this to understand how a request is processed end-to-end.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          entryPoint: {
+            type: 'string',
+            description: 'The entry point to trace. Examples: "checkout/cart/add" (route), "/V1/products" (API), "placeOrder" (GraphQL), "sales_order_place_after" (event), "catalog_product_reindex" (cron)'
+          },
+          entryType: {
+            type: 'string',
+            enum: ['auto', 'route', 'api', 'graphql', 'event', 'cron'],
+            description: 'Type of entry point. "auto" detects from the pattern (default). Override when auto-detection is wrong.',
+            default: 'auto'
+          },
+          depth: {
+            type: 'string',
+            enum: ['shallow', 'deep'],
+            description: 'Trace depth. "shallow" traces entry point + config + direct plugins (faster). "deep" adds observers, layout, templates, and DI preferences (more complete). Default: shallow.',
+            default: 'shallow'
+          }
+        },
+        required: ['entryPoint']
       }
     }
   ]
@@ -1132,6 +1437,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_trace_flow': {
+        const entryPoint = args.entryPoint;
+        const entryType = args.entryType || 'auto';
+        const depth = args.depth || 'shallow';
+
+        const result = await traceFlow(entryPoint, entryType, depth);
+        result.summary = buildTraceSummary(result);
+
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(result)
+          }]
+        };
       }
 
       default:

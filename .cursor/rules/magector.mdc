@@ -1,0 +1,120 @@
+---
+description: Magector — semantic code search for Magento 2 & Adobe Commerce
+globs:
+alwaysApply: true
+---
+
+# Magector
+
+Semantic code search engine for Magento 2 & Adobe Commerce. Hybrid Node.js + Rust architecture: thin Node.js CLI/MCP layer delegates indexing and search to a Rust binary (`magector-core`) using ONNX embeddings and HNSW vector index.
+
+## Architecture
+
+```
+src/cli.js (Node.js)
+  ├─ binary.js → resolves magector-core binary (4-tier fallback)
+  ├─ model.js  → resolves ONNX models (auto-downloads from HuggingFace)
+  └─ execFileSync(magector-core, ["search", ...])
+       │
+  rust-core/src/main.rs (Rust binary)
+       ├─ embedder.rs  → ONNX model, 384-dim embeddings
+       ├─ vectordb.rs  → HNSW index + hybrid semantic/keyword reranking
+       ├─ indexer.rs   → file discovery, pattern detection, batch embedding
+       ├─ ast.rs       → tree-sitter PHP/JS parsing
+       ├─ magento.rs   → 20+ Magento pattern detectors
+       └─ watcher.rs   → file watcher for incremental re-indexing
+```
+
+MCP server (`src/mcp-server.js`) wraps the binary in a persistent `serve` subprocess keeping the ONNX model + HNSW index resident in memory (~2.6s cold start eliminated). LRU query cache (200 entries).
+
+## Commands
+
+```bash
+cd rust-core && cargo build --release   # Build Rust binary
+npm test                                # MCP integration tests (stdio JSON-RPC)
+npm run test:accuracy                   # 101 E2E queries against Magento 2.4.7 ground truth
+npm run validate                        # Full validation suite
+npm run benchmark                       # Performance benchmarks
+npx magector init /path/to/magento2     # Index + IDE config
+npx magector search "product price"     # Search
+npx magector stats                      # Index statistics
+npx magector mcp                        # Start MCP server
+```
+
+## Release
+
+```bash
+npm version patch && git push origin main --follow-tags
+```
+
+Always use annotated tags (`git tag -a` or `npm version`). Lightweight tags won't trigger CI. Source of truth for version: `package.json`. CI syncs `Cargo.toml` automatically.
+
+## Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MAGENTO_ROOT` | cwd | Path to Magento installation |
+| `MAGECTOR_DB` | `./magector.db` | Index database path |
+| `MAGECTOR_BIN` | (auto) | Override magector-core binary |
+| `MAGECTOR_MODELS` | (auto) | Override ONNX model directory |
+
+## MCP Tools (20)
+
+### Search
+
+- **magento_search** `(query, limit?)` — General semantic search across PHP, XML, JS, PHTML, GraphQL
+- **magento_find_class** `(className, namespace?)` — Find PHP classes, interfaces, traits by name
+- **magento_find_method** `(methodName, className?)` — Find method implementations across codebase
+- **magento_find_config** `(query, configType?)` — Find XML config nodes (di, routes, system, events, webapi, module, layout)
+- **magento_find_template** `(query, area?)` — Find PHTML templates (frontend/adminhtml/base)
+
+### Magento Patterns
+
+- **magento_find_plugin** `(targetClass?, targetMethod?)` — Find interceptors (before/after/around plugins)
+- **magento_find_observer** `(eventName)` — Find event observers and events.xml declarations
+- **magento_find_preference** `(interfaceName)` — Find DI preference overrides in di.xml
+- **magento_find_api** `(query, method?)` — Find REST/SOAP API endpoints in webapi.xml
+- **magento_find_controller** `(route, area?)` — Find controllers by route path (frontName/controller/action)
+- **magento_find_block** `(query)` — Find Block classes for view rendering
+- **magento_find_cron** `(jobName)` — Find cron jobs in crontab.xml and Cron/ handlers
+- **magento_find_graphql** `(query, schemaType?)` — Find GraphQL schemas, types, mutations, resolvers
+- **magento_find_db_schema** `(tableName)` — Find table definitions in db_schema.xml
+- **magento_module_structure** `(moduleName)` — Get complete module architecture overview
+
+### Flow Tracing
+
+- **magento_trace_flow** `(entryPoint, entryType?, depth?)` — Trace execution flow from an entry point (route, API, GraphQL, event, cron). Chains multiple searches to map controller → plugins → observers → templates. `entryType` auto-detects from pattern; `depth` is `shallow` (entry + config + plugins) or `deep` (adds observers, layout, templates, preferences).
+
+### Management
+
+- **magento_index** `(path?)` — Index/re-index Magento codebase
+- **magento_stats** — Get index statistics (vectors, dimensions, db path)
+
+### Analysis
+
+- **magento_analyze_diff** `(commitHash?, staged?)` — Git diff risk scoring and impact analysis
+- **magento_complexity** `(module?, path?, threshold?)` — Cyclomatic complexity analysis for PHP files
+
+## Binary Resolution (src/binary.js)
+
+4-tier fallback with self-healing:
+1. `MAGECTOR_BIN` env var
+2. `@magector/cli-{os}-{arch}` npm optional dependency (auto-installs if missing)
+3. `rust-core/target/release/magector-core` (local dev build)
+4. `magector-core` in system PATH
+
+## Key Files
+
+- `src/cli.js` — CLI entry point
+- `src/mcp-server.js` — MCP server (20 tools, JSON-RPC over stdio)
+- `src/binary.js` — Binary resolution with 4-tier fallback
+- `src/model.js` — ONNX model resolution and download
+- `rust-core/src/main.rs` — Rust binary entry point
+- `rust-core/src/embedder.rs` — ONNX embeddings (384-dim)
+- `rust-core/src/vectordb.rs` — HNSW index + hybrid reranking
+- `rust-core/src/indexer.rs` — File discovery and batch embedding
+- `rust-core/src/magento.rs` — 20+ Magento pattern detectors
+- `rust-core/src/ast.rs` — tree-sitter PHP/JS parsing
+- `rust-core/src/watcher.rs` — File watcher for incremental re-indexing
+- `tests/mcp-server.test.js` — MCP server integration tests (stdio JSON-RPC)
+- `tests/trace-flow.test.js` — magento_trace_flow integration tests (87 assertions across all entry types)

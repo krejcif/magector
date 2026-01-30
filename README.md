@@ -67,7 +67,7 @@ Without Magector, asking Claude Code or Cursor *"how are checkout totals calcula
 - **Diff analysis** -- risk scoring and change classification for git commits and staged changes
 - **Complexity analysis** -- cyclomatic complexity, function count, and hotspot detection across modules
 - **Fast** -- 10-45ms queries via persistent serve process, batched ONNX embedding with adaptive thread scaling
-- **MCP server** -- 19 tools integrating with Claude Code, Cursor, and any MCP-compatible AI tool
+- **MCP server** -- 20 tools integrating with Claude Code, Cursor, and any MCP-compatible AI tool
 - **Clean architecture** -- Rust core handles all indexing/search, Node.js MCP server delegates to it
 
 ---
@@ -84,7 +84,7 @@ flowchart TD
     A --> B --> C --> D
   end
   subgraph node ["Node.js Layer"]
-    E["MCP Server · 19 tools"]
+    E["MCP Server · 20 tools"]
     F["Persistent Serve"]
     G["CLI · init/index/search"]
     E --> F
@@ -279,7 +279,7 @@ npx magector help               # Show help
 
 ## MCP Server Tools
 
-The MCP server exposes 19 tools for AI-assisted Magento 2 and Adobe Commerce development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
+The MCP server exposes 20 tools for AI-assisted Magento 2 and Adobe Commerce development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
 
 ### Output Format
 
@@ -335,6 +335,14 @@ All search tools return structured JSON:
 | `magento_find_cron` | Find cron job definitions in crontab.xml |
 | `magento_find_db_schema` | Find database table definitions in db_schema.xml (declarative schema) |
 
+### Flow Tracing
+
+| Tool | Description |
+|------|-------------|
+| `magento_trace_flow` | Trace execution flow from an entry point (route, API, GraphQL, event, cron) -- maps controller → plugins → observers → templates in one call |
+
+Auto-detects entry type from pattern (`/V1/...` → API, `snake_case` → event, `camelCase` → GraphQL, `path/segments` → route), or override with `entryType`. Use `depth: "shallow"` (entry + config + plugins) or `depth: "deep"` (adds observers, layout, templates, DI preferences).
+
 ### Analysis Tools
 
 | Tool | Description |
@@ -371,6 +379,12 @@ graph TD
   gql["find_graphql"] --> cls
   gql --> mtd
   ctl["find_controller"] --> cfg
+  trc["trace_flow"] -.-> ctl
+  trc -.-> plg
+  trc -.-> obs
+  trc -.-> tpl
+  trc -.-> api
+  trc -.-> gql
 
   style cls fill:#4a90d9,color:#fff
   style mtd fill:#4a90d9,color:#fff
@@ -384,6 +398,7 @@ graph TD
   style dbs fill:#9b59b6,color:#fff
   style gql fill:#9b59b6,color:#fff
   style ctl fill:#4a90d9,color:#fff
+  style trc fill:#2ecc71,color:#000
 ```
 
 ### Query Examples
@@ -406,6 +421,10 @@ magento_find_block("cart totals")
 magento_find_template("minicart")
 magento_analyze_diff({ commitHash: "abc123" })
 magento_complexity({ module: "Magento_Catalog", threshold: 10 })
+magento_trace_flow({ entryPoint: "checkout/cart/add", depth: "deep" })
+magento_trace_flow({ entryPoint: "/V1/products" })
+magento_trace_flow({ entryPoint: "placeOrder", entryType: "graphql" })
+magento_trace_flow({ entryPoint: "sales_order_place_after" })
 ```
 
 ---
@@ -502,7 +521,7 @@ cd rust-core && cargo run --release -- validate -m ./magento2 --skip-index
 magector/
 ├── src/                          # Node.js source
 │   ├── cli.js                    # CLI entry point (npx magector <command>)
-│   ├── mcp-server.js             # MCP server (19 tools, structured JSON output)
+│   ├── mcp-server.js             # MCP server (20 tools, structured JSON output)
 │   ├── binary.js                 # Platform binary resolver
 │   ├── model.js                  # ONNX model resolver/downloader
 │   ├── init.js                   # Full init command (index + IDE config)
