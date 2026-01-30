@@ -3,6 +3,7 @@
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from 'fs';
 import { execFileSync } from 'child_process';
+import { homedir } from 'os';
 import path from 'path';
 import { resolveBinary } from './binary.js';
 import { ensureModels } from './model.js';
@@ -51,42 +52,52 @@ function detectIDEs(projectPath) {
  * Write MCP server configuration for the given IDE(s).
  */
 function writeMcpConfig(projectPath, ides, dbPath) {
-  const mcpConfig = {
-    mcpServers: {
-      magector: {
-        command: 'npx',
-        args: ['-y', 'magector', 'mcp'],
-        env: {
-          MAGENTO_ROOT: projectPath,
-          MAGECTOR_DB: dbPath
-        }
-      }
+  const mcpEntry = {
+    command: 'npx',
+    args: ['-y', 'magector', 'mcp'],
+    env: {
+      MAGENTO_ROOT: projectPath,
+      MAGECTOR_DB: dbPath
     }
   };
 
-  const configJson = JSON.stringify(mcpConfig, null, 2);
   const written = [];
 
   if (ides.cursor) {
-    const cursorDir = path.join(projectPath, '.cursor');
-    mkdirSync(cursorDir, { recursive: true });
-    writeFileSync(path.join(cursorDir, 'mcp.json'), configJson);
-    written.push('.cursor/mcp.json');
+    const globalCursorDir = path.join(homedir(), '.cursor');
+    mkdirSync(globalCursorDir, { recursive: true });
+    const globalMcpPath = path.join(globalCursorDir, 'mcp.json');
+    const globalConfig = existsSync(globalMcpPath)
+      ? JSON.parse(readFileSync(globalMcpPath, 'utf-8'))
+      : { mcpServers: {} };
+    globalConfig.mcpServers = globalConfig.mcpServers || {};
+    globalConfig.mcpServers.magector = mcpEntry;
+    writeFileSync(globalMcpPath, JSON.stringify(globalConfig, null, 2));
+    written.push('~/.cursor/mcp.json');
   }
 
   if (ides.claude) {
-    writeFileSync(path.join(projectPath, '.mcp.json'), configJson);
+    const claudeConfig = { mcpServers: { magector: mcpEntry } };
+    writeFileSync(path.join(projectPath, '.mcp.json'), JSON.stringify(claudeConfig, null, 2));
     written.push('.mcp.json');
   }
 
   // If neither detected, set up both
   if (!ides.cursor && !ides.claude) {
-    writeFileSync(path.join(projectPath, '.mcp.json'), configJson);
+    const claudeConfig = { mcpServers: { magector: mcpEntry } };
+    writeFileSync(path.join(projectPath, '.mcp.json'), JSON.stringify(claudeConfig, null, 2));
     written.push('.mcp.json');
-    const cursorDir = path.join(projectPath, '.cursor');
-    mkdirSync(cursorDir, { recursive: true });
-    writeFileSync(path.join(cursorDir, 'mcp.json'), configJson);
-    written.push('.cursor/mcp.json');
+
+    const globalCursorDir = path.join(homedir(), '.cursor');
+    mkdirSync(globalCursorDir, { recursive: true });
+    const globalMcpPath = path.join(globalCursorDir, 'mcp.json');
+    const globalConfig = existsSync(globalMcpPath)
+      ? JSON.parse(readFileSync(globalMcpPath, 'utf-8'))
+      : { mcpServers: {} };
+    globalConfig.mcpServers = globalConfig.mcpServers || {};
+    globalConfig.mcpServers.magector = mcpEntry;
+    writeFileSync(globalMcpPath, JSON.stringify(globalConfig, null, 2));
+    written.push('~/.cursor/mcp.json');
   }
 
   return written;
