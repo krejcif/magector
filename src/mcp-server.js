@@ -72,8 +72,11 @@ let serveReady = false;
 let servePending = new Map();
 let serveNextId = 1;
 let serveReadline = null;
+let serveReadyPromise = null;
+let serveReadyResolve = null;
 
 function startServeProcess() {
+  serveReadyPromise = new Promise((resolve) => { serveReadyResolve = resolve; });
   try {
     const args = [
       'serve',
@@ -87,8 +90,8 @@ function startServeProcess() {
     const proc = spawn(config.rustBinary, args,
       { stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
 
-    proc.on('error', () => { serveProcess = null; serveReady = false; });
-    proc.on('exit', () => { serveProcess = null; serveReady = false; });
+    proc.on('error', () => { serveProcess = null; serveReady = false; if (serveReadyResolve) { serveReadyResolve(false); serveReadyResolve = null; } });
+    proc.on('exit', () => { serveProcess = null; serveReady = false; if (serveReadyResolve) { serveReadyResolve(false); serveReadyResolve = null; } });
     proc.stderr.on('data', () => {}); // drain stderr
 
     serveReadline = createInterface({ input: proc.stdout });
@@ -99,6 +102,7 @@ function startServeProcess() {
       // First line is ready signal
       if (parsed.ready) {
         serveReady = true;
+        if (serveReadyResolve) { serveReadyResolve(true); serveReadyResolve = null; }
         return;
       }
 
@@ -114,6 +118,7 @@ function startServeProcess() {
   } catch {
     serveProcess = null;
     serveReady = false;
+    if (serveReadyResolve) { serveReadyResolve(false); serveReadyResolve = null; }
   }
 }
 
@@ -136,6 +141,11 @@ async function rustSearchAsync(query, limit = 10) {
   const cacheKey = `${query}|${limit}`;
   if (searchCache.has(cacheKey)) {
     return searchCache.get(cacheKey);
+  }
+
+  // Wait for serve process if it's starting up but not yet ready
+  if (serveProcess && !serveReady && serveReadyPromise) {
+    await Promise.race([serveReadyPromise, new Promise(r => setTimeout(() => r(false), 10000))]);
   }
 
   // Try persistent serve process first
@@ -1176,8 +1186,18 @@ async function main() {
   // Try to start persistent Rust serve process for fast queries
   try {
     startServeProcess();
-    // Give it a moment to load model+index
-    await new Promise(r => setTimeout(r, 100));
+    // Wait for the serve process to load ONNX model + HNSW index (up to 15s)
+    if (serveReadyPromise) {
+      const ready = await Promise.race([
+        serveReadyPromise,
+        new Promise(r => setTimeout(() => r(false), 15000))
+      ]);
+      if (ready) {
+        console.error('Serve process ready (persistent mode)');
+      } else {
+        console.error('Serve process not ready in time, will use fallback');
+      }
+    }
   } catch {
     // Non-fatal: falls back to execFileSync per query
   }
