@@ -54,7 +54,7 @@ function detectIDEs(projectPath) {
 function writeMcpConfig(projectPath, ides, dbPath) {
   const mcpEntry = {
     command: 'npx',
-    args: ['-y', 'magector', 'mcp'],
+    args: ['-y', 'magector@latest', 'mcp'],
     env: {
       MAGENTO_ROOT: projectPath,
       MAGECTOR_DB: dbPath
