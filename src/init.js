@@ -6,7 +6,7 @@ import { execFileSync } from 'child_process';
 import path from 'path';
 import { resolveBinary } from './binary.js';
 import { ensureModels } from './model.js';
-import { CURSORRULES } from './templates/cursorrules.js';
+import { CURSOR_RULES_MDC } from './templates/cursor-rules-mdc.js';
 import { CLAUDE_MD } from './templates/claude-md.js';
 
 /**
@@ -39,7 +39,7 @@ function isMagentoProject(projectPath) {
 function detectIDEs(projectPath) {
   const cursor =
     existsSync(path.join(projectPath, '.cursor')) ||
-    existsSync(path.join(projectPath, '.cursorrules'));
+    existsSync(path.join(projectPath, '.cursor', 'rules'));
   const claude =
     existsSync(path.join(projectPath, '.claude')) ||
     existsSync(path.join(projectPath, 'CLAUDE.md')) ||
@@ -131,9 +131,11 @@ function writeRules(projectPath, ides) {
   const writeClaude = ides.claude || (!ides.cursor && !ides.claude);
 
   if (writeCursor) {
-    const rulesPath = path.join(projectPath, '.cursorrules');
-    const result = upsertMagectorSection(rulesPath, CURSORRULES, MARKER_START, MARKER_END);
-    written.push(`.cursorrules (${result})`);
+    const rulesDir = path.join(projectPath, '.cursor', 'rules');
+    mkdirSync(rulesDir, { recursive: true });
+    const mdcPath = path.join(rulesDir, 'magector.mdc');
+    writeFileSync(mdcPath, CURSOR_RULES_MDC);
+    written.push('.cursor/rules/magector.mdc (created)');
   }
 
   if (writeClaude) {
