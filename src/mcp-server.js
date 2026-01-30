@@ -35,6 +35,7 @@ import { resolveModels } from './model.js';
 const config = {
   dbPath: process.env.MAGECTOR_DB || './magector.db',
   magentoRoot: process.env.MAGENTO_ROOT || process.cwd(),
+  watchInterval: parseInt(process.env.MAGECTOR_WATCH_INTERVAL, 10) || 300,
   get rustBinary() { return resolveBinary(); },
   get modelCache() { return resolveModels() || process.env.MAGECTOR_MODELS || './models'; }
 };
@@ -85,7 +86,7 @@ function startServeProcess() {
     ];
     // Enable file watcher if magento root is configured
     if (config.magentoRoot && existsSync(config.magentoRoot)) {
-      args.push('-m', config.magentoRoot);
+      args.push('-m', config.magentoRoot, '--watch-interval', String(config.watchInterval));
     }
     const proc = spawn(config.rustBinary, args,
       { stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });

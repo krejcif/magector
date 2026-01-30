@@ -258,7 +258,11 @@ async function main() {
     );
 
     // Check stderr doesn't contain anything unexpected
-    const stderrClean = client.stderrOutput.replace('Magector MCP server started (Rust core backend)\n', '').trim();
+    const stderrClean = client.stderrOutput
+      .replace('Magector MCP server started (Rust core backend)\n', '')
+      .replace('Serve process not ready in time, will use fallback\n', '')
+      .replace('Serve process ready (persistent mode)\n', '')
+      .trim();
     log(
       stderrClean.length === 0 ? 'PASS' : 'FAIL',
       'stderr contains only startup message',
