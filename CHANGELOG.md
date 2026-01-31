@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 
 ## [1.5.0] - 2026-01-31
 
+### Added
+- LLM description enrichment for `di.xml` files — `magento_describe` MCP tool sends DI configurations to an LLM for human-readable summaries, stored in SQLite (`.magector/sqlite.db`)
+- `describe` Rust CLI command and `describe` serve command for batch LLM enrichment
+- `describe.rs` module — SQLite storage for LLM-generated descriptions with upsert support
+- Enriched descriptions surfaced in `magento_search` and `magento_lookup` results when available
+- `npx magector init` prompts for optional Anthropic API key — stored in MCP config env for LLM enrichment
+
 ### Changed
 - Consolidate all data files into `.magector/` subdirectory — no more scattered files in project root
   - `magector.db` → `.magector/index.db`

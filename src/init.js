@@ -3,12 +3,27 @@
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from 'fs';
 import { execFileSync } from 'child_process';
+import { createInterface } from 'readline';
 import { homedir } from 'os';
 import path from 'path';
 import { resolveBinary } from './binary.js';
 import { ensureModels } from './model.js';
 import { CURSOR_RULES_MDC } from './templates/cursor-rules-mdc.js';
 import { CLAUDE_MD } from './templates/claude-md.js';
+
+/**
+ * Prompt the user for input. Returns empty string if stdin is not a TTY.
+ */
+function askQuestion(question) {
+  if (!process.stdin.isTTY) return Promise.resolve('');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise(resolve => {
+    rl.question(question, answer => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
 
 /**
  * Detect if the given path is a Magento 2 project root.
@@ -51,14 +66,18 @@ function detectIDEs(projectPath) {
 /**
  * Write MCP server configuration for the given IDE(s).
  */
-function writeMcpConfig(projectPath, ides, dbPath) {
+function writeMcpConfig(projectPath, ides, dbPath, { anthropicApiKey } = {}) {
+  const env = {
+    MAGENTO_ROOT: projectPath,
+    MAGECTOR_DB: dbPath
+  };
+  if (anthropicApiKey) {
+    env.ANTHROPIC_API_KEY = anthropicApiKey;
+  }
   const mcpEntry = {
     command: 'npx',
     args: ['-y', 'magector@latest', 'mcp'],
-    env: {
-      MAGENTO_ROOT: projectPath,
-      MAGECTOR_DB: dbPath
-    }
+    env
   };
 
   const written = [];
@@ -248,23 +267,32 @@ export async function init(projectPath) {
   if (ideNames.length === 0) ideNames.push('Cursor', 'Claude Code');
   console.log(`  Detected: ${ideNames.join(' + ') || 'none (configuring both)'}`);
 
-  // 6. Write MCP config
+  // 6. Optional: Anthropic API key for LLM description enrichment
+  let anthropicApiKey = '';
+  anthropicApiKey = await askQuestion('\nAnthropic API key (optional, enables LLM enrichment — press Enter to skip): ');
+  if (anthropicApiKey) {
+    console.log('  API key will be stored in MCP config.');
+  } else {
+    console.log('  Skipped. You can add ANTHROPIC_API_KEY to MCP config later.');
+  }
+
+  // 7. Write MCP config
   console.log('\nWriting MCP config...');
-  const mcpFiles = writeMcpConfig(projectPath, ides, dbPath);
+  const mcpFiles = writeMcpConfig(projectPath, ides, dbPath, { anthropicApiKey });
   mcpFiles.forEach(f => console.log(`  ${f}`));
 
-  // 7. Write rules
+  // 8. Write rules
   console.log('\nWriting IDE rules...');
   const rulesFiles = writeRules(projectPath, ides);
   rulesFiles.forEach(f => console.log(`  ${f}`));
 
-  // 8. Update .gitignore
+  // 9. Update .gitignore
   const giUpdated = updateGitignore(projectPath);
   if (giUpdated) {
     console.log('\nUpdated .gitignore with .magector/');
   }
 
-  // 9. Get stats and print summary
+  // 10. Get stats and print summary
   let vectorCount = '?';
   try {
     const statsOutput = execFileSync(binary, ['stats', '-d', dbPath], {
@@ -303,7 +331,14 @@ export async function setup(projectPath) {
 
   console.log(`Detected: ${ideNames.join(' + ')}`);
 
-  const mcpFiles = writeMcpConfig(projectPath, ides, dbPath);
+  let anthropicApiKey = await askQuestion('\nAnthropic API key (optional, enables LLM enrichment — press Enter to skip): ');
+  if (anthropicApiKey) {
+    console.log('  API key will be stored in MCP config.');
+  } else {
+    console.log('  Skipped. You can add ANTHROPIC_API_KEY to MCP config later.');
+  }
+
+  const mcpFiles = writeMcpConfig(projectPath, ides, dbPath, { anthropicApiKey });
   console.log('\nMCP config:');
   mcpFiles.forEach(f => console.log(`  ${f}`));
 

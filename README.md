@@ -66,23 +66,27 @@ The result: your AI assistant calls one MCP tool and gets ranked, pattern-enrich
 ## Architecture
 
 ```mermaid
-flowchart TD
+flowchart LR
+  subgraph node ["Node.js Layer"]
+    direction TB
+    G["CLI<br/>init · index · search · describe"]
+    E["MCP Server<br/>21 tools · LRU cache"]
+    F["Persistent Serve Process"]
+    G --> F
+    E --> F
+  end
+
+  F -->|"stdin/stdout JSON"| rust
+
   subgraph rust ["Rust Core"]
-    A["AST Parser · PHP + JS"]
-    B["Pattern Detection · 20+"]
-    B2["Description Enrichment"]
-    C["ONNX Embedder · 384d"]
-    D["HNSW + Reranking"]
+    direction TB
+    A["AST Parser<br/>PHP · JS · XML"]
+    B["Pattern Detection<br/>20+ Magento patterns"]
+    B2["Description Enrichment<br/>LLM-powered di.xml summaries"]
+    C["ONNX Embedder<br/>all-MiniLM-L6-v2 · 384d"]
+    D["HNSW Vector Search<br/>hybrid reranking · SONA"]
     A --> B --> B2 --> C --> D
   end
-  subgraph node ["Node.js Layer"]
-    E["MCP Server · 21 tools"]
-    F["Persistent Serve"]
-    G["CLI · init/index/search/describe"]
-    E --> F
-    G --> F
-  end
-  node -->|stdin/stdout JSON| rust
 
   style rust fill:#f4a460,color:#000
   style node fill:#68b684,color:#000
@@ -91,29 +95,28 @@ flowchart TD
 ### Indexing Pipeline
 
 ```mermaid
-flowchart TD
-  A[Source File] --> B[AST Parser]
-  B --> C[Pattern Detection]
-  C --> D[Text Enrichment]
-  D --> D2{Description DB?}
-  D2 -->|Yes| D3["Prepend Description"]
-  D2 -->|No| E[ONNX Embedding]
+flowchart LR
+  A["Source File"] --> B["AST Parser"]
+  B --> C["Pattern Detection"]
+  C --> D["Text Enrichment"]
+  D --> D2{"Descriptions DB?"}
+  D2 -->|Yes| D3["Prepend LLM Description"]
+  D2 -->|No| E["ONNX Embedding"]
   D3 --> E
-  E --> F[(HNSW Index)]
-  A --> G[Metadata]
-  G --> F
+  E --> F[("HNSW Index")]
+  A --> G["Metadata"] --> F
 ```
 
 ### Search Pipeline
 
 ```mermaid
-flowchart TD
-  Q[Query] --> E1[Synonym Enrichment]
-  E1 --> E2[ONNX Embedding]
-  E2 --> H[HNSW Search]
-  H --> R[Hybrid Reranking]
-  R --> SA[SONA Adjustment + MicroLoRA]
-  SA --> J[Structured JSON]
+flowchart LR
+  Q["Query"] --> E1["Synonym Enrichment"]
+  E1 --> E2["ONNX Embedding"]
+  E2 --> H["HNSW Search"]
+  H --> R["Hybrid Reranking"]
+  R --> SA["SONA Adjustment"]
+  SA --> J["Structured JSON"]
 ```
 
 ### Components
@@ -148,13 +151,14 @@ npx magector init
 This single command handles the entire setup:
 
 ```mermaid
-flowchart TD
-  A["npx magector init"] --> B[Verify Project]
-  B --> C[Download Model]
-  C --> D[Index Codebase]
-  D --> E[Detect IDE]
-  E --> F[Write Config]
-  F --> G[Update .gitignore]
+flowchart LR
+  A["npx magector init"] --> B["Verify<br/>Project"]
+  B --> C["Download<br/>ONNX Model"]
+  C --> D["Index<br/>Codebase"]
+  D --> E["Detect IDE<br/>Cursor · Claude Code"]
+  E --> E2["API Key<br/>(optional)"]
+  E2 --> F["Write MCP<br/>Config"]
+  F --> G["Update<br/>.gitignore"]
 ```
 
 ### 2. Search
@@ -304,7 +308,7 @@ npx magector mcp                # Start MCP server
 npx magector help               # Show help
 ```
 
-The `describe` command requires `ANTHROPIC_API_KEY`. After running `describe`, the next `index` automatically picks up the descriptions DB and embeds them into the vectors.
+The `describe` command and `magento_describe` MCP tool require an Anthropic API key. During `npx magector init`, you are prompted to paste your key (optional). If provided, it is stored in the MCP config file as the `ANTHROPIC_API_KEY` environment variable so the MCP server can use it automatically. You can also set it manually later by adding `"ANTHROPIC_API_KEY": "sk-..."` to the `env` section in `.mcp.json` or `~/.cursor/mcp.json`.
 
 ### Environment Variables
 
@@ -405,7 +409,7 @@ Auto-detects entry type from pattern (`/V1/...` → API, `snake_case` → event,
 Each tool description includes "See also" hints to help AI clients chain tools effectively:
 
 ```mermaid
-graph TD
+graph LR
   cls["find_class"] --> plg["find_plugin"]
   cls --> prf["find_preference"]
   cls --> mtd["find_method"]
@@ -635,20 +639,16 @@ Magector scans every `.php`, `.js`, `.xml`, `.phtml`, and `.graphqls` file in a 
 The MCP server spawns a persistent Rust process (`magector-core serve`) that keeps the ONNX model and HNSW index loaded in memory. Queries are sent as JSON over stdin and responses returned via stdout -- eliminating the ~2.6s cold-start overhead of loading the model per query. Falls back to single-shot `execFileSync` if the serve process is unavailable.
 
 ```mermaid
-flowchart TD
+flowchart LR
   subgraph startup ["Startup (once)"]
-    S1[Load Model] --> S2[Load Index]
-    S2 --> S3[Ready Signal]
-  end
-  subgraph query ["Per Query (10-45ms)"]
-    Q1[stdin JSON] --> Q2[Embed]
-    Q2 --> Q3[HNSW Search]
-    Q3 --> Q4[Rerank]
-    Q4 --> Q5[stdout JSON]
+    S1["Load Model"] --> S2["Load Index"] --> S3["Ready Signal"]
   end
   startup --> query
+  subgraph query ["Per Query (10-45ms)"]
+    Q1["stdin JSON"] --> Q2["Embed"] --> Q3["HNSW Search"] --> Q4["Rerank"] --> Q5["stdout JSON"]
+  end
   subgraph fallback ["Fallback"]
-    F1[execFileSync ~2.6s]
+    F1["execFileSync ~2.6s"]
   end
 
   style startup fill:#e8f4e8,color:#000
@@ -663,17 +663,12 @@ When the serve process is started with `--magento-root`, a background thread pol
 Since `hnsw_rs` does not support point deletion, Magector uses a **tombstone** strategy: old vectors for modified/deleted files are marked as tombstoned and filtered out of search results. New vectors are appended. When tombstoned entries exceed 20% of total vectors, the HNSW graph is automatically rebuilt (compacted) to reclaim memory and restore search performance.
 
 ```mermaid
-flowchart TD
-  W1[Sleep 60s] --> W2[Scan Filesystem]
-  W2 --> W3{Changes?}
+flowchart LR
+  W1["Sleep 60s"] --> W2["Scan Filesystem"] --> W3{"Changes?"}
   W3 -->|No| W1
-  W3 -->|Yes| W4[Tombstone Old Vectors]
-  W4 --> W5[Parse + Embed New Files]
-  W5 --> W6[Append to HNSW]
-  W6 --> W7{Tombstone > 20%?}
-  W7 -->|Yes| W8[Compact / Rebuild HNSW]
-  W7 -->|No| W9[Save to Disk]
-  W8 --> W9
+  W3 -->|Yes| W4["Tombstone Old Vectors"] --> W5["Parse + Embed New Files"] --> W6["Append to HNSW"] --> W7{"Tombstone > 20%?"}
+  W7 -->|Yes| W8["Compact / Rebuild HNSW"] --> W9["Save to Disk"]
+  W7 -->|No| W9
   W9 --> W1
 
   style W4 fill:#f4e8e8,color:#000
