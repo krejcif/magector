@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-01-31T12:03:07.896Z",
+  "timestamp": "2026-01-31T19:00:29.592Z",
   "version": "2.0",
   "evalQueries": 180,
   "trainingQueries": 120,
@@ -8,32 +8,32 @@
   "summary": {
     "overall": {
       "baseline": {
-        "avgP5": 0.9155555555555556,
+        "avgP5": 0.9166666666666669,
         "avgMRR": 0.9410802469135803,
-        "avgNDCG": 0.9485247770153188
+        "avgNDCG": 0.9483865147008307
       },
       "postTraining": {
-        "avgP5": 0.9155555555555558,
-        "avgMRR": 0.9381172839506173,
-        "avgNDCG": 0.9471508460592387
+        "avgP5": 0.9177777777777779,
+        "avgMRR": 0.9387654320987653,
+        "avgNDCG": 0.9477099434242828
       },
       "delta": {
-        "precision5": 1.5789838572446671e-16,
-        "mrr": -0.0029629629629629524,
-        "ndcg": -0.0013739309560799977
+        "precision5": 0.001111111111111048,
+        "mrr": -0.00231481481481492,
+        "ndcg": -0.0006765712765479116
       },
       "rankMovement": {
-        "improved": 0,
+        "improved": 1,
         "same": 178,
-        "worsened": 2
+        "worsened": 1
       }
     },
     "direct": {
       "queries": 140,
       "improved": 5,
       "p5Improved": 1,
-      "rankImproved": 0,
-      "scoreImproved": 4
+      "rankImproved": 1,
+      "scoreImproved": 2
     },
     "crossGen": {
       "queries": 20,
@@ -62,7 +62,7 @@
       "postTraining": {
         "avgP5": 0.992,
         "avgMRR": 1,
-        "avgNDCG": 0.9994717546153745
+        "avgNDCG": 0.9993360404328148
       }
     },
     "observer": {
@@ -70,12 +70,12 @@
       "baseline": {
         "avgP5": 0.9840000000000001,
         "avgMRR": 1,
-        "avgNDCG": 0.9967257284609811
+        "avgNDCG": 0.9960927016233687
       },
       "postTraining": {
         "avgP5": 0.9840000000000001,
         "avgMRR": 0.98,
-        "avgNDCG": 0.988809346343744
+        "avgNDCG": 0.988279243376375
       }
     },
     "class": {
@@ -88,7 +88,7 @@
       "postTraining": {
         "avgP5": 1,
         "avgMRR": 1,
-        "avgNDCG": 0.9997517914253287
+        "avgNDCG": 0.9998875056078884
       }
     },
     "controller": {
@@ -107,14 +107,14 @@
     "config": {
       "queries": 25,
       "baseline": {
-        "avgP5": 0.512,
-        "avgMRR": 0.6477777777777777,
-        "avgNDCG": 0.6774276729836478
-      },
-      "postTraining": {
         "avgP5": 0.5199999999999999,
         "avgMRR": 0.6477777777777777,
-        "avgNDCG": 0.6772489916246087
+        "avgNDCG": 0.6772009253395066
+      },
+      "postTraining": {
+        "avgP5": 0.5279999999999999,
+        "avgMRR": 0.6511111111111112,
+        "avgNDCG": 0.680143070395355
       }
     },
     "block": {
@@ -122,7 +122,7 @@
       "baseline": {
         "avgP5": 1,
         "avgMRR": 1,
-        "avgNDCG": 0.9998593820098606
+        "avgNDCG": 0.9996897392816608
       },
       "postTraining": {
         "avgP5": 1,
@@ -151,9 +151,9 @@
         "avgNDCG": 0.9586543489179574
       },
       "postTraining": {
-        "avgP5": 0.9,
-        "avgMRR": 0.9333333333333332,
-        "avgNDCG": 0.9565774423867837
+        "avgP5": 0.9099999999999999,
+        "avgMRR": 0.9349999999999999,
+        "avgNDCG": 0.9586543489179574
       }
     }
   },
@@ -236,17 +236,17 @@
         "category": "ambiguous",
         "query": "form validation handler",
         "baselineP5": 0.2,
-        "postP5": 0,
-        "delta": -0.2
+        "postP5": 0.2,
+        "delta": 0
       }
     ],
     "topImprovements": [
       {
-        "id": "eval-config-21",
+        "id": "eval-config-07",
         "category": "config",
-        "query": "shipping methods config xml",
-        "baselineP5": 0.8,
-        "postP5": 1,
+        "query": "cron job schedule configuration",
+        "baselineP5": 0.4,
+        "postP5": 0.6,
         "delta": 0.19999999999999996
       }
     ],
@@ -257,14 +257,6 @@
         "query": "layout render event handler",
         "deltaP5": 0,
         "deltaMRR": -0.5,
-        "deltaRank": -1
-      },
-      {
-        "id": "eval-ambig-14",
-        "category": "ambiguous",
-        "query": "form validation handler",
-        "deltaP5": -0.2,
-        "deltaMRR": -0.033333333333333354,
         "deltaRank": -1
       }
     ]
@@ -281,7 +273,7 @@
         "topRelevantScore": 0.816,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 1851
+        "latency": 877
       },
       "postTraining": {
         "precision5": 1,
@@ -290,7 +282,7 @@
         "topRelevantScore": 0.816,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 1102
+        "latency": 864
       },
       "delta": {
         "precision5": 0,
@@ -311,7 +303,7 @@
         "topRelevantScore": 0.704,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -320,7 +312,7 @@
         "topRelevantScore": 0.704,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -341,7 +333,7 @@
         "topRelevantScore": 0.981,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 13
       },
       "postTraining": {
         "precision5": 1,
@@ -350,7 +342,7 @@
         "topRelevantScore": 0.981,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -371,7 +363,7 @@
         "topRelevantScore": 0.99,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -401,7 +393,7 @@
         "topRelevantScore": 0.862,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -440,7 +432,7 @@
         "topRelevantScore": 0.864,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -466,16 +458,16 @@
       "postTraining": {
         "precision5": 1,
         "mrr": 1,
-        "ndcg": 0.9971876401972101,
+        "ndcg": 0.9937947856332161,
         "topRelevantScore": 1.059,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
         "mrr": 0,
-        "ndcg": 0,
+        "ndcg": -0.0033928545639939633,
         "rank": 0,
         "score": 0
       }
@@ -491,23 +483,23 @@
         "topRelevantScore": 0.951,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
         "mrr": 1,
         "ndcg": 1,
-        "topRelevantScore": 0.979,
+        "topRelevantScore": 0.951,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
         "mrr": 0,
         "ndcg": 0,
         "rank": 0,
-        "score": 0.028000000000000025
+        "score": 0
       }
     },
     {
@@ -530,7 +522,7 @@
         "topRelevantScore": 1.112,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -551,7 +543,7 @@
         "topRelevantScore": 0.998,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -581,7 +573,7 @@
         "topRelevantScore": 0.793,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -611,7 +603,7 @@
         "topRelevantScore": 0.778,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -620,7 +612,7 @@
         "topRelevantScore": 0.778,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -641,7 +633,7 @@
         "topRelevantScore": 0.917,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -680,7 +672,7 @@
         "topRelevantScore": 0.964,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -710,7 +702,7 @@
         "topRelevantScore": 0.785,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -731,7 +723,7 @@
         "topRelevantScore": 0.86,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -740,7 +732,7 @@
         "topRelevantScore": 0.86,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 14
       },
       "delta": {
         "precision5": 0,
@@ -770,7 +762,7 @@
         "topRelevantScore": 0.928,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -791,7 +783,7 @@
         "topRelevantScore": 0.755,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -800,7 +792,7 @@
         "topRelevantScore": 0.755,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -830,7 +822,7 @@
         "topRelevantScore": 0.855,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 16
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -851,7 +843,7 @@
         "topRelevantScore": 0.869,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -881,7 +873,7 @@
         "topRelevantScore": 0.98,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -911,7 +903,7 @@
         "topRelevantScore": 1.096,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -920,7 +912,7 @@
         "topRelevantScore": 1.096,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -941,7 +933,7 @@
         "topRelevantScore": 1.065,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -950,7 +942,7 @@
         "topRelevantScore": 1.065,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 13
       },
       "delta": {
         "precision5": 0,
@@ -1001,7 +993,7 @@
         "topRelevantScore": 0.978,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -1010,7 +1002,7 @@
         "topRelevantScore": 0.978,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -1040,7 +1032,7 @@
         "topRelevantScore": 0.948,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -1070,7 +1062,7 @@
         "topRelevantScore": 0.903,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -1091,7 +1083,7 @@
         "topRelevantScore": 0.714,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -1100,7 +1092,7 @@
         "topRelevantScore": 0.714,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -1130,7 +1122,7 @@
         "topRelevantScore": 1.083,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 13
       },
       "delta": {
         "precision5": 0,
@@ -1160,7 +1152,7 @@
         "topRelevantScore": 1.088,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -1178,10 +1170,10 @@
         "precision5": 1,
         "mrr": 1,
         "ndcg": 1,
-        "topRelevantScore": 0.865,
+        "topRelevantScore": 0.979,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -1190,14 +1182,14 @@
         "topRelevantScore": 0.979,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
         "mrr": 0,
         "ndcg": 0,
         "rank": 0,
-        "score": 0.11399999999999999
+        "score": 0
       }
     },
     {
@@ -1211,7 +1203,7 @@
         "topRelevantScore": 1.038,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -1220,7 +1212,7 @@
         "topRelevantScore": 1.038,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -1241,7 +1233,7 @@
         "topRelevantScore": 0.74,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -1250,7 +1242,7 @@
         "topRelevantScore": 0.74,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 13
       },
       "delta": {
         "precision5": 0,
@@ -1277,7 +1269,7 @@
         "precision5": 1,
         "mrr": 1,
         "ndcg": 1,
-        "topRelevantScore": 0.91,
+        "topRelevantScore": 1.036,
         "firstRelevantRank": 1,
         "resultCount": 10,
         "latency": 11
@@ -1287,7 +1279,7 @@
         "mrr": 0,
         "ndcg": 0,
         "rank": 0,
-        "score": -0.126
+        "score": 0
       }
     },
     {
@@ -1310,7 +1302,7 @@
         "topRelevantScore": 1.001,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -1340,7 +1332,7 @@
         "topRelevantScore": 0.858,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -1361,7 +1353,7 @@
         "topRelevantScore": 0.882,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -1370,7 +1362,7 @@
         "topRelevantScore": 0.882,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -1391,7 +1383,7 @@
         "topRelevantScore": 1.03,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -1400,7 +1392,7 @@
         "topRelevantScore": 1.03,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -1418,10 +1410,10 @@
         "precision5": 1,
         "mrr": 1,
         "ndcg": 1,
-        "topRelevantScore": 0.951,
+        "topRelevantScore": 0.925,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -1430,14 +1422,14 @@
         "topRelevantScore": 0.951,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 13
       },
       "delta": {
         "precision5": 0,
         "mrr": 0,
         "ndcg": 0,
         "rank": 0,
-        "score": 0
+        "score": 0.025999999999999912
       }
     },
     {
@@ -1460,7 +1452,7 @@
         "topRelevantScore": 0.814,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -1481,7 +1473,7 @@
         "topRelevantScore": 0.794,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -1490,7 +1482,7 @@
         "topRelevantScore": 0.794,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -1511,7 +1503,7 @@
         "topRelevantScore": 0.91,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 16
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -1520,7 +1512,7 @@
         "topRelevantScore": 0.91,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -1541,7 +1533,7 @@
         "topRelevantScore": 0.836,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -1550,7 +1542,7 @@
         "topRelevantScore": 0.836,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -1580,7 +1572,7 @@
         "topRelevantScore": 0.818,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 13
       },
       "delta": {
         "precision5": 0,
@@ -1601,21 +1593,21 @@
         "topRelevantScore": 0.906,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "postTraining": {
         "precision5": 0.8,
         "mrr": 0.5,
-        "ndcg": 0.7894138424738288,
+        "ndcg": 0.776161268289601,
         "topRelevantScore": 0.906,
         "firstRelevantRank": 2,
         "resultCount": 10,
-        "latency": 13
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
         "mrr": -0.5,
-        "ndcg": -0.18208388199061742,
+        "ndcg": -0.1953364561748453,
         "rank": -1,
         "score": 0
       }
@@ -1627,11 +1619,11 @@
       "baseline": {
         "precision5": 0.8,
         "mrr": 1,
-        "ndcg": 0.9466454870600813,
+        "ndcg": 0.9308198161197739,
         "topRelevantScore": 0.74,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 13
       },
       "postTraining": {
         "precision5": 0.8,
@@ -1640,12 +1632,12 @@
         "topRelevantScore": 0.74,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
         "mrr": 0,
-        "ndcg": -0.0158256709403074,
+        "ndcg": 0,
         "rank": 0,
         "score": 0
       }
@@ -1658,7 +1650,7 @@
         "precision5": 1,
         "mrr": 1,
         "ndcg": 1,
-        "topRelevantScore": 0.917,
+        "topRelevantScore": 0.879,
         "firstRelevantRank": 1,
         "resultCount": 10,
         "latency": 10
@@ -1677,7 +1669,7 @@
         "mrr": 0,
         "ndcg": 0,
         "rank": 0,
-        "score": 0
+        "score": 0.038000000000000034
       }
     },
     {
@@ -1691,7 +1683,7 @@
         "topRelevantScore": 1.025,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -1700,7 +1692,7 @@
         "topRelevantScore": 1.025,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -1730,7 +1722,7 @@
         "topRelevantScore": 0.888,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -1751,7 +1743,7 @@
         "topRelevantScore": 1.034,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -1760,7 +1752,7 @@
         "topRelevantScore": 1.034,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -1781,7 +1773,7 @@
         "topRelevantScore": 0.919,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -1790,7 +1782,7 @@
         "topRelevantScore": 0.919,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 14
       },
       "delta": {
         "precision5": 0,
@@ -1820,7 +1812,7 @@
         "topRelevantScore": 0.925,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -1841,7 +1833,7 @@
         "topRelevantScore": 0.94,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -1871,7 +1863,7 @@
         "topRelevantScore": 0.95,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -1880,7 +1872,7 @@
         "topRelevantScore": 0.95,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -1910,7 +1902,7 @@
         "topRelevantScore": 0.909,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 13
       },
       "delta": {
         "precision5": 0,
@@ -1940,7 +1932,7 @@
         "topRelevantScore": 1.022,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -1961,7 +1953,7 @@
         "topRelevantScore": 1.014,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -1991,7 +1983,7 @@
         "topRelevantScore": 0.979,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -2000,7 +1992,7 @@
         "topRelevantScore": 0.979,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -2021,7 +2013,7 @@
         "topRelevantScore": 1.022,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -2030,7 +2022,7 @@
         "topRelevantScore": 1.022,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -2060,7 +2052,7 @@
         "topRelevantScore": 0.986,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -2081,7 +2073,7 @@
         "topRelevantScore": 1.149,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -2090,7 +2082,7 @@
         "topRelevantScore": 1.149,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -2111,7 +2103,7 @@
         "topRelevantScore": 1.115,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -2120,7 +2112,7 @@
         "topRelevantScore": 1.115,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -2171,7 +2163,7 @@
         "topRelevantScore": 1.09,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -2180,7 +2172,7 @@
         "topRelevantScore": 1.09,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -2210,7 +2202,7 @@
         "topRelevantScore": 1.167,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 16
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -2240,7 +2232,7 @@
         "topRelevantScore": 1.12,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 17
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -2261,7 +2253,7 @@
         "topRelevantScore": 0.935,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -2270,7 +2262,7 @@
         "topRelevantScore": 0.935,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -2291,7 +2283,7 @@
         "topRelevantScore": 0.938,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -2300,7 +2292,7 @@
         "topRelevantScore": 0.938,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -2321,7 +2313,7 @@
         "topRelevantScore": 1.023,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -2360,7 +2352,7 @@
         "topRelevantScore": 1.139,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 13
       },
       "delta": {
         "precision5": 0,
@@ -2381,7 +2373,7 @@
         "topRelevantScore": 1.053,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -2390,7 +2382,7 @@
         "topRelevantScore": 1.053,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -2420,7 +2412,7 @@
         "topRelevantScore": 1.133,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -2441,23 +2433,23 @@
         "topRelevantScore": 1.055,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
         "mrr": 1,
-        "ndcg": 0.9937947856332161,
-        "topRelevantScore": 1.046,
+        "ndcg": 0.9971876401972101,
+        "topRelevantScore": 1.055,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
         "mrr": 0,
-        "ndcg": -0.0033928545639939633,
+        "ndcg": 0,
         "rank": 0,
-        "score": -0.008999999999999897
+        "score": 0
       }
     },
     {
@@ -2471,7 +2463,7 @@
         "topRelevantScore": 1.097,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -2480,7 +2472,7 @@
         "topRelevantScore": 1.097,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -2501,7 +2493,7 @@
         "topRelevantScore": 1.138,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -2510,7 +2502,7 @@
         "topRelevantScore": 1.138,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -2540,7 +2532,7 @@
         "topRelevantScore": 0.954,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -2570,7 +2562,7 @@
         "topRelevantScore": 0.921,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -2591,7 +2583,7 @@
         "topRelevantScore": 0.985,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -2600,7 +2592,7 @@
         "topRelevantScore": 0.985,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -2621,7 +2613,7 @@
         "topRelevantScore": 0.764,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 14
       },
       "postTraining": {
         "precision5": 1,
@@ -2630,7 +2622,7 @@
         "topRelevantScore": 0.764,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -2651,7 +2643,7 @@
         "topRelevantScore": 0.966,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 13
       },
       "postTraining": {
         "precision5": 1,
@@ -2681,7 +2673,7 @@
         "topRelevantScore": 1.127,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -2690,7 +2682,7 @@
         "topRelevantScore": 1.127,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -2711,7 +2703,7 @@
         "topRelevantScore": 1.223,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -2720,7 +2712,7 @@
         "topRelevantScore": 1.223,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -2741,7 +2733,7 @@
         "topRelevantScore": 1.136,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -2750,7 +2742,7 @@
         "topRelevantScore": 1.136,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -2771,7 +2763,7 @@
         "topRelevantScore": 1.159,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 13
       },
       "postTraining": {
         "precision5": 1,
@@ -2801,7 +2793,7 @@
         "topRelevantScore": 1.024,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 13
       },
       "postTraining": {
         "precision5": 1,
@@ -2837,7 +2829,7 @@
         "precision5": 1,
         "mrr": 1,
         "ndcg": 1,
-        "topRelevantScore": 0.908,
+        "topRelevantScore": 0.852,
         "firstRelevantRank": 1,
         "resultCount": 10,
         "latency": 11
@@ -2847,7 +2839,7 @@
         "mrr": 0,
         "ndcg": 0,
         "rank": 0,
-        "score": 0
+        "score": -0.05600000000000005
       }
     },
     {
@@ -2867,7 +2859,7 @@
         "precision5": 1,
         "mrr": 1,
         "ndcg": 1,
-        "topRelevantScore": 0.983,
+        "topRelevantScore": 1.04,
         "firstRelevantRank": 1,
         "resultCount": 10,
         "latency": 13
@@ -2877,7 +2869,7 @@
         "mrr": 0,
         "ndcg": 0,
         "rank": 0,
-        "score": -0.05700000000000005
+        "score": 0
       }
     },
     {
@@ -2891,7 +2883,7 @@
         "topRelevantScore": 1.024,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -2900,7 +2892,7 @@
         "topRelevantScore": 1.024,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -2921,7 +2913,7 @@
         "topRelevantScore": 0.99,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -2930,7 +2922,7 @@
         "topRelevantScore": 0.99,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -2951,7 +2943,7 @@
         "topRelevantScore": 1.076,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -2960,7 +2952,7 @@
         "topRelevantScore": 1.076,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -2981,7 +2973,7 @@
         "topRelevantScore": 0.968,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -2990,7 +2982,7 @@
         "topRelevantScore": 0.968,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -3011,7 +3003,7 @@
         "topRelevantScore": 1.057,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 17
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -3020,7 +3012,7 @@
         "topRelevantScore": 1.057,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -3041,7 +3033,7 @@
         "topRelevantScore": 1.117,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 17
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -3050,7 +3042,7 @@
         "topRelevantScore": 1.117,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -3080,7 +3072,7 @@
         "topRelevantScore": 1.111,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -3101,7 +3093,7 @@
         "topRelevantScore": 1.11,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -3131,7 +3123,7 @@
         "topRelevantScore": 0.598,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 10
       },
       "postTraining": {
         "precision5": 0.4,
@@ -3140,7 +3132,7 @@
         "topRelevantScore": 0.598,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 14
       },
       "delta": {
         "precision5": 0,
@@ -3161,7 +3153,7 @@
         "topRelevantScore": 0.802,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 0.4,
@@ -3170,7 +3162,7 @@
         "topRelevantScore": 0.802,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 18
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -3191,23 +3183,23 @@
         "topRelevantScore": 0.734,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
         "mrr": 1,
         "ndcg": 1,
-        "topRelevantScore": 0.645,
+        "topRelevantScore": 0.734,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 16
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
         "mrr": 0,
         "ndcg": 0,
         "rank": 0,
-        "score": -0.08899999999999997
+        "score": 0
       }
     },
     {
@@ -3221,7 +3213,7 @@
         "topRelevantScore": 0.891,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -3230,7 +3222,7 @@
         "topRelevantScore": 0.891,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -3247,20 +3239,20 @@
       "baseline": {
         "precision5": 1,
         "mrr": 1,
-        "ndcg": 0.9842184869190973,
+        "ndcg": 0.9830168297915423,
         "topRelevantScore": 0.891,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
         "mrr": 1,
-        "ndcg": 0.9842184869190973,
+        "ndcg": 0.9830168297915423,
         "topRelevantScore": 0.891,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -3290,7 +3282,7 @@
         "topRelevantScore": 0.866,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 16
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -3314,19 +3306,19 @@
         "latency": 10
       },
       "postTraining": {
-        "precision5": 0.4,
-        "mrr": 0.25,
-        "ndcg": 0.6631747728725313,
+        "precision5": 0.6,
+        "mrr": 0.3333333333333333,
+        "ndcg": 0.7367283992687399,
         "topRelevantScore": 0.958,
-        "firstRelevantRank": 4,
+        "firstRelevantRank": 3,
         "resultCount": 10,
-        "latency": 15
+        "latency": 11
       },
       "delta": {
-        "precision5": 0,
-        "mrr": 0,
-        "ndcg": 0,
-        "rank": 0,
+        "precision5": 0.19999999999999996,
+        "mrr": 0.08333333333333331,
+        "ndcg": 0.07355362639620855,
+        "rank": 1,
         "score": 0
       }
     },
@@ -3350,7 +3342,7 @@
         "topRelevantScore": 0.982,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 18
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -3371,7 +3363,7 @@
         "topRelevantScore": 0,
         "firstRelevantRank": 0,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 0,
@@ -3380,7 +3372,7 @@
         "topRelevantScore": 0,
         "firstRelevantRank": 0,
         "resultCount": 10,
-        "latency": 17
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -3397,11 +3389,11 @@
       "baseline": {
         "precision5": 0.8,
         "mrr": 1,
-        "ndcg": 1,
+        "ndcg": 0.9896062251871525,
         "topRelevantScore": 0.879,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 0.8,
@@ -3410,12 +3402,12 @@
         "topRelevantScore": 0.879,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 20
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
         "mrr": 0,
-        "ndcg": -0.010393774812847534,
+        "ndcg": 0,
         "rank": 0,
         "score": 0
       }
@@ -3440,7 +3432,7 @@
         "topRelevantScore": 0,
         "firstRelevantRank": 0,
         "resultCount": 10,
-        "latency": 15
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -3461,7 +3453,7 @@
         "topRelevantScore": 0,
         "firstRelevantRank": 0,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "postTraining": {
         "precision5": 0,
@@ -3470,7 +3462,7 @@
         "topRelevantScore": 0,
         "firstRelevantRank": 0,
         "resultCount": 10,
-        "latency": 18
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -3488,10 +3480,10 @@
         "precision5": 1,
         "mrr": 1,
         "ndcg": 1,
-        "topRelevantScore": 0.814,
+        "topRelevantScore": 0.875,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 9
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -3500,14 +3492,14 @@
         "topRelevantScore": 0.875,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
         "mrr": 0,
         "ndcg": 0,
         "rank": 0,
-        "score": 0.061000000000000054
+        "score": 0
       }
     },
     {
@@ -3521,7 +3513,7 @@
         "topRelevantScore": 0.92,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -3530,7 +3522,7 @@
         "topRelevantScore": 0.92,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -3551,7 +3543,7 @@
         "topRelevantScore": 0.93,
         "firstRelevantRank": 3,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 0.2,
@@ -3581,7 +3573,7 @@
         "topRelevantScore": 0,
         "firstRelevantRank": 0,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 0,
@@ -3590,7 +3582,7 @@
         "topRelevantScore": 0,
         "firstRelevantRank": 0,
         "resultCount": 10,
-        "latency": 18
+        "latency": 14
       },
       "delta": {
         "precision5": 0,
@@ -3611,7 +3603,7 @@
         "topRelevantScore": 0.674,
         "firstRelevantRank": 9,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 0,
@@ -3620,7 +3612,7 @@
         "topRelevantScore": 0.674,
         "firstRelevantRank": 9,
         "resultCount": 10,
-        "latency": 15
+        "latency": 14
       },
       "delta": {
         "precision5": 0,
@@ -3641,7 +3633,7 @@
         "topRelevantScore": 0.975,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 0.4,
@@ -3650,7 +3642,7 @@
         "topRelevantScore": 0.975,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -3671,7 +3663,7 @@
         "topRelevantScore": 1.009,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -3680,7 +3672,7 @@
         "topRelevantScore": 1.009,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 16
+        "latency": 14
       },
       "delta": {
         "precision5": 0,
@@ -3701,7 +3693,7 @@
         "topRelevantScore": 1.048,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -3710,7 +3702,7 @@
         "topRelevantScore": 1.048,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -3725,13 +3717,13 @@
       "category": "config",
       "query": "shipping methods config xml",
       "baseline": {
-        "precision5": 0.8,
+        "precision5": 1,
         "mrr": 1,
-        "ndcg": 0.9782917460822231,
-        "topRelevantScore": 0.875,
+        "ndcg": 0.9842184869190973,
+        "topRelevantScore": 0.973,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -3740,14 +3732,14 @@
         "topRelevantScore": 0.973,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 10
       },
       "delta": {
-        "precision5": 0.19999999999999996,
+        "precision5": 0,
         "mrr": 0,
-        "ndcg": 0.005926740836874167,
+        "ndcg": 0,
         "rank": 0,
-        "score": 0.09799999999999998
+        "score": 0
       }
     },
     {
@@ -3761,7 +3753,7 @@
         "topRelevantScore": 0.867,
         "firstRelevantRank": 3,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 0.2,
@@ -3770,7 +3762,7 @@
         "topRelevantScore": 0.867,
         "firstRelevantRank": 3,
         "resultCount": 10,
-        "latency": 14
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -3800,7 +3792,7 @@
         "topRelevantScore": 0,
         "firstRelevantRank": 0,
         "resultCount": 10,
-        "latency": 15
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -3821,7 +3813,7 @@
         "topRelevantScore": 0.769,
         "firstRelevantRank": 6,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 0,
@@ -3830,7 +3822,7 @@
         "topRelevantScore": 0.769,
         "firstRelevantRank": 6,
         "resultCount": 10,
-        "latency": 15
+        "latency": 14
       },
       "delta": {
         "precision5": 0,
@@ -3860,7 +3852,7 @@
         "topRelevantScore": 1.016,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -3890,7 +3882,7 @@
         "topRelevantScore": 0.858,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 17
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -3911,7 +3903,7 @@
         "topRelevantScore": 0.708,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -3920,7 +3912,7 @@
         "topRelevantScore": 0.708,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -3941,7 +3933,7 @@
         "topRelevantScore": 1.04,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -3950,7 +3942,7 @@
         "topRelevantScore": 1.04,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 13
       },
       "delta": {
         "precision5": 0,
@@ -3971,7 +3963,7 @@
         "topRelevantScore": 1.103,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -3980,7 +3972,7 @@
         "topRelevantScore": 1.103,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -4001,7 +3993,7 @@
         "topRelevantScore": 0.959,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 9
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -4010,7 +4002,7 @@
         "topRelevantScore": 0.959,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -4040,7 +4032,7 @@
         "topRelevantScore": 1.082,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -4061,7 +4053,7 @@
         "topRelevantScore": 1.074,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -4091,7 +4083,7 @@
         "topRelevantScore": 1.058,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -4100,7 +4092,7 @@
         "topRelevantScore": 1.058,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -4117,11 +4109,11 @@
       "baseline": {
         "precision5": 1,
         "mrr": 1,
-        "ndcg": 0.9971876401972101,
+        "ndcg": 0.9937947856332161,
         "topRelevantScore": 1.029,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -4130,12 +4122,12 @@
         "topRelevantScore": 1.029,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 16
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
         "mrr": 0,
-        "ndcg": 0,
+        "ndcg": 0.0033928545639939633,
         "rank": 0,
         "score": 0
       }
@@ -4160,7 +4152,7 @@
         "topRelevantScore": 0.959,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -4181,7 +4173,7 @@
         "topRelevantScore": 1.158,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -4220,7 +4212,7 @@
         "topRelevantScore": 0.989,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -4241,7 +4233,7 @@
         "topRelevantScore": 1,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -4250,7 +4242,7 @@
         "topRelevantScore": 1,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -4271,7 +4263,7 @@
         "topRelevantScore": 1.127,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -4280,7 +4272,7 @@
         "topRelevantScore": 1.127,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 13
       },
       "delta": {
         "precision5": 0,
@@ -4310,7 +4302,7 @@
         "topRelevantScore": 1.198,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -4340,7 +4332,7 @@
         "topRelevantScore": 1.092,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -4361,7 +4353,7 @@
         "topRelevantScore": 1.155,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -4370,7 +4362,7 @@
         "topRelevantScore": 1.155,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -4391,7 +4383,7 @@
         "topRelevantScore": 1.079,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -4400,7 +4392,7 @@
         "topRelevantScore": 1.079,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -4430,7 +4422,7 @@
         "topRelevantScore": 1.154,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -4451,7 +4443,7 @@
         "topRelevantScore": 1.183,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 13
       },
       "postTraining": {
         "precision5": 1,
@@ -4460,7 +4452,7 @@
         "topRelevantScore": 1.183,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 13
       },
       "delta": {
         "precision5": 0,
@@ -4481,7 +4473,7 @@
         "topRelevantScore": 0.885,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -4490,7 +4482,7 @@
         "topRelevantScore": 0.885,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 24
       },
       "delta": {
         "precision5": 0,
@@ -4520,7 +4512,7 @@
         "topRelevantScore": 0.946,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 16
+        "latency": 18
       },
       "delta": {
         "precision5": 0,
@@ -4541,13 +4533,13 @@
         "topRelevantScore": 0.958,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
         "mrr": 1,
         "ndcg": 1,
-        "topRelevantScore": 0.958,
+        "topRelevantScore": 0.947,
         "firstRelevantRank": 1,
         "resultCount": 10,
         "latency": 14
@@ -4557,7 +4549,7 @@
         "mrr": 0,
         "ndcg": 0,
         "rank": 0,
-        "score": 0
+        "score": -0.01100000000000001
       }
     },
     {
@@ -4571,7 +4563,7 @@
         "topRelevantScore": 0.995,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -4580,7 +4572,7 @@
         "topRelevantScore": 0.995,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -4601,7 +4593,7 @@
         "topRelevantScore": 0.785,
         "firstRelevantRank": 2,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 0.8,
@@ -4610,7 +4602,7 @@
         "topRelevantScore": 0.785,
         "firstRelevantRank": 2,
         "resultCount": 10,
-        "latency": 15
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -4640,7 +4632,7 @@
         "topRelevantScore": 0.916,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -4661,7 +4653,7 @@
         "topRelevantScore": 1.006,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -4670,7 +4662,7 @@
         "topRelevantScore": 1.006,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 17
+        "latency": 14
       },
       "delta": {
         "precision5": 0,
@@ -4691,7 +4683,7 @@
         "topRelevantScore": 0.823,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -4700,7 +4692,7 @@
         "topRelevantScore": 0.823,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 16
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -4730,7 +4722,7 @@
         "topRelevantScore": 1.033,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 17
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -4751,7 +4743,7 @@
         "topRelevantScore": 0.864,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -4760,7 +4752,7 @@
         "topRelevantScore": 0.864,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -4781,7 +4773,7 @@
         "topRelevantScore": 1.011,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -4790,7 +4782,7 @@
         "topRelevantScore": 1.011,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 13
       },
       "delta": {
         "precision5": 0,
@@ -4811,7 +4803,7 @@
         "topRelevantScore": 1.004,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -4820,7 +4812,7 @@
         "topRelevantScore": 1.004,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -4841,7 +4833,7 @@
         "topRelevantScore": 0.925,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "postTraining": {
         "precision5": 0.6,
@@ -4850,7 +4842,7 @@
         "topRelevantScore": 0.925,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -4871,7 +4863,7 @@
         "topRelevantScore": 1.012,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 14
       },
       "postTraining": {
         "precision5": 1,
@@ -4880,7 +4872,7 @@
         "topRelevantScore": 1.012,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -4901,7 +4893,7 @@
         "topRelevantScore": 1.039,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -4910,7 +4902,7 @@
         "topRelevantScore": 1.039,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 16
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -4931,7 +4923,7 @@
         "topRelevantScore": 1.021,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -4940,7 +4932,7 @@
         "topRelevantScore": 1.021,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 15
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -4961,7 +4953,7 @@
         "topRelevantScore": 0.915,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -4970,7 +4962,7 @@
         "topRelevantScore": 0.915,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 14
       },
       "delta": {
         "precision5": 0,
@@ -4991,7 +4983,7 @@
         "topRelevantScore": 1.109,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -5000,7 +4992,7 @@
         "topRelevantScore": 1.109,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -5060,7 +5052,7 @@
         "topRelevantScore": 0.985,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -5081,7 +5073,7 @@
         "topRelevantScore": 0.769,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -5090,7 +5082,7 @@
         "topRelevantScore": 0.769,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -5120,7 +5112,7 @@
         "topRelevantScore": 0.67,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -5150,7 +5142,7 @@
         "topRelevantScore": 0.753,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -5171,7 +5163,7 @@
         "topRelevantScore": 0.77,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -5180,7 +5172,7 @@
         "topRelevantScore": 0.77,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -5201,7 +5193,7 @@
         "topRelevantScore": 0.891,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 1,
@@ -5210,7 +5202,7 @@
         "topRelevantScore": 0.891,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -5231,7 +5223,7 @@
         "topRelevantScore": 0.787,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -5240,7 +5232,7 @@
         "topRelevantScore": 0.787,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -5261,7 +5253,7 @@
         "topRelevantScore": 0.805,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -5270,7 +5262,7 @@
         "topRelevantScore": 0.805,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -5291,7 +5283,7 @@
         "topRelevantScore": 0.604,
         "firstRelevantRank": 2,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "postTraining": {
         "precision5": 0.8,
@@ -5300,7 +5292,7 @@
         "topRelevantScore": 0.604,
         "firstRelevantRank": 2,
         "resultCount": 10,
-        "latency": 13
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -5330,7 +5322,7 @@
         "topRelevantScore": 0.874,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -5360,7 +5352,7 @@
         "topRelevantScore": 0.765,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -5390,7 +5382,7 @@
         "topRelevantScore": 0.825,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -5420,7 +5412,7 @@
         "topRelevantScore": 0.619,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -5441,7 +5433,7 @@
         "topRelevantScore": 0.826,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -5450,7 +5442,7 @@
         "topRelevantScore": 0.826,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -5474,20 +5466,20 @@
         "latency": 11
       },
       "postTraining": {
-        "precision5": 0,
-        "mrr": 0.16666666666666666,
-        "ndcg": 0.5098501619682683,
-        "topRelevantScore": 0.685,
-        "firstRelevantRank": 6,
+        "precision5": 0.2,
+        "mrr": 0.2,
+        "ndcg": 0.5513882925917463,
+        "topRelevantScore": 0.722,
+        "firstRelevantRank": 5,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "delta": {
-        "precision5": -0.2,
-        "mrr": -0.033333333333333354,
-        "ndcg": -0.041538130623478,
-        "rank": -1,
-        "score": -0.03699999999999992
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
       }
     },
     {
@@ -5501,23 +5493,23 @@
         "topRelevantScore": 0.654,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
         "mrr": 1,
         "ndcg": 1,
-        "topRelevantScore": 0.652,
+        "topRelevantScore": 0.654,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
         "mrr": 0,
         "ndcg": 0,
         "rank": 0,
-        "score": -0.0020000000000000018
+        "score": 0
       }
     },
     {
@@ -5540,7 +5532,7 @@
         "topRelevantScore": 0.827,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 10
       },
       "delta": {
         "precision5": 0,
@@ -5561,7 +5553,7 @@
         "topRelevantScore": 0.955,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 13
       },
       "postTraining": {
         "precision5": 1,
@@ -5570,7 +5562,7 @@
         "topRelevantScore": 0.955,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 14
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -5591,7 +5583,7 @@
         "topRelevantScore": 1,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 13
       },
       "postTraining": {
         "precision5": 0.8,
@@ -5600,7 +5592,7 @@
         "topRelevantScore": 1,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 12
       },
       "delta": {
         "precision5": 0,
@@ -5621,7 +5613,7 @@
         "topRelevantScore": 1.077,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 10
+        "latency": 11
       },
       "postTraining": {
         "precision5": 1,
@@ -5630,7 +5622,7 @@
         "topRelevantScore": 1.077,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 12
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
@@ -5648,10 +5640,10 @@
         "precision5": 1,
         "mrr": 1,
         "ndcg": 1,
-        "topRelevantScore": 0.761,
+        "topRelevantScore": 0.872,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 11
+        "latency": 12
       },
       "postTraining": {
         "precision5": 1,
@@ -5660,14 +5652,14 @@
         "topRelevantScore": 0.761,
         "firstRelevantRank": 1,
         "resultCount": 10,
-        "latency": 13
+        "latency": 11
       },
       "delta": {
         "precision5": 0,
         "mrr": 0,
         "ndcg": 0,
         "rank": 0,
-        "score": 0
+        "score": -0.11099999999999999
       }
     }
   ]

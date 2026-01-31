@@ -126,6 +126,6 @@ Rust binaries are distributed as npm optional dependencies (`@magector/cli-darwi
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `MAGENTO_ROOT` | cwd | Path to Magento installation |
-| `MAGECTOR_DB` | `./magector.db` | Index database path |
+| `MAGECTOR_DB` | `./.magector/index.db` | Index database path |
 | `MAGECTOR_BIN` | (auto-resolved) | Override magector-core binary path |
 | `MAGECTOR_MODELS` | (auto-resolved) | Override ONNX model directory |

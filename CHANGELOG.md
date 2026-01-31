@@ -4,6 +4,24 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [1.5.0] - 2026-01-31
+
+### Changed
+- Consolidate all data files into `.magector/` subdirectory — no more scattered files in project root
+  - `magector.db` → `.magector/index.db`
+  - `magector-descriptions.db` → `.magector/sqlite.db`
+  - `magector.log` → `.magector/magector.log`
+  - SONA state file derived from index path (`.magector/index.db.sona`)
+- `npx magector init` now creates `.magector/` directory and adds it to `.gitignore`
+- `MAGECTOR_DB` env var default changed from `./magector.db` to `./.magector/index.db`
+- All Rust CLI command defaults updated to `.magector/` paths
+- README rewritten — Magector positioned as a technology-aware MCP server with intelligent indexing and search
+
+### Removed
+- Legacy fallback to `magector.db` in project root
+- Legacy fallback to `magector-descriptions.json` (JSON format descriptions)
+- "Magector vs Built-in AI Search" README section (consolidated into "Why Magector")
+
 ## [1.4.3] - 2026-01-31
 
 ### Added

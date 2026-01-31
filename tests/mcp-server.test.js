@@ -18,7 +18,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_PATH = path.join(__dirname, '..', 'src', 'mcp-server.js');
 const PROJECT_ROOT = path.join(__dirname, '..');
-const DB_PATH = process.env.MAGECTOR_DB || path.join(PROJECT_ROOT, 'magector.db');
+const DB_PATH = process.env.MAGECTOR_DB || path.join(PROJECT_ROOT, '.magector', 'index.db');
 const HAS_INDEX = existsSync(DB_PATH);
 const SKIP_INDEX = process.argv.includes('--no-index');
 
@@ -142,7 +142,7 @@ async function main() {
     const toolsResp = await client.send('tools/list', {});
     const tools = toolsResp.result?.tools || [];
     const toolNames = tools.map((t) => t.name);
-    log(tools.length === 20 ? 'PASS' : 'FAIL', `tools/list returns 20 tools`, `got ${tools.length}`);
+    log(tools.length === 21 ? 'PASS' : 'FAIL', `tools/list returns 21 tools`, `got ${tools.length}`);
 
     // Verify all expected tools present
     const expectedTools = [
@@ -152,7 +152,8 @@ async function main() {
       'magento_find_preference', 'magento_find_api', 'magento_find_controller',
       'magento_find_block', 'magento_find_cron', 'magento_find_graphql',
       'magento_find_db_schema', 'magento_module_structure',
-      'magento_analyze_diff', 'magento_complexity', 'magento_trace_flow',
+      'magento_analyze_diff', 'magento_complexity', 'magento_describe',
+      'magento_trace_flow',
     ];
     for (const name of expectedTools) {
       log(toolNames.includes(name) ? 'PASS' : 'FAIL', `tool '${name}' listed`);

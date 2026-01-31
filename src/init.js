@@ -159,24 +159,20 @@ function writeRules(projectPath, ides) {
 }
 
 /**
- * Add magector.db and magector.log to .gitignore if not already present.
+ * Add .magector/ to .gitignore if not already present.
  */
 function updateGitignore(projectPath) {
   const giPath = path.join(projectPath, '.gitignore');
   let updated = false;
   if (existsSync(giPath)) {
     const content = readFileSync(giPath, 'utf-8');
-    if (!content.includes('magector.db')) {
-      appendFileSync(giPath, '\n# Magector index\nmagector.db\n');
-      updated = true;
-    }
-    if (!content.includes('magector.log')) {
-      appendFileSync(giPath, 'magector.log\n');
+    if (!content.includes('.magector/')) {
+      appendFileSync(giPath, '\n# Magector data\n.magector/\n');
       updated = true;
     }
     return updated;
   }
-  writeFileSync(giPath, '# Magector index\nmagector.db\nmagector.log\n');
+  writeFileSync(giPath, '# Magector data\n.magector/\n');
   return true;
 }
 
@@ -185,7 +181,8 @@ function updateGitignore(projectPath) {
  */
 export async function init(projectPath) {
   projectPath = path.resolve(projectPath || process.cwd());
-  const dbPath = path.join(projectPath, 'magector.db');
+  mkdirSync(path.join(projectPath, '.magector'), { recursive: true });
+  const dbPath = path.join(projectPath, '.magector', 'index.db');
 
   console.log('\nMagector Init\n');
 
@@ -264,7 +261,7 @@ export async function init(projectPath) {
   // 8. Update .gitignore
   const giUpdated = updateGitignore(projectPath);
   if (giUpdated) {
-    console.log('\nUpdated .gitignore with magector.db and magector.log');
+    console.log('\nUpdated .gitignore with .magector/');
   }
 
   // 9. Get stats and print summary
@@ -294,7 +291,7 @@ export async function init(projectPath) {
  */
 export async function setup(projectPath) {
   projectPath = path.resolve(projectPath || process.cwd());
-  const dbPath = path.join(projectPath, 'magector.db');
+  const dbPath = path.join(projectPath, '.magector', 'index.db');
 
   console.log('\nMagector IDE Setup\n');
 

@@ -19,7 +19,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_PATH = path.join(__dirname, '..', 'src', 'mcp-server.js');
 const PROJECT_ROOT = path.join(__dirname, '..');
-const DB_PATH = process.env.MAGECTOR_DB || path.join(PROJECT_ROOT, 'magector.db');
+const DB_PATH = process.env.MAGECTOR_DB || path.join(PROJECT_ROOT, '.magector', 'index.db');
 const HAS_INDEX = existsSync(DB_PATH);
 const SKIP_INDEX = process.argv.includes('--no-index');
 

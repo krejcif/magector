@@ -1,8 +1,8 @@
 # Magector
 
-**Semantic code search engine for Magento 2 and Adobe Commerce, powered by ONNX embeddings and HNSW vector search.**
+**Technology-aware MCP server for Magento 2 and Adobe Commerce with intelligent indexing and search.**
 
-Magector indexes an entire Magento 2 or Adobe Commerce codebase and lets you search it with natural language. Instead of grepping for keywords, ask questions like *"how are checkout totals calculated?"* or *"where is the product price determined?"* and get ranked, relevant results in under 50ms.
+Magector is a Model Context Protocol (MCP) server that deeply understands Magento 2 and Adobe Commerce. It builds a semantic vector index of your entire codebase — 18,000+ files across hundreds of modules — and exposes 21 tools that let AI assistants search, navigate, and understand the code with domain-specific intelligence. Instead of grepping for keywords, your AI asks *"how are checkout totals calculated?"* and gets ranked, relevant results in under 50ms, enriched with Magento pattern detection (plugins, observers, controllers, DI preferences, layout XML, and 20+ more).
 
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
 [![Node.js](https://img.shields.io/badge/node-18+-green.svg)](https://nodejs.org)
@@ -17,43 +17,24 @@ Magector indexes an entire Magento 2 or Adobe Commerce codebase and lets you sea
 
 Magento 2 and Adobe Commerce have **18,000+ PHP, XML, JS, PHTML, and GraphQL files** spread across hundreds of modules. The codebase relies heavily on indirection — plugins intercept methods defined in other modules, observers react to events dispatched elsewhere, `di.xml` rewires interfaces to concrete classes, and layout XML stitches blocks and templates together. No single file tells the full story.
 
-Traditional search tools don't help much here:
+Generic search tools — `grep`, IDE search, or the keyword matching built into AI assistants — can't bridge this gap. They find literal strings but can't connect *"how does checkout calculate totals?"* to `TotalsCollector.php` when the word "totals" appears in hundreds of unrelated files.
 
-- **`grep` / `ripgrep`** finds literal strings but can't connect *"how does checkout calculate totals?"* to `TotalsCollector.php` — the word "totals" appears in hundreds of unrelated files.
-- **IDE search** requires you to already know the class or method name. If you're exploring unfamiliar territory (most Magento work), you're guessing.
-- **AI code assistants** (Claude Code, Cursor) use grep internally. On an 18K-file codebase they burn tokens reading dozens of wrong files before finding the right ones — if they find them at all.
+Magector solves this with three layers of intelligence:
 
-Magector solves this by building a **semantic vector index** of the entire codebase. Every file is embedded into a 384-dimensional space where meaning matters more than keywords. A search for *"payment capture"* returns `Sales/Model/Order/Payment/Operations/CaptureOperation.php` because the embeddings are close — not because the file contains the word "capture". On top of that, Magento-specific pattern detection (plugins, observers, controllers, blocks, cron jobs, etc.) enriches every result so the AI client knows *what kind* of code it's looking at.
+1. **Semantic vector index** — every file is embedded into a 384-dimensional space (ONNX, all-MiniLM-L6-v2) where meaning matters more than keywords. A search for *"payment capture"* returns `CaptureOperation.php` because the embeddings are close, not because the file contains the word "capture".
 
-| Approach | Finds semantic matches | Understands Magento patterns | Speed (18K files) |
+2. **Magento technology awareness** — 20+ pattern detectors identify plugins, observers, controllers, blocks, cron jobs, GraphQL resolvers, DI preferences, layout XML, and more. Every search result is enriched with what kind of Magento component it is, so the AI client understands the code's role in the system.
+
+3. **Adaptive learning (SONA)** — Magector tracks which results you actually use and adjusts future rankings with MicroLoRA feedback, getting smarter over time without any API calls.
+
+The result: your AI assistant calls one MCP tool and gets ranked, pattern-enriched results in 10-45ms — instead of burning tokens grepping through dozens of wrong files. High relevance accuracy means the AI reads fewer, more targeted files, which optimizes context window usage, reduces API costs, and accelerates development cycles.
+
+| Approach | Semantic matches | Magento-aware | Speed (18K files) |
 |----------|:---------------------:|:---------------------------:|:-----------------:|
 | `grep` / `ripgrep` | No | No | 100-500ms |
 | IDE search | No | No | 200-1000ms |
 | GitHub search | Partial | No | 500-2000ms |
 | **Magector** | **Yes** | **Yes** | **10-45ms** |
-
----
-
-## Magector vs Built-in AI Search
-
-Claude Code and Cursor both have built-in code search, but they rely on keyword matching (`grep`/`ripgrep`) and file-tree heuristics. That works for small projects. On a Magento codebase with 18,000+ files and deep indirection (plugins, observers, DI preferences, layout XML), keyword search returns noise — the AI reads dozens of wrong files, burns context tokens, and often still misses the answer.
-
-| Capability | Claude Code / Cursor (built-in) | Magector |
-|---|---|---|
-| **Search method** | Keyword grep / ripgrep | Semantic vector search (ONNX embeddings) |
-| **Understands intent** | No -- literal string matching only | Yes -- "payment capture" finds `CaptureOperation.php` |
-| **Magento pattern awareness** | None -- treats all PHP the same | Detects controllers, plugins, observers, blocks, resolvers, cron, and 20+ patterns |
-| **Query speed (36K vectors)** | 200-1000ms per grep pass; multiple rounds needed | 10-45ms single pass |
-| **Context window cost** | Reads many wrong files, burns tokens | Returns structured JSON with ranked results, methods, and snippets |
-| **Learns from usage** | No | Yes -- SONA tracks which results you actually use and adjusts future rankings |
-| **Works offline** | Yes | Yes -- local ONNX model, no API calls |
-| **Setup** | Built-in | `npx magector init` (one command) |
-
-### What this means in practice
-
-Without Magector, asking Claude Code or Cursor *"how are checkout totals calculated?"* triggers multiple grep searches, reads dozens of files, and still may miss the right ones. With Magector, the AI calls `magento_search("checkout totals calculation")` and gets the exact files ranked by relevance in one step — saving tokens and time.
-
-**Magector doesn't replace your AI tool — it gives it a search engine that understands Magento.**
 
 ---
 
@@ -76,7 +57,8 @@ Without Magector, asking Claude Code or Cursor *"how are checkout totals calcula
 - **Diff analysis** -- risk scoring and change classification for git commits and staged changes
 - **Complexity analysis** -- cyclomatic complexity, function count, and hotspot detection across modules
 - **Fast** -- 10-45ms queries via persistent serve process, batched ONNX embedding with adaptive thread scaling
-- **MCP server** -- 20 tools integrating with Claude Code, Cursor, and any MCP-compatible AI tool
+- **LLM description enrichment** -- generate natural-language descriptions of di.xml files using Claude, stored in SQLite, and prepend them to embedding text so descriptions influence vector search ranking (not just post-retrieval display)
+- **MCP server** -- 21 tools integrating with Claude Code, Cursor, and any MCP-compatible AI tool
 - **Clean architecture** -- Rust core handles all indexing/search, Node.js MCP server delegates to it
 
 ---
@@ -88,14 +70,15 @@ flowchart TD
   subgraph rust ["Rust Core"]
     A["AST Parser · PHP + JS"]
     B["Pattern Detection · 20+"]
+    B2["Description Enrichment"]
     C["ONNX Embedder · 384d"]
     D["HNSW + Reranking"]
-    A --> B --> C --> D
+    A --> B --> B2 --> C --> D
   end
   subgraph node ["Node.js Layer"]
-    E["MCP Server · 20 tools"]
+    E["MCP Server · 21 tools"]
     F["Persistent Serve"]
-    G["CLI · init/index/search"]
+    G["CLI · init/index/search/describe"]
     E --> F
     G --> F
   end
@@ -112,7 +95,10 @@ flowchart TD
   A[Source File] --> B[AST Parser]
   B --> C[Pattern Detection]
   C --> D[Text Enrichment]
-  D --> E[ONNX Embedding]
+  D --> D2{Description DB?}
+  D2 -->|Yes| D3["Prepend Description"]
+  D2 -->|No| E[ONNX Embedding]
+  D3 --> E
   E --> F[(HNSW Index)]
   A --> G[Metadata]
   G --> F
@@ -140,6 +126,7 @@ flowchart TD
 | JS parsing | `tree-sitter-javascript` | AMD/ES6 module detection |
 | Pattern detection | Custom Rust | 20+ Magento-specific patterns |
 | CLI | `clap` | Command-line interface (index, search, serve, validate) |
+| Descriptions | `rusqlite` (bundled SQLite) | LLM-generated di.xml descriptions stored in SQLite, prepended to embeddings |
 | SONA | Custom Rust | Feedback learning with MicroLoRA + EWC++ |
 | MCP server | `@modelcontextprotocol/sdk` | AI tool integration with structured JSON output |
 
@@ -202,6 +189,7 @@ Commands:
   index       Index a Magento codebase
   search      Search the index semantically
   serve       Start persistent server mode (stdin/stdout JSON protocol)
+  describe    Generate LLM descriptions for di.xml files (requires ANTHROPIC_API_KEY)
   validate    Run validation suite (downloads Magento if needed)
   download    Download Magento 2 Open Source
   stats       Show index statistics
@@ -214,11 +202,14 @@ Commands:
 magector-core index [OPTIONS]
 
 Options:
-  -m, --magento-root <PATH>   Path to Magento root directory
-  -d, --database <PATH>       Index database path [default: ./magector.db]
-  -c, --model-cache <PATH>    Model cache directory [default: ./models]
-  -v, --verbose               Enable verbose output
+  -m, --magento-root <PATH>          Path to Magento root directory
+  -d, --database <PATH>              Index database path [default: ./.magector/index.db]
+  -c, --model-cache <PATH>           Model cache directory [default: ./models]
+      --descriptions-db <PATH>       Path to descriptions SQLite DB (descriptions are prepended to embeddings)
+  -v, --verbose                      Enable verbose output
 ```
+
+When `--descriptions-db` is provided (or auto-detected as `sqlite.db` next to the index), descriptions are prepended to the embedding text as `"Description: {text}\n\n"` before the raw file content. This places semantic terms within the 256-token ONNX window, significantly improving retrieval of di.xml files for natural-language queries.
 
 #### `search`
 
@@ -226,10 +217,23 @@ Options:
 magector-core search <QUERY> [OPTIONS]
 
 Options:
-  -d, --database <PATH>   Index database path [default: ./magector.db]
+  -d, --database <PATH>   Index database path [default: ./.magector/index.db]
   -l, --limit <N>         Number of results [default: 10]
   -f, --format <FORMAT>   Output format: text, json [default: text]
 ```
+
+#### `describe`
+
+```bash
+magector-core describe [OPTIONS]
+
+Options:
+  -m, --magento-root <PATH>   Path to Magento root directory
+  -o, --output <PATH>         Output SQLite database [default: ./.magector/sqlite.db]
+      --force                 Re-describe all files (ignore cache)
+```
+
+Generates natural-language descriptions of di.xml files using the Anthropic API (Claude Sonnet). Requires `ANTHROPIC_API_KEY` environment variable. Descriptions are stored in a SQLite database and used during indexing to enrich embeddings. Only files with changed content hashes are re-described (incremental by default).
 
 #### `serve`
 
@@ -237,10 +241,11 @@ Options:
 magector-core serve [OPTIONS]
 
 Options:
-  -d, --database <PATH>       Index database path [default: ./magector.db]
-  -c, --model-cache <PATH>    Model cache directory [default: ./models]
-  -m, --magento-root <PATH>   Magento root (enables file watcher)
-      --watch-interval <SECS> File watcher poll interval [default: 60]
+  -d, --database <PATH>            Index database path [default: ./.magector/index.db]
+  -c, --model-cache <PATH>         Model cache directory [default: ./models]
+  -m, --magento-root <PATH>        Magento root (enables file watcher)
+      --descriptions-db <PATH>     Path to descriptions SQLite DB
+      --watch-interval <SECS>      File watcher poll interval [default: 60]
 ```
 
 Starts a persistent process that reads JSON queries from stdin and writes JSON responses to stdout. Keeps the ONNX model and HNSW index resident in memory for fast repeated queries.
@@ -264,6 +269,16 @@ When `--magento-root` is provided, a background file watcher polls for changed f
 // Response:
 {"ok":true,"data":{"running":true,"tracked_files":18234,"last_scan_changes":3,"interval_secs":60}}
 
+// Descriptions (all LLM descriptions from SQLite DB):
+{"command":"descriptions"}
+// Response:
+{"ok":true,"data":{"app/code/Magento/Catalog/etc/di.xml":{"hash":"...","description":"...","model":"claude-sonnet-4-5-20250929","timestamp":1769875137},...}}
+
+// Describe (generate descriptions + auto-reindex affected files):
+{"command":"describe"}
+// Response:
+{"ok":true,"data":{"files_found":371,"described":5,"skipped":366,"errors":0,"described_paths":["app/code/..."]}}
+
 // SONA feedback:
 {"command":"feedback","signals":[{"type":"refinement_to_plugin","query":"checkout totals","timestamp":1700000000000}]}
 // Response:
@@ -282,26 +297,30 @@ When `--magento-root` is provided, a background file watcher polls for changed f
 npx magector init [path]        # Full setup: index + IDE config
 npx magector index [path]       # Index (or re-index) Magento codebase
 npx magector search <query>     # Search indexed code
+npx magector describe [path]    # Generate LLM descriptions for di.xml files
 npx magector stats              # Show indexer statistics
 npx magector setup [path]       # IDE setup only (no indexing)
 npx magector mcp                # Start MCP server
 npx magector help               # Show help
 ```
 
+The `describe` command requires `ANTHROPIC_API_KEY`. After running `describe`, the next `index` automatically picks up the descriptions DB and embeds them into the vectors.
+
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MAGENTO_ROOT` | Path to Magento installation | Current directory |
-| `MAGECTOR_DB` | Path to index database | `./magector.db` |
+| `MAGECTOR_DB` | Path to index database | `./.magector/index.db` |
 | `MAGECTOR_BIN` | Path to magector-core binary | Auto-detected |
 | `MAGECTOR_MODELS` | Path to ONNX model directory | `~/.magector/models/` |
+| `ANTHROPIC_API_KEY` | API key for description generation (`describe` command) | — |
 
 ---
 
 ## MCP Server Tools
 
-The MCP server exposes 20 tools for AI-assisted Magento 2 and Adobe Commerce development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
+The MCP server exposes 21 tools for AI-assisted Magento 2 and Adobe Commerce development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
 
 ### Output Format
 
@@ -378,6 +397,7 @@ Auto-detects entry type from pattern (`/V1/...` → API, `snake_case` → event,
 |------|-------------|
 | `magento_module_structure` | Show complete module structure -- controllers, models, blocks, plugins, observers, configs |
 | `magento_index` | Trigger re-indexing of the codebase |
+| `magento_describe` | Generate LLM descriptions for di.xml files (requires `ANTHROPIC_API_KEY`), stored in SQLite, auto-reindexes affected files |
 | `magento_stats` | View index statistics |
 
 ### Tool Cross-References
@@ -443,6 +463,7 @@ magento_find_block("cart totals")
 magento_find_template("minicart")
 magento_analyze_diff({ commitHash: "abc123" })
 magento_complexity({ module: "Magento_Catalog", threshold: 10 })
+magento_describe()
 magento_trace_flow({ entryPoint: "checkout/cart/add", depth: "deep" })
 magento_trace_flow({ entryPoint: "/V1/products" })
 magento_trace_flow({ entryPoint: "placeOrder", entryType: "graphql" })
@@ -499,7 +520,7 @@ pie title Test Pass Rate (101 queries)
 
 ### Integration Tests
 
-64 integration tests covering MCP protocol compliance, tool schemas, tool calls, analysis tools, and stdout JSON integrity.
+66 integration tests covering MCP protocol compliance, tool schemas, tool calls (including `magento_describe`), analysis tools, and stdout JSON integrity.
 
 ### Running Tests
 
@@ -508,7 +529,7 @@ pie title Test Pass Rate (101 queries)
 npm run test:accuracy
 npm run test:accuracy:verbose
 
-# Integration tests (64 tests)
+# Integration tests (66 tests)
 npm test
 
 # SONA/MicroLoRA benefit evaluation (180 queries, baseline vs post-training)
@@ -546,6 +567,7 @@ magector/
 │   ├── mcp-accuracy.test.js      # E2E accuracy tests (101 queries)
 │   ├── mcp-sona.test.js          # SONA feedback integration tests (8 tests)
 │   ├── mcp-sona-eval.test.js     # SONA/MicroLoRA benefit evaluation (180 queries)
+│   ├── describe-benefit-eval.test.js  # Description enrichment benefit evaluation
 │   └── results/                  # Test result artifacts
 │       ├── accuracy-report.json
 │       └── sona-eval-report.json
@@ -565,6 +587,7 @@ magector/
 │   │   ├── watcher.rs             # File watcher for incremental re-indexing
 │   │   ├── ast.rs                 # Tree-sitter AST (PHP + JS)
 │   │   ├── magento.rs             # Magento pattern detection (Rust)
+│   │   ├── describe.rs            # LLM description generation + SQLite storage
 │   │   ├── sona.rs                # SONA feedback learning + MicroLoRA + EWC++
 │   │   └── validation.rs          # 557 test cases, validation framework
 │   └── models/                   # ONNX model files (auto-downloaded)
@@ -594,8 +617,9 @@ Magector scans every `.php`, `.js`, `.xml`, `.phtml`, and `.graphqls` file in a 
 1. **AST parsing** -- Tree-sitter extracts class names, namespaces, methods, inheritance, and interface implementations from PHP and JavaScript files
 2. **Pattern detection** -- Identifies Magento-specific patterns: controllers, models, repositories, plugins, observers, blocks, GraphQL resolvers, admin grids, cron jobs, and more
 3. **Search text enrichment** -- Combines AST metadata with Magento pattern keywords to create semantically rich text representations
-4. **Embedding** -- ONNX Runtime generates 384-dimensional vectors using all-MiniLM-L6-v2
-5. **Indexing** -- Vectors are stored in an HNSW index for sub-millisecond approximate nearest neighbor search
+4. **Description enrichment** -- If a descriptions SQLite DB is present, LLM-generated natural-language descriptions are prepended to the embedding text as `"Description: {text}\n\n"`, placing semantic DI concepts (preferences, plugins, virtual types, subsystem names) within the 256-token ONNX window
+5. **Embedding** -- ONNX Runtime generates 384-dimensional vectors using all-MiniLM-L6-v2
+6. **Indexing** -- Vectors are stored in an HNSW index for sub-millisecond approximate nearest neighbor search
 
 ### 2. Searching
 
@@ -701,7 +725,7 @@ The MCP server tracks sequences of tool calls and sends feedback signals to the 
 - Learning rate decays with repeated observations (diminishing returns)
 - Learned weights are keyed by normalized, order-independent query term hashes
 - Always active -- no feature flags or build-time opt-in required
-- Persisted via bincode to `<db_path>.sona`
+- Persisted via bincode to `<db_path>.sona` (e.g., `.magector/index.db.sona`)
 
 **SONA v2: MicroLoRA + EWC++**
 
@@ -720,6 +744,34 @@ SONA v2 adds embedding-level adaptation via a MicroLoRA adapter and Elastic Weig
 ```bash
 cd rust-core && cargo build --release
 ```
+
+### 7. LLM Description Enrichment
+
+Magector can generate natural-language descriptions of di.xml files using the Anthropic API and embed them directly into the vector index. This significantly improves search ranking for semantic queries about dependency injection.
+
+**Workflow:**
+
+```bash
+# 1. Generate descriptions (one-time, incremental — only re-describes changed files)
+ANTHROPIC_API_KEY=sk-... npx magector describe /path/to/magento
+
+# 2. Re-index with descriptions embedded into vectors
+npx magector index /path/to/magento
+```
+
+Or via the MCP tool: `magento_describe()` generates descriptions and auto-reindexes affected files in one step.
+
+**How it works:** Each di.xml file is sent to Claude Sonnet with a prompt optimized for semantic search retrieval. The resulting description (~70 words) is stored in a SQLite database (`.magector/sqlite.db`). During indexing, descriptions are prepended to the embedding text as `"Description: {text}\n\n"` before the raw file content, placing semantic terms (preferences, plugins, virtual types, subsystem names) within the ONNX model's 256-token window.
+
+**Measured impact** (A/B experiment, 25 queries, Magento 2.4.7, 17,891 vectors, 371 described files):
+
+| Metric | Without Descriptions | With Descriptions | Delta |
+|--------|---------------------|-------------------|-------|
+| Precision@K | 1.6% | 20.3% | **+18.7%** |
+| MRR | 0.031 | 0.330 | **+0.30** |
+| NDCG@10 | 0.037 | 0.369 | **+0.33** |
+| di.xml results/query | 0.2 | 3.0 | **+2.8** |
+| Query win rate | — | — | **76%** |
 
 ---
 
@@ -837,7 +889,7 @@ cargo run --release -- validate
 ### Testing
 
 ```bash
-# Integration tests (64 tests, requires indexed codebase)
+# Integration tests (66 tests, requires indexed codebase)
 npm test
 
 # E2E accuracy tests (101 queries)
@@ -847,7 +899,7 @@ npm run test:accuracy:verbose
 # Run without index (unit + schema tests only)
 npm run test:no-index
 
-# Rust unit tests (33 tests including SONA)
+# Rust unit tests (37 tests including SONA + descriptions)
 cd rust-core && cargo test
 
 # SONA integration tests (8 tests)
@@ -975,12 +1027,13 @@ gantt
     SONA feedback       :done, 2025-04, 30d
     Incremental index   :done, 2025-04, 30d
     SONA v2 MicroLoRA   :done, 2025-05, 15d
-    Method chunking     :active, 2025-06, 30d
-    Intent detection    :2025-07, 30d
-    Type filtering      :2025-08, 30d
+    LLM descriptions    :done, 2025-06, 30d
+    Method chunking     :active, 2025-07, 30d
+    Intent detection    :2025-08, 30d
+    Type filtering      :2025-09, 30d
   section Future
-    VSCode extension    :2025-09, 60d
-    Web UI              :2025-11, 60d
+    VSCode extension    :2025-10, 60d
+    Web UI              :2025-12, 60d
 ```
 
 - [x] Hybrid search (semantic + keyword re-ranking)
@@ -991,6 +1044,7 @@ gantt
 - [x] Adobe Commerce support (B2B, Staging, and all Commerce-specific modules)
 - [x] SONA feedback learning (search rankings adapt to MCP tool call patterns)
 - [x] SONA v2 with MicroLoRA + EWC++ (embedding-level adaptation, prevents catastrophic forgetting)
+- [x] LLM description enrichment (generate di.xml descriptions via Claude, store in SQLite, embed into vectors for improved search ranking)
 - [ ] Method-level chunking (per-method vectors for direct method search)
 - [ ] Query intent classification (auto-detect "give me XML" vs "give me PHP")
 - [ ] Filtered search by file type at the vector level

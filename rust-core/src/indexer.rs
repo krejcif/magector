@@ -86,6 +86,7 @@ pub struct Indexer {
     ast_available: AstAvailability,
     pub sona: Option<crate::sona::SonaEngine>,
     pub db_path: Option<PathBuf>,
+    descriptions_db: Option<PathBuf>,
 }
 
 impl Indexer {
@@ -120,7 +121,13 @@ impl Indexer {
             ast_available: AstAvailability { php: php_ok, js: js_ok },
             sona: sona.or_else(|| Some(crate::sona::SonaEngine::new())),
             db_path: Some(db_path.to_path_buf()),
+            descriptions_db: None,
         })
+    }
+
+    /// Set the descriptions database path for embedding enrichment.
+    pub fn set_descriptions_db(&mut self, path: PathBuf) {
+        self.descriptions_db = Some(path);
     }
 
     /// Index the Magento codebase
@@ -242,6 +249,32 @@ impl Indexer {
         println!("  Files skipped: {}", stats.files_skipped);
         println!("  Errors: {}", stats.errors);
         println!("  Items to embed: {}\n", parsed_results.len());
+
+        // Inject LLM descriptions into embedding text (prepend before raw content)
+        let mut parsed_results = parsed_results;
+        if let Some(ref desc_db_path) = self.descriptions_db {
+            if desc_db_path.exists() {
+                match crate::describe::DescriptionDb::open_readonly(desc_db_path) {
+                    Ok(desc_db) => {
+                        let mut enriched = 0usize;
+                        for item in &mut parsed_results {
+                            if let Some(desc) = desc_db.get(&item.metadata.path) {
+                                // Prepend description to embed_text
+                                let prefix = format!("Description: {}\n\n", desc.description);
+                                item.embed_text.insert_str(0, &prefix);
+                                enriched += 1;
+                            }
+                        }
+                        if enriched > 0 {
+                            println!("✓ Enriched {} items with LLM descriptions\n", enriched);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Could not open descriptions DB: {}", e);
+                    }
+                }
+            }
+        }
 
         // Phase 2: Generate embeddings in batches
         println!("════════════════════════════════════════════════════════════");
@@ -400,13 +433,14 @@ impl Indexer {
             xml_meta.as_ref(),
         );
 
-        // Create embedding text
+        // Create embedding text (description injected later in index/index_files)
         let embed_text = Self::create_embedding_text(
             &content,
             &relative_path,
             php_ast.as_ref(),
             js_ast.as_ref(),
             &search_text,
+            None,
         );
 
         // Build metadata
@@ -644,8 +678,17 @@ impl Indexer {
         php_ast: Option<&PhpAstMetadata>,
         js_ast: Option<&JsAstMetadata>,
         search_text: &str,
+        description: Option<&str>,
     ) -> String {
         let mut text = String::with_capacity(content.len() + 2000);
+
+        // Prepend LLM description if available — places semantic terms within
+        // the 256-token ONNX window before raw content gets truncated
+        if let Some(desc) = description {
+            text.push_str("Description: ");
+            text.push_str(desc);
+            text.push_str("\n\n");
+        }
 
         // Add code content (truncated at char boundary)
         let content_limit = 6000;
@@ -827,14 +870,14 @@ impl Indexer {
 
     /// Incrementally index a specific set of files.
     /// Returns a list of (relative_path, vector_ids) for manifest tracking.
-    pub(crate) fn index_files(&mut self, files: &[PathBuf]) -> Result<Vec<(String, Vec<usize>)>> {
+    pub fn index_files(&mut self, files: &[PathBuf]) -> Result<Vec<(String, Vec<usize>)>> {
         let magento_root = self.magento_root.clone();
         let xml_analyzer = &self.xml_analyzer;
         let ast_php = self.ast_available.php;
         let ast_js = self.ast_available.js;
 
         // Parse files in parallel
-        let parsed_results: Vec<_> = files
+        let mut parsed_results: Vec<_> = files
             .par_iter()
             .filter_map(|file_path| {
                 match Self::parse_file(file_path, &magento_root, xml_analyzer, ast_php, ast_js) {
@@ -847,6 +890,20 @@ impl Indexer {
 
         if parsed_results.is_empty() {
             return Ok(Vec::new());
+        }
+
+        // Inject LLM descriptions into embedding text
+        if let Some(ref desc_db_path) = self.descriptions_db {
+            if desc_db_path.exists() {
+                if let Ok(desc_db) = crate::describe::DescriptionDb::open_readonly(desc_db_path) {
+                    for item in &mut parsed_results {
+                        if let Some(desc) = desc_db.get(&item.metadata.path) {
+                            let prefix = format!("Description: {}\n\n", desc.description);
+                            item.embed_text.insert_str(0, &prefix);
+                        }
+                    }
+                }
+            }
         }
 
         // Embed and insert
@@ -871,7 +928,7 @@ impl Indexer {
     }
 
     /// Remove all vectors associated with a file path (tombstone)
-    pub(crate) fn remove_vectors_for_path(&mut self, path: &str) -> Vec<usize> {
+    pub fn remove_vectors_for_path(&mut self, path: &str) -> Vec<usize> {
         self.vectordb.remove_by_path(path)
     }
 

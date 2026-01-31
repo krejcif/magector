@@ -6,6 +6,7 @@
  * The CLI resolves the binary and model paths, then shells out.
  */
 import { execFileSync, spawn } from 'child_process';
+import { existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import { resolveBinary } from './binary.js';
 import { ensureModels, resolveModels } from './model.js';
@@ -22,6 +23,7 @@ Usage:
   npx magector init [path]       Full setup: index + IDE config
   npx magector index [path]      Index (or re-index) Magento codebase
   npx magector search <query>    Search indexed code
+  npx magector describe [path]   Generate LLM descriptions for di.xml files
   npx magector mcp               Start MCP server (for Claude Code / Cursor)
   npx magector stats             Show index statistics
   npx magector setup [path]      IDE setup only (no indexing)
@@ -33,7 +35,7 @@ Options:
 
 Environment Variables:
   MAGENTO_ROOT     Path to Magento installation (default: cwd)
-  MAGECTOR_DB      Path to index database (default: ./magector.db)
+  MAGECTOR_DB      Path to index database (default: ./.magector/index.db)
   MAGECTOR_BIN     Path to magector-core binary
   MAGECTOR_MODELS  Path to ONNX model directory
 
@@ -48,7 +50,7 @@ Examples:
 
 function getConfig() {
   return {
-    dbPath: process.env.MAGECTOR_DB || './magector.db',
+    dbPath: process.env.MAGECTOR_DB || './.magector/index.db',
     magentoRoot: process.env.MAGENTO_ROOT || process.cwd()
   };
 }
@@ -62,6 +64,8 @@ function parseArgs(argv) {
       opts.format = argv[++i];
     } else if (argv[i] === '-v' || argv[i] === '--verbose') {
       opts.verbose = true;
+    } else if (argv[i] === '--force') {
+      opts.force = true;
     }
   }
   return opts;
@@ -76,13 +80,23 @@ async function runIndex(targetPath) {
   console.log(`\nIndexing: ${path.resolve(root)}`);
   console.log(`Database: ${path.resolve(config.dbPath)}\n`);
 
+  // Ensure .magector/ directory exists
+  const magectorDir = path.resolve(root, '.magector');
+  mkdirSync(magectorDir, { recursive: true });
+
   try {
-    execFileSync(binary, [
+    const indexArgs = [
       'index',
       '-m', path.resolve(root),
       '-d', path.resolve(config.dbPath),
       '-c', modelPath
-    ], { timeout: 600000, stdio: 'inherit' });
+    ];
+    // Pass descriptions DB if it exists
+    const descDbPath = path.resolve(root, '.magector', 'sqlite.db');
+    if (existsSync(descDbPath)) {
+      indexArgs.push('--descriptions-db', descDbPath);
+    }
+    execFileSync(binary, indexArgs, { timeout: 600000, stdio: 'inherit' });
     console.log('\nIndexing complete.');
   } catch (err) {
     if (err.status) {
@@ -140,6 +154,43 @@ function runStats() {
   }
 }
 
+async function runDescribe(targetPath) {
+  const config = getConfig();
+  const root = targetPath || config.magentoRoot;
+  const binary = resolveBinary();
+  const opts = parseArgs(args.slice(1));
+  mkdirSync(path.resolve(root, '.magector'), { recursive: true });
+  const outputPath = path.resolve(root, '.magector', 'sqlite.db');
+
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.error('Error: ANTHROPIC_API_KEY environment variable is required for description generation.');
+    process.exit(1);
+  }
+
+  console.log(`\nGenerating LLM descriptions for di.xml files`);
+  console.log(`Magento root: ${path.resolve(root)}`);
+  console.log(`Output: ${outputPath}\n`);
+
+  const describeArgs = [
+    'describe',
+    '-m', path.resolve(root),
+    '-o', outputPath
+  ];
+  if (opts.force) describeArgs.push('--force');
+
+  try {
+    execFileSync(binary, describeArgs, { timeout: 3600000, stdio: 'inherit' });
+    console.log('\nDescription generation complete.');
+  } catch (err) {
+    if (err.status) {
+      console.error('Description generation failed.');
+      process.exit(err.status);
+    }
+    console.error(`Description error: ${err.message}`);
+    process.exit(1);
+  }
+}
+
 async function main() {
   switch (command) {
     case 'init':
@@ -163,6 +214,10 @@ async function main() {
 
     case 'mcp':
       await import('./mcp-server.js');
+      break;
+
+    case 'describe':
+      await runDescribe(args[1]);
       break;
 
     case 'stats':

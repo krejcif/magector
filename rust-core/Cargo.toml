@@ -5,6 +5,7 @@ edition = "2021"
 description = "Magento source code indexer with semantic embeddings"
 license = "MIT"
 
+
 [dependencies]
 # ONNX Runtime for embeddings
 ort = { version = "2.0.0-rc.9", features = ["download-binaries"] }
@@ -43,8 +44,14 @@ tree-sitter = "0.24"
 tree-sitter-php = "0.23"
 tree-sitter-javascript = "0.23"
 
-# HTTP client for model downloads
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+# HTTP client for model downloads and API calls
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+
+# Hashing
+sha2 = "0.10"
+
+# SQLite (for description storage)
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Error handling
 anyhow = "1.0"
@@ -57,6 +64,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Progress and UI
 indicatif = "0.17"
 colored = "2.1"
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 lto = true

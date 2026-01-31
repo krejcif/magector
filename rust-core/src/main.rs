@@ -37,12 +37,16 @@ enum Commands {
         magento_root: PathBuf,
 
         /// Path to store the index database
-        #[arg(short, long, default_value = "./magector.db")]
+        #[arg(short, long, default_value = "./.magector/index.db")]
         database: PathBuf,
 
         /// Path to cache embedding model
         #[arg(short = 'c', long, default_value = "./models")]
         model_cache: PathBuf,
+
+        /// Path to descriptions SQLite DB (descriptions are prepended to embeddings)
+        #[arg(long)]
+        descriptions_db: Option<PathBuf>,
     },
 
     /// Search the index
@@ -51,7 +55,7 @@ enum Commands {
         query: String,
 
         /// Path to the index database
-        #[arg(short, long, default_value = "./magector.db")]
+        #[arg(short, long, default_value = "./.magector/index.db")]
         database: PathBuf,
 
         /// Path to cache embedding model
@@ -81,7 +85,7 @@ enum Commands {
     /// Show index statistics
     Stats {
         /// Path to the index database
-        #[arg(short, long, default_value = "./magector.db")]
+        #[arg(short, long, default_value = "./.magector/index.db")]
         database: PathBuf,
     },
 
@@ -119,10 +123,33 @@ enum Commands {
         version: Option<String>,
     },
 
+    /// Generate LLM descriptions for di.xml files
+    Describe {
+        /// Path to Magento root directory
+        #[arg(short, long)]
+        magento_root: PathBuf,
+
+        /// Path to store the descriptions SQLite database
+        #[arg(short = 'o', long, default_value = "./.magector/sqlite.db")]
+        output: PathBuf,
+
+        /// Anthropic API key (falls back to ANTHROPIC_API_KEY env var)
+        #[arg(long)]
+        api_key: Option<String>,
+
+        /// Model to use for description generation
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Force regeneration of all descriptions (ignore cache)
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Start persistent server mode (reads JSON queries from stdin, writes JSON results to stdout)
     Serve {
         /// Path to the index database
-        #[arg(short, long, default_value = "./magector.db")]
+        #[arg(short, long, default_value = "./.magector/index.db")]
         database: PathBuf,
 
         /// Path to cache embedding model
@@ -136,6 +163,10 @@ enum Commands {
         /// File watcher poll interval in seconds (default: 60)
         #[arg(long, default_value = "60")]
         watch_interval: u64,
+
+        /// Path to descriptions SQLite DB (descriptions are prepended to embeddings)
+        #[arg(long)]
+        descriptions_db: Option<PathBuf>,
     },
 }
 
@@ -158,8 +189,9 @@ fn main() -> Result<()> {
             magento_root,
             database,
             model_cache,
+            descriptions_db,
         } => {
-            run_index(&magento_root, &database, &model_cache)?;
+            run_index(&magento_root, &database, &model_cache, descriptions_db.as_deref())?;
         }
 
         Commands::Search {
@@ -221,6 +253,32 @@ fn main() -> Result<()> {
             run_validation(magento_root, &database, &model_cache, &report, skip_index)?;
         }
 
+        Commands::Describe {
+            magento_root,
+            output,
+            api_key,
+            model,
+            force,
+        } => {
+            let api_key = api_key
+                .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+                .unwrap_or_else(|| {
+                    eprintln!("Error: No API key provided. Use --api-key or set ANTHROPIC_API_KEY env var.");
+                    std::process::exit(1);
+                });
+            let report = magector_core::describe::describe_di_xml_files(
+                &magento_root,
+                &output,
+                &api_key,
+                model.as_deref(),
+                force,
+            )?;
+            println!("Total di.xml files: {}", report.total_files);
+            println!("Generated:          {}", report.generated);
+            println!("Skipped:            {}", report.skipped);
+            println!("Errors:             {}", report.errors);
+        }
+
         Commands::Download { target, version } => {
             download_magento(&target, version.as_deref())?;
         }
@@ -230,18 +288,28 @@ fn main() -> Result<()> {
             model_cache,
             magento_root,
             watch_interval,
+            descriptions_db,
         } => {
-            run_serve(&database, &model_cache, magento_root, watch_interval)?;
+            run_serve(&database, &model_cache, magento_root, watch_interval, descriptions_db)?;
         }
     }
 
     Ok(())
 }
 
-fn run_index(magento_root: &PathBuf, database: &PathBuf, model_cache: &PathBuf) -> Result<()> {
+fn run_index(magento_root: &PathBuf, database: &PathBuf, model_cache: &PathBuf, descriptions_db: Option<&std::path::Path>) -> Result<()> {
     tracing::info!("Starting indexer...");
 
     let mut indexer = Indexer::new(magento_root, model_cache, database)?;
+
+    // Auto-detect descriptions DB next to the main DB if not explicitly provided
+    let desc_db_path = descriptions_db.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+        database.with_file_name("sqlite.db")
+    });
+    if desc_db_path.exists() {
+        tracing::info!("Using descriptions DB: {:?}", desc_db_path);
+        indexer.set_descriptions_db(desc_db_path);
+    }
 
     let stats = indexer.index()?;
 
@@ -299,7 +367,7 @@ fn run_validation(
         println!("Using existing index at {:?}", database);
     } else {
         println!("\nIndexing Magento codebase...\n");
-        run_index(&magento_path, database, model_cache)?;
+        run_index(&magento_path, database, model_cache, None)?;
     }
 
     // Load indexer for search
@@ -349,10 +417,21 @@ fn run_serve(
     model_cache: &PathBuf,
     magento_root: Option<PathBuf>,
     watch_interval: u64,
+    descriptions_db: Option<PathBuf>,
 ) -> Result<()> {
     eprintln!("Loading model and index for serve mode...");
     let mg_root = magento_root.clone().unwrap_or_default();
-    let indexer = Indexer::new(&mg_root, model_cache, database)?;
+    let mut indexer = Indexer::new(&mg_root, model_cache, database)?;
+
+    // Auto-detect descriptions DB
+    let desc_db_path = descriptions_db.unwrap_or_else(|| {
+        database.with_file_name("sqlite.db")
+    });
+    if desc_db_path.exists() {
+        eprintln!("Using descriptions DB: {:?}", desc_db_path);
+        indexer.set_descriptions_db(desc_db_path.clone());
+    }
+    let desc_db_path_for_serve = desc_db_path;
     let vectors = indexer.stats().vectors_created;
     let indexer = Arc::new(Mutex::new(indexer));
 
@@ -417,11 +496,13 @@ fn run_serve(
                 let indexer_ref = &indexer;
                 let watcher_ref = &watcher_status;
                 let db_ref = database;
+                let desc_db_ref = &desc_db_path_for_serve;
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     handle_serve_request(
                         indexer_ref,
                         watcher_ref,
                         db_ref,
+                        desc_db_ref,
                         &req,
                     )
                 })) {
@@ -446,6 +527,7 @@ fn handle_serve_request(
     indexer: &Arc<Mutex<Indexer>>,
     watcher_status: &Arc<Mutex<WatcherStatus>>,
     db_path: &PathBuf,
+    desc_db_path: &PathBuf,
     req: &serde_json::Value,
 ) -> String {
     let command = req.get("command").and_then(|v| v.as_str()).unwrap_or("");
@@ -532,6 +614,93 @@ fn handle_serve_request(
             let global_count = idx.sona.as_ref()
                 .map(|s| s.learned.global_count).unwrap_or(0);
             format!(r#"{{"ok":true,"data":{{"learned_patterns":{},"total_observations":{},"term_patterns":{},"global_observations":{}}}}}"#, patterns, observations, term_patterns, global_count)
+        }
+
+        "describe" => {
+            let mg_root = req.get("magento_root").and_then(|v| v.as_str()).unwrap_or("");
+            let output = req.get("output").and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| desc_db_path.to_string_lossy().to_string());
+            let force = req.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let api_key = req.get("api_key").and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok());
+            let model = req.get("model").and_then(|v| v.as_str());
+
+            if mg_root.is_empty() {
+                return r#"{"ok":false,"error":"Missing 'magento_root' field"}"#.to_string();
+            }
+
+            let api_key = match api_key {
+                Some(k) => k,
+                None => return r#"{"ok":false,"error":"No API key. Set ANTHROPIC_API_KEY env var."}"#.to_string(),
+            };
+
+            match magector_core::describe::describe_di_xml_files(
+                std::path::Path::new(mg_root),
+                std::path::Path::new(&output),
+                &api_key,
+                model,
+                force,
+            ) {
+                Ok(report) => {
+                    // Auto-reindex described files so descriptions are embedded
+                    if !report.described_paths.is_empty() {
+                        let mg_root_path = std::path::Path::new(mg_root);
+                        let files_to_reindex: Vec<std::path::PathBuf> = report.described_paths.iter()
+                            .map(|p| mg_root_path.join(p))
+                            .filter(|p| p.exists())
+                            .collect();
+                        if !files_to_reindex.is_empty() {
+                            let mut idx = indexer.lock().unwrap();
+                            // Ensure descriptions DB is set for re-embedding
+                            idx.set_descriptions_db(std::path::PathBuf::from(&output));
+                            // Remove old vectors for these paths
+                            for rel_path in &report.described_paths {
+                                idx.remove_vectors_for_path(rel_path);
+                            }
+                            let reindex_result: Result<Vec<(String, Vec<usize>)>> = idx.index_files(&files_to_reindex);
+                            match reindex_result {
+                                Ok(indexed) => {
+                                    eprintln!("Re-indexed {} files with descriptions", indexed.len());
+                                    if let Err(e) = idx.save(db_path) {
+                                        eprintln!("Warning: failed to save index after re-embed: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Warning: re-index after describe failed: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    format!(
+                        r#"{{"ok":true,"data":{{"total_files":{},"generated":{},"skipped":{},"errors":{}}}}}"#,
+                        report.total_files, report.generated, report.skipped, report.errors
+                    )
+                }
+                Err(e) => format!(r#"{{"ok":false,"error":"Describe error: {}"}}"#, e),
+            }
+        }
+
+        "descriptions" => {
+            // Return all descriptions as JSON (for MCP server to consume)
+            if !desc_db_path.exists() {
+                return r#"{"ok":true,"data":{}}"#.to_string();
+            }
+            match magector_core::describe::DescriptionDb::open_readonly(desc_db_path) {
+                Ok(db) => {
+                    match db.all() {
+                        Ok(all) => {
+                            match serde_json::to_string(&all) {
+                                Ok(json) => format!(r#"{{"ok":true,"data":{}}}"#, json),
+                                Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
+                            }
+                        }
+                        Err(e) => format!(r#"{{"ok":false,"error":"DB read error: {}"}}"#, e),
+                    }
+                }
+                Err(e) => format!(r#"{{"ok":false,"error":"DB open error: {}"}}"#, e),
+            }
         }
 
         _ => format!(r#"{{"ok":false,"error":"Unknown command: {}"}}"#, command),

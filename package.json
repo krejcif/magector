@@ -25,7 +25,9 @@
     "test:accuracy": "node tests/mcp-accuracy.test.js",
     "test:accuracy:verbose": "node tests/mcp-accuracy.test.js --verbose",
     "test:sona-eval": "node tests/mcp-sona-eval.test.js",
-    "test:sona-eval:verbose": "node tests/mcp-sona-eval.test.js --verbose"
+    "test:sona-eval:verbose": "node tests/mcp-sona-eval.test.js --verbose",
+    "test:describe-eval": "node tests/describe-benefit-eval.test.js",
+    "test:describe-eval:verbose": "node tests/describe-benefit-eval.test.js --verbose"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
