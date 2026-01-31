@@ -412,7 +412,26 @@ fn run_serve(
         }
 
         let response = match serde_json::from_str::<serde_json::Value>(&line) {
-            Ok(req) => handle_serve_request(&indexer, &watcher_status, &req),
+            Ok(req) => {
+                // Catch panics to prevent serve process death
+                let indexer_ref = &indexer;
+                let watcher_ref = &watcher_status;
+                let db_ref = database;
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handle_serve_request(
+                        indexer_ref,
+                        watcher_ref,
+                        db_ref,
+                        &req,
+                    )
+                })) {
+                    Ok(resp) => resp,
+                    Err(_) => {
+                        eprintln!("Panic caught in request handler, serve process continues");
+                        r#"{"ok":false,"error":"Internal panic caught"}"#.to_string()
+                    }
+                }
+            }
             Err(e) => format!(r#"{{"ok":false,"error":"Invalid JSON: {}"}}"#, e),
         };
 
@@ -426,6 +445,7 @@ fn run_serve(
 fn handle_serve_request(
     indexer: &Arc<Mutex<Indexer>>,
     watcher_status: &Arc<Mutex<WatcherStatus>>,
+    db_path: &PathBuf,
     req: &serde_json::Value,
 ) -> String {
     let command = req.get("command").and_then(|v| v.as_str()).unwrap_or("");
@@ -439,14 +459,17 @@ fn handle_serve_request(
             let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
             let mut idx = indexer.lock().unwrap();
-            match idx.search(query, limit) {
-                Ok(results) => {
-                    match serde_json::to_string(&results) {
-                        Ok(json) => format!(r#"{{"ok":true,"data":{}}}"#, json),
-                        Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
-                    }
-                }
-                Err(e) => format!(r#"{{"ok":false,"error":"Search error: {}"}}"#, e),
+
+            let mut results = match idx.search(query, limit) {
+                Ok(r) => r,
+                Err(e) => return format!(r#"{{"ok":false,"error":"Search error: {}"}}"#, e),
+            };
+
+            results.truncate(limit);
+
+            match serde_json::to_string(&results) {
+                Ok(json) => format!(r#"{{"ok":true,"data":{}}}"#, json),
+                Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
             }
         }
         "stats" => {
@@ -461,6 +484,56 @@ fn handle_serve_request(
                 Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
             }
         }
+        "feedback" => {
+            let signals: Vec<magector_core::sona::SonaSignal> = match req.get("signals") {
+                Some(v) => serde_json::from_value(v.clone()).unwrap_or_default(),
+                None => vec![],
+            };
+            if signals.is_empty() {
+                return r#"{"ok":true,"data":{"learned":0}}"#.to_string();
+            }
+            let mut idx = indexer.lock().unwrap();
+            for signal in &signals {
+                // Re-embed the query for LoRA training
+                let query = if signal.query.is_empty() {
+                    signal.original_query.as_deref().unwrap_or("")
+                } else {
+                    &signal.query
+                };
+                let query_emb = if !query.is_empty() {
+                    idx.embed_query(query).ok()
+                } else {
+                    None
+                };
+                if let Some(ref mut sona) = idx.sona {
+                    if let Some(ref qe) = query_emb {
+                        // Use query as its own target for self-supervised LoRA learning
+                        sona.learn_with_embeddings(signal, Some(qe), Some(qe));
+                    } else {
+                        sona.learn(signal);
+                    }
+                }
+            }
+            if let Some(ref sona) = idx.sona {
+                let sona_path = db_path.with_extension("sona");
+                let _ = sona.save(&sona_path);
+            }
+            format!(r#"{{"ok":true,"data":{{"learned":{}}}}}"#, signals.len())
+        }
+
+        "sona_status" => {
+            let idx = indexer.lock().unwrap();
+            let patterns = idx.sona.as_ref()
+                .map(|s| s.learned.adjustments.len()).unwrap_or(0);
+            let observations: u32 = idx.sona.as_ref()
+                .map(|s| s.learned.counts.values().sum()).unwrap_or(0);
+            let term_patterns = idx.sona.as_ref()
+                .map(|s| s.learned.term_adjustments.len()).unwrap_or(0);
+            let global_count = idx.sona.as_ref()
+                .map(|s| s.learned.global_count).unwrap_or(0);
+            format!(r#"{{"ok":true,"data":{{"learned_patterns":{},"total_observations":{},"term_patterns":{},"global_observations":{}}}}}"#, patterns, observations, term_patterns, global_count)
+        }
+
         _ => format!(r#"{{"ok":false,"error":"Unknown command: {}"}}"#, command),
     }
 }

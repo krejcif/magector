@@ -159,19 +159,24 @@ function writeRules(projectPath, ides) {
 }
 
 /**
- * Add magector.db to .gitignore if not already present.
+ * Add magector.db and magector.log to .gitignore if not already present.
  */
 function updateGitignore(projectPath) {
   const giPath = path.join(projectPath, '.gitignore');
+  let updated = false;
   if (existsSync(giPath)) {
     const content = readFileSync(giPath, 'utf-8');
     if (!content.includes('magector.db')) {
       appendFileSync(giPath, '\n# Magector index\nmagector.db\n');
-      return true;
+      updated = true;
     }
-    return false;
+    if (!content.includes('magector.log')) {
+      appendFileSync(giPath, 'magector.log\n');
+      updated = true;
+    }
+    return updated;
   }
-  writeFileSync(giPath, '# Magector index\nmagector.db\n');
+  writeFileSync(giPath, '# Magector index\nmagector.db\nmagector.log\n');
   return true;
 }
 
@@ -259,7 +264,7 @@ export async function init(projectPath) {
   // 8. Update .gitignore
   const giUpdated = updateGitignore(projectPath);
   if (giUpdated) {
-    console.log('\nUpdated .gitignore with magector.db');
+    console.log('\nUpdated .gitignore with magector.db and magector.log');
   }
 
   // 9. Get stats and print summary

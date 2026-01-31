@@ -15,7 +15,15 @@ Magector indexes an entire Magento 2 or Adobe Commerce codebase and lets you sea
 
 ## Why Magector
 
-Magento 2 and Adobe Commerce have **18,000+ source files** across hundreds of modules. Finding the right code is slow:
+Magento 2 and Adobe Commerce have **18,000+ PHP, XML, JS, PHTML, and GraphQL files** spread across hundreds of modules. The codebase relies heavily on indirection — plugins intercept methods defined in other modules, observers react to events dispatched elsewhere, `di.xml` rewires interfaces to concrete classes, and layout XML stitches blocks and templates together. No single file tells the full story.
+
+Traditional search tools don't help much here:
+
+- **`grep` / `ripgrep`** finds literal strings but can't connect *"how does checkout calculate totals?"* to `TotalsCollector.php` — the word "totals" appears in hundreds of unrelated files.
+- **IDE search** requires you to already know the class or method name. If you're exploring unfamiliar territory (most Magento work), you're guessing.
+- **AI code assistants** (Claude Code, Cursor) use grep internally. On an 18K-file codebase they burn tokens reading dozens of wrong files before finding the right ones — if they find them at all.
+
+Magector solves this by building a **semantic vector index** of the entire codebase. Every file is embedded into a 384-dimensional space where meaning matters more than keywords. A search for *"payment capture"* returns `Sales/Model/Order/Payment/Operations/CaptureOperation.php` because the embeddings are close — not because the file contains the word "capture". On top of that, Magento-specific pattern detection (plugins, observers, controllers, blocks, cron jobs, etc.) enriches every result so the AI client knows *what kind* of code it's looking at.
 
 | Approach | Finds semantic matches | Understands Magento patterns | Speed (18K files) |
 |----------|:---------------------:|:---------------------------:|:-----------------:|
@@ -24,13 +32,11 @@ Magento 2 and Adobe Commerce have **18,000+ source files** across hundreds of mo
 | GitHub search | Partial | No | 500-2000ms |
 | **Magector** | **Yes** | **Yes** | **10-45ms** |
 
-Magector understands that a query about *"payment capture"* should return `Sales/Model/Order/Payment/Operations/CaptureOperation.php`, not just files containing the word "capture".
-
 ---
 
 ## Magector vs Built-in AI Search
 
-Claude Code and Cursor both have built-in code search -- but they rely on keyword matching (`grep`/`ripgrep`) and file-tree heuristics. On a Magento 2 / Adobe Commerce codebase with 18,000+ files, that approach breaks down fast.
+Claude Code and Cursor both have built-in code search, but they rely on keyword matching (`grep`/`ripgrep`) and file-tree heuristics. That works for small projects. On a Magento codebase with 18,000+ files and deep indirection (plugins, observers, DI preferences, layout XML), keyword search returns noise — the AI reads dozens of wrong files, burns context tokens, and often still misses the answer.
 
 | Capability | Claude Code / Cursor (built-in) | Magector |
 |---|---|---|
@@ -39,14 +45,15 @@ Claude Code and Cursor both have built-in code search -- but they rely on keywor
 | **Magento pattern awareness** | None -- treats all PHP the same | Detects controllers, plugins, observers, blocks, resolvers, cron, and 20+ patterns |
 | **Query speed (36K vectors)** | 200-1000ms per grep pass; multiple rounds needed | 10-45ms single pass |
 | **Context window cost** | Reads many wrong files, burns tokens | Returns structured JSON with ranked results, methods, and snippets |
+| **Learns from usage** | No | Yes -- SONA tracks which results you actually use and adjusts future rankings |
 | **Works offline** | Yes | Yes -- local ONNX model, no API calls |
 | **Setup** | Built-in | `npx magector init` (one command) |
 
 ### What this means in practice
 
-Without Magector, asking Claude Code or Cursor *"how are checkout totals calculated?"* triggers multiple grep searches, reads dozens of files, and still may miss the right ones. With Magector, the AI calls `magento_search("checkout totals calculation")` and gets the exact files ranked by relevance in one step -- saving tokens and time.
+Without Magector, asking Claude Code or Cursor *"how are checkout totals calculated?"* triggers multiple grep searches, reads dozens of files, and still may miss the right ones. With Magector, the AI calls `magento_search("checkout totals calculation")` and gets the exact files ranked by relevance in one step — saving tokens and time.
 
-**Magector doesn't replace your AI tool -- it gives it a better search engine.**
+**Magector doesn't replace your AI tool — it gives it a search engine that understands Magento.**
 
 ---
 
@@ -64,6 +71,8 @@ Without Magector, asking Claude Code or Cursor *"how are checkout totals calcula
 - **Adobe Commerce compatible** -- works with both Magento Open Source and Adobe Commerce (B2B, Staging, and all Commerce-specific modules)
 - **AST-powered** -- tree-sitter parsing for PHP and JavaScript extracts classes, methods, namespaces, and inheritance
 - **Cross-tool discovery** -- tool descriptions include keywords and "See also" references so AI clients find the right tool on the first try
+- **SONA feedback learning** -- self-adjusting search that learns from MCP tool call patterns (e.g., search → find_plugin refines future rankings for similar queries)
+- **SONA v2 with MicroLoRA + EWC++** -- rank-2 low-rank adapter (1536 params, ~6KB) adjusts query embeddings based on learned patterns; Elastic Weight Consolidation prevents catastrophic forgetting during online learning
 - **Diff analysis** -- risk scoring and change classification for git commits and staged changes
 - **Complexity analysis** -- cyclomatic complexity, function count, and hotspot detection across modules
 - **Fast** -- 10-45ms queries via persistent serve process, batched ONNX embedding with adaptive thread scaling
@@ -117,7 +126,8 @@ flowchart TD
   E1 --> E2[ONNX Embedding]
   E2 --> H[HNSW Search]
   H --> R[Hybrid Reranking]
-  R --> J[Structured JSON]
+  R --> SA[SONA Adjustment + MicroLoRA]
+  SA --> J[Structured JSON]
 ```
 
 ### Components
@@ -130,6 +140,7 @@ flowchart TD
 | JS parsing | `tree-sitter-javascript` | AMD/ES6 module detection |
 | Pattern detection | Custom Rust | 20+ Magento-specific patterns |
 | CLI | `clap` | Command-line interface (index, search, serve, validate) |
+| SONA | Custom Rust | Feedback learning with MicroLoRA + EWC++ |
 | MCP server | `@modelcontextprotocol/sdk` | AI tool integration with structured JSON output |
 
 ---
@@ -252,6 +263,17 @@ When `--magento-root` is provided, a background file watcher polls for changed f
 {"command":"watcher_status"}
 // Response:
 {"ok":true,"data":{"running":true,"tracked_files":18234,"last_scan_changes":3,"interval_secs":60}}
+
+// SONA feedback:
+{"command":"feedback","signals":[{"type":"refinement_to_plugin","query":"checkout totals","timestamp":1700000000000}]}
+// Response:
+{"ok":true,"data":{"learned":1}}
+
+// SONA status:
+{"command":"sona_status"}
+// Response:
+{"ok":true,"data":{"learned_patterns":5,"total_observations":12}}
+
 ```
 
 ### Node.js CLI
@@ -475,29 +497,9 @@ pie title Test Pass Rate (101 queries)
 | **Index size** | 35,795 vectors |
 | **Query time** | 10-45ms |
 
-#### Per-Tool Performance
-
-| Tool | Pass | Precision | MRR | NDCG |
-|------|------|-----------|-----|------|
-| find_class | 100% | 100% | 100% | 100% |
-| find_method | 100% | 98% | 92% | 97% |
-| find_controller | 100% | 100% | 100% | 100% |
-| find_observer | 100% | 100% | 100% | 100% |
-| find_plugin | 100% | 100% | 100% | 100% |
-| find_preference | 100% | 100% | 100% | 100% |
-| find_api | 100% | 100% | 100% | 100% |
-| find_cron | 100% | 100% | 100% | 100% |
-| find_db_schema | 100% | 100% | 100% | 100% |
-| find_graphql | 100% | 100% | 100% | 100% |
-| find_block | 100% | 100% | 100% | 100% |
-| find_config | 100% | 100% | 100% | 100% |
-| find_template | 100% | 100% | 100% | 100% |
-| search | 100% | 100% | 100% | 100% |
-| module_structure | 100% | 100% | 100% | 100% |
-
 ### Integration Tests
 
-62 integration tests covering MCP protocol compliance, tool schemas, tool calls, analysis tools, and stdout JSON integrity.
+64 integration tests covering MCP protocol compliance, tool schemas, tool calls, analysis tools, and stdout JSON integrity.
 
 ### Running Tests
 
@@ -506,8 +508,12 @@ pie title Test Pass Rate (101 queries)
 npm run test:accuracy
 npm run test:accuracy:verbose
 
-# Integration tests (62 tests)
+# Integration tests (64 tests)
 npm test
+
+# SONA/MicroLoRA benefit evaluation (180 queries, baseline vs post-training)
+npm run test:sona-eval
+npm run test:sona-eval:verbose
 
 # Rust validation (557 test cases)
 cd rust-core && cargo run --release -- validate -m ./magento2 --skip-index
@@ -536,10 +542,13 @@ magector/
 │       ├── test-data-generator.js
 │       └── accuracy-calculator.js
 ├── tests/                        # Automated tests
-│   ├── mcp-server.test.js        # Integration tests (62 tests)
+│   ├── mcp-server.test.js        # Integration tests (64 tests)
 │   ├── mcp-accuracy.test.js      # E2E accuracy tests (101 queries)
+│   ├── mcp-sona.test.js          # SONA feedback integration tests (8 tests)
+│   ├── mcp-sona-eval.test.js     # SONA/MicroLoRA benefit evaluation (180 queries)
 │   └── results/                  # Test result artifacts
-│       └── accuracy-report.json
+│       ├── accuracy-report.json
+│       └── sona-eval-report.json
 ├── platforms/                    # Platform-specific binary packages
 │   ├── darwin-arm64/             # macOS ARM (Apple Silicon)
 │   ├── linux-x64/                # Linux x64
@@ -556,6 +565,7 @@ magector/
 │   │   ├── watcher.rs             # File watcher for incremental re-indexing
 │   │   ├── ast.rs                 # Tree-sitter AST (PHP + JS)
 │   │   ├── magento.rs             # Magento pattern detection (Rust)
+│   │   ├── sona.rs                # SONA feedback learning + MicroLoRA + EWC++
 │   │   └── validation.rs          # 557 test cases, validation framework
 │   └── models/                   # ONNX model files (auto-downloaded)
 │       ├── all-MiniLM-L6-v2.onnx
@@ -593,7 +603,8 @@ Magector scans every `.php`, `.js`, `.xml`, `.phtml`, and `.graphqls` file in a 
 2. The enriched query is embedded into the same 384-dimensional vector space
 3. HNSW finds the nearest neighbors by cosine similarity
 4. **Hybrid reranking** boosts results with keyword matches in path and search text
-5. Results are returned as structured JSON with file path, class name, methods, role badges, and content snippet
+5. **SONA adjustment** -- MicroLoRA adapts the query embedding based on learned patterns; EWC++ prevents forgetting earlier learning
+6. Results are returned as structured JSON with file path, class name, methods, role badges, and content snippet
 
 ### 3. Persistent Serve Mode
 
@@ -666,6 +677,48 @@ sequenceDiagram
   Rust-->>MCP: JSON results
   MCP-->>AI: paths, methods, badges
   AI-->>Dev: TotalsCollector.php
+```
+
+### 6. SONA Feedback Learning
+
+The MCP server tracks sequences of tool calls and sends feedback signals to the Rust process. Over time, this adjusts search result rankings based on observed usage patterns.
+
+**How it works:** The Node.js `SessionTracker` watches for follow-up tool calls after `magento_search`. If a user searches and then immediately calls `magento_find_plugin`, SONA learns that similar queries should boost plugin results. The learned weights are persisted to a `.sona` file alongside the index.
+
+| MCP Call Sequence | Signal | Effect on Future Searches |
+|---|---|---|
+| `magento_search` → `magento_find_plugin` (within 30s) | `refinement_to_plugin` | Boosts plugin results |
+| `magento_search` → `magento_find_class` (within 30s) | `refinement_to_class` | Boosts class matches |
+| `magento_search` → `magento_find_config` (within 30s) | `refinement_to_config` | Boosts config/XML results |
+| `magento_search` → `magento_find_observer` (within 30s) | `refinement_to_observer` | Boosts observer results |
+| `magento_search` → `magento_find_controller` (within 30s) | `refinement_to_controller` | Boosts controller results |
+| `magento_search` → `magento_find_block` (within 30s) | `refinement_to_block` | Boosts block results |
+| `magento_search` → `magento_trace_flow` (within 30s) | `trace_after_search` | Boosts controller results |
+| `magento_search(Q1)` → `magento_search(Q2)` (within 60s) | `query_refinement` | Tracked for analysis |
+
+**Characteristics:**
+- Score adjustments are capped at ±0.15 to avoid overwhelming semantic similarity
+- Learning rate decays with repeated observations (diminishing returns)
+- Learned weights are keyed by normalized, order-independent query term hashes
+- Always active -- no feature flags or build-time opt-in required
+- Persisted via bincode to `<db_path>.sona`
+
+**SONA v2: MicroLoRA + EWC++**
+
+SONA v2 adds embedding-level adaptation via a MicroLoRA adapter and Elastic Weight Consolidation:
+
+| Component | Parameters | Purpose |
+|-----------|-----------|---------|
+| MicroLoRA | 1536 (rank-2, 2×384×2) | Adjusts query embeddings before HNSW search |
+| EWC++ | Fisher matrix (384 values) | Prevents catastrophic forgetting during online learning |
+
+- `adjust_query_embedding()` applies the LoRA transform + L2 normalization before vector search; cosine similarity guard (≥0.90) skips destructive adjustments
+- `learn_with_embeddings()` updates LoRA weights from feedback signals with EWC regularization (λ=2000) and decaying learning rate
+- 3-tier scoring with negative learning: positive signals boost the followed feature type, mild negative learning (0.1×) demotes unrelated types
+- V1→V2 persistence format is backward-compatible (auto-upgrades on load)
+
+```bash
+cd rust-core && cargo build --release
 ```
 
 ---
@@ -784,7 +837,7 @@ cargo run --release -- validate
 ### Testing
 
 ```bash
-# Integration tests (62 tests, requires indexed codebase)
+# Integration tests (64 tests, requires indexed codebase)
 npm test
 
 # E2E accuracy tests (101 queries)
@@ -794,8 +847,14 @@ npm run test:accuracy:verbose
 # Run without index (unit + schema tests only)
 npm run test:no-index
 
-# Rust unit tests
+# Rust unit tests (33 tests including SONA)
 cd rust-core && cargo test
+
+# SONA integration tests (8 tests)
+node tests/mcp-sona.test.js
+
+# SONA/MicroLoRA benefit evaluation (180 queries)
+npm run test:sona-eval
 
 # Rust validation (557 test cases)
 cd rust-core && cargo run --release -- validate -m ./magento2 --skip-index
@@ -842,7 +901,7 @@ npm run test:accuracy
 - **Library:** `hnsw_rs`
 - **Parameters:** M=32, max_layers=16, ef_construction=200
 - **Distance metric:** Cosine similarity
-- **Hybrid search:** Semantic nearest-neighbor + keyword reranking in path and search text
+- **Hybrid search:** Semantic nearest-neighbor + keyword reranking in path and search text + SONA/MicroLoRA feedback adjustments
 - **Incremental updates:** Tombstone soft-delete + periodic HNSW rebuild (compact)
 - **Persistence:** Bincode V2 binary serialization (backward-compatible with V1)
 
@@ -894,6 +953,7 @@ struct IndexMetadata {
 - **Adaptive HNSW capacity** -- pre-sized to actual vector count
 - **Parallel HNSW insert** -- batch insert uses hnsw_rs parallel insertion on load and index
 - **Tuned ef_search** -- optimized search parameters for 36K vector index (ef_search=50 for search, 64 for hybrid)
+- **SONA feedback learning** -- learns from MCP tool call patterns to adjust search rankings; MicroLoRA adapts query embeddings, EWC++ prevents forgetting
 
 ---
 
@@ -912,13 +972,15 @@ gantt
     E2E tests           :done, 2025-03, 15d
     Adobe Commerce      :done, 2025-03, 15d
   section Next
-    Method chunking     :active, 2025-04, 30d
-    Intent detection    :2025-05, 30d
-    Type filtering      :2025-06, 30d
+    SONA feedback       :done, 2025-04, 30d
     Incremental index   :done, 2025-04, 30d
+    SONA v2 MicroLoRA   :done, 2025-05, 15d
+    Method chunking     :active, 2025-06, 30d
+    Intent detection    :2025-07, 30d
+    Type filtering      :2025-08, 30d
   section Future
-    VSCode extension    :2025-08, 60d
-    Web UI              :2025-10, 60d
+    VSCode extension    :2025-09, 60d
+    Web UI              :2025-11, 60d
 ```
 
 - [x] Hybrid search (semantic + keyword re-ranking)
@@ -927,6 +989,8 @@ gantt
 - [x] Cross-tool discovery hints for AI clients
 - [x] E2E accuracy test suite (101 queries)
 - [x] Adobe Commerce support (B2B, Staging, and all Commerce-specific modules)
+- [x] SONA feedback learning (search rankings adapt to MCP tool call patterns)
+- [x] SONA v2 with MicroLoRA + EWC++ (embedding-level adaptation, prevents catastrophic forgetting)
 - [ ] Method-level chunking (per-method vectors for direct method search)
 - [ ] Query intent classification (auto-detect "give me XML" vs "give me PHP")
 - [ ] Filtered search by file type at the vector level

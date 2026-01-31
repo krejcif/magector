@@ -1089,7 +1089,7 @@ checksum = "670fdfda89751bc4a84ac13eaa63e205cf0fd22b4c9a5fbfa085b63c1f1d3a30"
 
 [[package]]
 name = "magector-core"
-version = "0.2.0"
+version = "1.4.1"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1598,7 +1598,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

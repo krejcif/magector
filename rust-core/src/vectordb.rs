@@ -126,7 +126,23 @@ impl VectorDB {
     /// `magector.db`) and migrates it in place.
     pub fn open(path: &Path) -> Result<Self> {
         if path.exists() {
-            return Self::load(path);
+            match Self::load(path) {
+                Ok(db) => return Ok(db),
+                Err(e) => {
+                    // Check if this is a format mismatch (schema changed)
+                    let is_format_error = e.chain()
+                        .any(|c| c.to_string().contains("FormatChanged") || c.to_string().contains("schema mismatch"));
+                    if is_format_error {
+                        tracing::warn!(
+                            "Database format incompatible at {:?}. Removing old database — re-index required.",
+                            path
+                        );
+                        let _ = fs::remove_file(path);
+                        return Ok(Self::new());
+                    }
+                    return Err(e);
+                }
+            }
         }
 
         // One-time migration: old versions saved to <stem>.bin
@@ -134,13 +150,21 @@ impl VectorDB {
         if legacy_bin.exists() {
             tracing::info!("Migrating legacy database {:?} -> {:?}", legacy_bin, path);
             fs::rename(&legacy_bin, path)?;
-            return Self::load(path);
+            match Self::load(path) {
+                Ok(db) => return Ok(db),
+                Err(_) => {
+                    tracing::warn!("Legacy database format incompatible. Removing.");
+                    let _ = fs::remove_file(path);
+                    return Ok(Self::new());
+                }
+            }
         }
 
         Ok(Self::new())
     }
 
-    /// Load database from a bincode file (V2 with tombstones, V1 fallback)
+    /// Load database from a bincode file (V2 with tombstones, V1 fallback).
+    /// Returns `Err` with `FormatChanged` context if the schema is incompatible.
     fn load(path: &Path) -> Result<Self> {
         let bytes = fs::read(path).context("Failed to read database")?;
         if bytes.is_empty() {
@@ -149,15 +173,46 @@ impl VectorDB {
 
         // Try V2 first: first byte == PERSIST_VERSION_V2
         if bytes[0] == PERSIST_VERSION_V2 {
-            let state: PersistedStateV2 = bincode::deserialize(&bytes[1..])
-                .context("Failed to parse V2 database")?;
-            return Self::from_state_v2(state);
+            match bincode::deserialize::<PersistedStateV2>(&bytes[1..]) {
+                Ok(state) => return Self::from_state_v2(state),
+                Err(e) => {
+                    tracing::warn!("V2 database format incompatible: {e}");
+                    return Err(anyhow::anyhow!("Database format changed (schema mismatch). Re-index required."))
+                        .context("FormatChanged");
+                }
+            }
         }
 
         // Fallback: V1 (no version byte)
-        let state: PersistedState = bincode::deserialize(&bytes)
-            .context("Failed to parse database")?;
-        Self::from_state(state)
+        match bincode::deserialize::<PersistedState>(&bytes) {
+            Ok(state) => Self::from_state(state),
+            Err(e) => {
+                tracing::warn!("V1 database format incompatible: {e}");
+                Err(anyhow::anyhow!("Database format changed (schema mismatch). Re-index required."))
+                    .context("FormatChanged")
+            }
+        }
+    }
+
+    /// Check if a database file is compatible with the current format.
+    /// Returns `true` if the file can be loaded, `false` if it needs re-indexing.
+    pub fn check_format(path: &Path) -> bool {
+        if !path.exists() {
+            return true; // No file = will create new
+        }
+        let bytes = match fs::read(path) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        if bytes.is_empty() {
+            return true;
+        }
+
+        if bytes[0] == PERSIST_VERSION_V2 {
+            bincode::deserialize::<PersistedStateV2>(&bytes[1..]).is_ok()
+        } else {
+            bincode::deserialize::<PersistedState>(&bytes).is_ok()
+        }
     }
 
     /// Rebuild HNSW from persisted V1 state
@@ -303,7 +358,13 @@ impl VectorDB {
     /// Fetches extra candidates from HNSW, then boosts scores based on
     /// keyword matches in path and search_text. This significantly improves
     /// accuracy for type-specific queries (helper, plugin, di.xml, setup, etc.)
-    pub fn hybrid_search(&self, query: &[f32], query_text: &str, k: usize) -> Vec<SearchResult> {
+    pub fn hybrid_search(
+        &self,
+        query: &[f32],
+        query_text: &str,
+        k: usize,
+        sona: Option<&crate::sona::SonaEngine>,
+    ) -> Vec<SearchResult> {
         assert_eq!(query.len(), EMBEDDING_DIM);
 
         // Fetch 3x candidates for re-ranking (plus tombstone headroom)
@@ -401,7 +462,8 @@ impl VectorDB {
 
                     // Cap keyword bonus to avoid overwhelming semantic score
                     let keyword_bonus = keyword_bonus.min(0.45);
-                    let final_score = semantic_score + keyword_bonus;
+                    let sona_adj = sona.map(|s| s.score_adjustment(query_text, meta)).unwrap_or(0.0);
+                    let final_score = semantic_score + keyword_bonus + sona_adj;
 
                     SearchResult {
                         id,
@@ -531,6 +593,7 @@ mod tests {
             is_mixin: false,
             js_dependencies: Vec::new(),
             search_text: "test".to_string(),
+
         };
 
         db.insert(&vector, metadata);
@@ -567,6 +630,7 @@ mod tests {
             is_mixin: false,
             js_dependencies: Vec::new(),
             search_text: "test".to_string(),
+
         }
     }
 
@@ -676,6 +740,7 @@ mod tests {
                     is_mixin: false,
                     js_dependencies: Vec::new(),
                     search_text: format!("test {}", i),
+        
                 };
                 (vec, meta)
             })

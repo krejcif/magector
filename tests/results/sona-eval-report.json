@@ -1,0 +1,5674 @@
+{
+  "timestamp": "2026-01-31T12:03:07.896Z",
+  "version": "2.0",
+  "evalQueries": 180,
+  "trainingQueries": 120,
+  "trainingRounds": 3,
+  "trainedSignals": 360,
+  "summary": {
+    "overall": {
+      "baseline": {
+        "avgP5": 0.9155555555555556,
+        "avgMRR": 0.9410802469135803,
+        "avgNDCG": 0.9485247770153188
+      },
+      "postTraining": {
+        "avgP5": 0.9155555555555558,
+        "avgMRR": 0.9381172839506173,
+        "avgNDCG": 0.9471508460592387
+      },
+      "delta": {
+        "precision5": 1.5789838572446671e-16,
+        "mrr": -0.0029629629629629524,
+        "ndcg": -0.0013739309560799977
+      },
+      "rankMovement": {
+        "improved": 0,
+        "same": 178,
+        "worsened": 2
+      }
+    },
+    "direct": {
+      "queries": 140,
+      "improved": 5,
+      "p5Improved": 1,
+      "rankImproved": 0,
+      "scoreImproved": 4
+    },
+    "crossGen": {
+      "queries": 20,
+      "improved": 0,
+      "p5Improved": 0,
+      "rankImproved": 0,
+      "scoreImproved": 0
+    },
+    "ambiguous": {
+      "queries": 20,
+      "improved": 0,
+      "p5Improved": 0,
+      "rankImproved": 0,
+      "scoreImproved": 0
+    },
+    "verdict": "PASS"
+  },
+  "perCategory": {
+    "plugin": {
+      "queries": 25,
+      "baseline": {
+        "avgP5": 0.992,
+        "avgMRR": 1,
+        "avgNDCG": 0.9994717546153745
+      },
+      "postTraining": {
+        "avgP5": 0.992,
+        "avgMRR": 1,
+        "avgNDCG": 0.9994717546153745
+      }
+    },
+    "observer": {
+      "queries": 25,
+      "baseline": {
+        "avgP5": 0.9840000000000001,
+        "avgMRR": 1,
+        "avgNDCG": 0.9967257284609811
+      },
+      "postTraining": {
+        "avgP5": 0.9840000000000001,
+        "avgMRR": 0.98,
+        "avgNDCG": 0.988809346343744
+      }
+    },
+    "class": {
+      "queries": 25,
+      "baseline": {
+        "avgP5": 1,
+        "avgMRR": 1,
+        "avgNDCG": 0.9998875056078884
+      },
+      "postTraining": {
+        "avgP5": 1,
+        "avgMRR": 1,
+        "avgNDCG": 0.9997517914253287
+      }
+    },
+    "controller": {
+      "queries": 20,
+      "baseline": {
+        "avgP5": 1,
+        "avgMRR": 1,
+        "avgNDCG": 1
+      },
+      "postTraining": {
+        "avgP5": 1,
+        "avgMRR": 1,
+        "avgNDCG": 1
+      }
+    },
+    "config": {
+      "queries": 25,
+      "baseline": {
+        "avgP5": 0.512,
+        "avgMRR": 0.6477777777777777,
+        "avgNDCG": 0.6774276729836478
+      },
+      "postTraining": {
+        "avgP5": 0.5199999999999999,
+        "avgMRR": 0.6477777777777777,
+        "avgNDCG": 0.6772489916246087
+      }
+    },
+    "block": {
+      "queries": 20,
+      "baseline": {
+        "avgP5": 1,
+        "avgMRR": 1,
+        "avgNDCG": 0.9998593820098606
+      },
+      "postTraining": {
+        "avgP5": 1,
+        "avgMRR": 1,
+        "avgNDCG": 0.9998593820098606
+      }
+    },
+    "crossgen": {
+      "queries": 20,
+      "baseline": {
+        "avgP5": 0.97,
+        "avgMRR": 0.975,
+        "avgNDCG": 0.9863184351251849
+      },
+      "postTraining": {
+        "avgP5": 0.97,
+        "avgMRR": 0.975,
+        "avgNDCG": 0.9863184351251849
+      }
+    },
+    "ambiguous": {
+      "queries": 20,
+      "baseline": {
+        "avgP5": 0.9099999999999999,
+        "avgMRR": 0.9349999999999999,
+        "avgNDCG": 0.9586543489179574
+      },
+      "postTraining": {
+        "avgP5": 0.9,
+        "avgMRR": 0.9333333333333332,
+        "avgNDCG": 0.9565774423867837
+      }
+    }
+  },
+  "weaknessAnalysis": {
+    "worstBaseline": [
+      {
+        "id": "eval-config-09",
+        "category": "config",
+        "query": "acl resource definition permissions",
+        "baselineP5": 0,
+        "postP5": 0,
+        "delta": 0
+      },
+      {
+        "id": "eval-config-11",
+        "category": "config",
+        "query": "fieldset mapping configuration",
+        "baselineP5": 0,
+        "postP5": 0,
+        "delta": 0
+      },
+      {
+        "id": "eval-config-12",
+        "category": "config",
+        "query": "module sequence declaration",
+        "baselineP5": 0,
+        "postP5": 0,
+        "delta": 0
+      },
+      {
+        "id": "eval-config-16",
+        "category": "config",
+        "query": "indexer configuration settings",
+        "baselineP5": 0,
+        "postP5": 0,
+        "delta": 0
+      },
+      {
+        "id": "eval-config-17",
+        "category": "config",
+        "query": "mview configuration changelog",
+        "baselineP5": 0,
+        "postP5": 0,
+        "delta": 0
+      },
+      {
+        "id": "eval-config-23",
+        "category": "config",
+        "query": "cache type configuration",
+        "baselineP5": 0,
+        "postP5": 0,
+        "delta": 0
+      },
+      {
+        "id": "eval-config-24",
+        "category": "config",
+        "query": "extension attributes config",
+        "baselineP5": 0,
+        "postP5": 0,
+        "delta": 0
+      },
+      {
+        "id": "eval-config-15",
+        "category": "config",
+        "query": "email template configuration",
+        "baselineP5": 0.2,
+        "postP5": 0.2,
+        "delta": 0
+      },
+      {
+        "id": "eval-config-22",
+        "category": "config",
+        "query": "customer attributes eav config",
+        "baselineP5": 0.2,
+        "postP5": 0.2,
+        "delta": 0
+      },
+      {
+        "id": "eval-ambig-14",
+        "category": "ambiguous",
+        "query": "form validation handler",
+        "baselineP5": 0.2,
+        "postP5": 0,
+        "delta": -0.2
+      }
+    ],
+    "topImprovements": [
+      {
+        "id": "eval-config-21",
+        "category": "config",
+        "query": "shipping methods config xml",
+        "baselineP5": 0.8,
+        "postP5": 1,
+        "delta": 0.19999999999999996
+      }
+    ],
+    "regressions": [
+      {
+        "id": "eval-observer-20",
+        "category": "observer",
+        "query": "layout render event handler",
+        "deltaP5": 0,
+        "deltaMRR": -0.5,
+        "deltaRank": -1
+      },
+      {
+        "id": "eval-ambig-14",
+        "category": "ambiguous",
+        "query": "form validation handler",
+        "deltaP5": -0.2,
+        "deltaMRR": -0.033333333333333354,
+        "deltaRank": -1
+      }
+    ]
+  },
+  "perQuery": [
+    {
+      "id": "eval-plugin-01",
+      "category": "plugin",
+      "query": "product save interceptor",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.816,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 1851
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.816,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 1102
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-02",
+      "category": "plugin",
+      "query": "cart price modification hook",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.704,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.704,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-03",
+      "category": "plugin",
+      "query": "customer group plugin",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.981,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.981,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-04",
+      "category": "plugin",
+      "query": "catalog product type interceptor",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.99,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.99,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-05",
+      "category": "plugin",
+      "query": "order management plugin override",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.862,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.862,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-06",
+      "category": "plugin",
+      "query": "shipping rate interceptor",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.864,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.864,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-07",
+      "category": "plugin",
+      "query": "payment method plugin",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 0.9971876401972101,
+        "topRelevantScore": 1.059,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 0.9971876401972101,
+        "topRelevantScore": 1.059,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-08",
+      "category": "plugin",
+      "query": "wishlist item interceptor",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.951,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.979,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0.028000000000000025
+      }
+    },
+    {
+      "id": "eval-plugin-09",
+      "category": "plugin",
+      "query": "tax calculation plugin",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.112,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.112,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-10",
+      "category": "plugin",
+      "query": "cms page plugin modification",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.998,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.998,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-11",
+      "category": "plugin",
+      "query": "modify save behavior product",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.793,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.793,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-12",
+      "category": "plugin",
+      "query": "intercept before place order",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.778,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.778,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-13",
+      "category": "plugin",
+      "query": "around method quote totals",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.917,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.917,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-14",
+      "category": "plugin",
+      "query": "override customer address validation",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.964,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.964,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-15",
+      "category": "plugin",
+      "query": "hook into checkout flow",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.785,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.785,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-16",
+      "category": "plugin",
+      "query": "extend catalog search",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.86,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.86,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-17",
+      "category": "plugin",
+      "query": "modify admin grid collection",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.928,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.928,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-18",
+      "category": "plugin",
+      "query": "change url generation logic",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.755,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.755,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-19",
+      "category": "plugin",
+      "query": "alter import product behavior",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.855,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.855,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 16
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-20",
+      "category": "plugin",
+      "query": "wrap email sending method",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.869,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.869,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-21",
+      "category": "plugin",
+      "query": "customize store switcher",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.98,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.98,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-22",
+      "category": "plugin",
+      "query": "extend layered navigation filter",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.096,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.096,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-23",
+      "category": "plugin",
+      "query": "modify tier price logic",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.065,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.065,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-24",
+      "category": "plugin",
+      "query": "intercept stock validation",
+      "baseline": {
+        "precision5": 0.8,
+        "mrr": 1,
+        "ndcg": 0.9896062251871525,
+        "topRelevantScore": 0.678,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 0.8,
+        "mrr": 1,
+        "ndcg": 0.9896062251871525,
+        "topRelevantScore": 0.678,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-plugin-25",
+      "category": "plugin",
+      "query": "change configurable product options",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.978,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.978,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-01",
+      "category": "observer",
+      "query": "order status change handler",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.948,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.948,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-02",
+      "category": "observer",
+      "query": "product save event",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.903,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.903,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-03",
+      "category": "observer",
+      "query": "checkout submit listener",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.714,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.714,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-04",
+      "category": "observer",
+      "query": "customer login event handler",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.083,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.083,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-05",
+      "category": "observer",
+      "query": "catalog inventory change observer",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.088,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.088,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-06",
+      "category": "observer",
+      "query": "cart item add event listener",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.865,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.979,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0.11399999999999999
+      }
+    },
+    {
+      "id": "eval-observer-07",
+      "category": "observer",
+      "query": "admin user login observer",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.038,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.038,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-08",
+      "category": "observer",
+      "query": "invoice generation event",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.74,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.74,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-09",
+      "category": "observer",
+      "query": "newsletter subscriber event",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.036,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.91,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": -0.126
+      }
+    },
+    {
+      "id": "eval-observer-10",
+      "category": "observer",
+      "query": "store config change handler",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.001,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.001,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-11",
+      "category": "observer",
+      "query": "react to order cancellation",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.858,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.858,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-12",
+      "category": "observer",
+      "query": "handle shipment creation",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.882,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.882,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-13",
+      "category": "observer",
+      "query": "listen for credit memo",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.03,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.03,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-14",
+      "category": "observer",
+      "query": "trigger on attribute set save",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.951,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.951,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-15",
+      "category": "observer",
+      "query": "watch category move event",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.814,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.814,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-16",
+      "category": "observer",
+      "query": "respond to quote submit",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.794,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.794,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-17",
+      "category": "observer",
+      "query": "after payment capture event",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.91,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 16
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.91,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-18",
+      "category": "observer",
+      "query": "product collection load handler",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.836,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.836,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-19",
+      "category": "observer",
+      "query": "coupon apply event listener",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.818,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.818,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-20",
+      "category": "observer",
+      "query": "layout render event handler",
+      "baseline": {
+        "precision5": 0.8,
+        "mrr": 1,
+        "ndcg": 0.9714977244644463,
+        "topRelevantScore": 0.906,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 0.8,
+        "mrr": 0.5,
+        "ndcg": 0.7894138424738288,
+        "topRelevantScore": 0.906,
+        "firstRelevantRank": 2,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": -0.5,
+        "ndcg": -0.18208388199061742,
+        "rank": -1,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-21",
+      "category": "observer",
+      "query": "reindex process complete event",
+      "baseline": {
+        "precision5": 0.8,
+        "mrr": 1,
+        "ndcg": 0.9466454870600813,
+        "topRelevantScore": 0.74,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "postTraining": {
+        "precision5": 0.8,
+        "mrr": 1,
+        "ndcg": 0.9308198161197739,
+        "topRelevantScore": 0.74,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": -0.0158256709403074,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-22",
+      "category": "observer",
+      "query": "customer group change listener",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.917,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.917,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-23",
+      "category": "observer",
+      "query": "cache flush event handler",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.025,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.025,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-24",
+      "category": "observer",
+      "query": "admin session start event",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.888,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.888,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-observer-25",
+      "category": "observer",
+      "query": "cms page save after listener",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.034,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.034,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-01",
+      "category": "class",
+      "query": "abstract product model",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.919,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.919,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-02",
+      "category": "class",
+      "query": "quote item management",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.925,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.925,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-03",
+      "category": "class",
+      "query": "category tree builder",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.94,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.94,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-04",
+      "category": "class",
+      "query": "customer address repository",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.95,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.95,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-05",
+      "category": "class",
+      "query": "product attribute source model",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.909,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.909,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-06",
+      "category": "class",
+      "query": "order item collection",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.022,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.022,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-07",
+      "category": "class",
+      "query": "cms block model repository",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.014,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.014,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-08",
+      "category": "class",
+      "query": "url rewrite manager",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.979,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.979,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-09",
+      "category": "class",
+      "query": "stock item resource model",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.022,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.022,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-10",
+      "category": "class",
+      "query": "store manager configuration",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.986,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.986,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-11",
+      "category": "class",
+      "query": "product price index table",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.149,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.149,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-12",
+      "category": "class",
+      "query": "eav attribute backend model",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.115,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.115,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-13",
+      "category": "class",
+      "query": "shipping carrier model implementation",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.061,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.061,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-14",
+      "category": "class",
+      "query": "catalog rule condition class",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.09,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.09,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-15",
+      "category": "class",
+      "query": "sales rule discount calculator",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.167,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.167,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 16
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-16",
+      "category": "class",
+      "query": "product image gallery handler",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.12,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.12,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 17
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-17",
+      "category": "class",
+      "query": "order payment processor",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.935,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.935,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-18",
+      "category": "class",
+      "query": "customer session manager class",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.938,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.938,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-19",
+      "category": "class",
+      "query": "configurable product type model",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.023,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.023,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-20",
+      "category": "class",
+      "query": "grouped product link class",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.139,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.139,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-21",
+      "category": "class",
+      "query": "bundle product options handler",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.053,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.053,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-22",
+      "category": "class",
+      "query": "downloadable product link model",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.133,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.133,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-23",
+      "category": "class",
+      "query": "import entity abstract class",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 0.9971876401972101,
+        "topRelevantScore": 1.055,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 0.9937947856332161,
+        "topRelevantScore": 1.046,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": -0.0033928545639939633,
+        "rank": 0,
+        "score": -0.008999999999999897
+      }
+    },
+    {
+      "id": "eval-class-24",
+      "category": "class",
+      "query": "indexer state management class",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.097,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.097,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-class-25",
+      "category": "class",
+      "query": "message queue consumer model",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.138,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.138,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-01",
+      "category": "controller",
+      "query": "admin product edit page",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.954,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.954,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-02",
+      "category": "controller",
+      "query": "customer account dashboard",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.921,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.921,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-03",
+      "category": "controller",
+      "query": "checkout cart index controller",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.985,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.985,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-04",
+      "category": "controller",
+      "query": "category page view action",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.764,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.764,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-05",
+      "category": "controller",
+      "query": "customer login post controller",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.966,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.966,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-06",
+      "category": "controller",
+      "query": "order view admin action",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.127,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.127,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-07",
+      "category": "controller",
+      "query": "wishlist add controller action",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.223,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.223,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-08",
+      "category": "controller",
+      "query": "search result page controller",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.136,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.136,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-09",
+      "category": "controller",
+      "query": "add product to compare list action",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.159,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.159,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-10",
+      "category": "controller",
+      "query": "admin cms block save action",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.024,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.024,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-11",
+      "category": "controller",
+      "query": "customer register create account",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.908,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.908,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-12",
+      "category": "controller",
+      "query": "admin catalog rule apply",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.04,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.983,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": -0.05700000000000005
+      }
+    },
+    {
+      "id": "eval-ctrl-13",
+      "category": "controller",
+      "query": "multishipping checkout overview",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.024,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.024,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-14",
+      "category": "controller",
+      "query": "newsletter manage subscriptions",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.99,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.99,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-15",
+      "category": "controller",
+      "query": "downloadable customer products page",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.076,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.076,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-16",
+      "category": "controller",
+      "query": "admin system config edit",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.968,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.968,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-17",
+      "category": "controller",
+      "query": "customer password reset action",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.057,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 17
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.057,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-18",
+      "category": "controller",
+      "query": "admin import run controller",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.117,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 17
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.117,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-19",
+      "category": "controller",
+      "query": "review product post action",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.111,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.111,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ctrl-20",
+      "category": "controller",
+      "query": "admin customer group save",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.11,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.11,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-01",
+      "category": "config",
+      "query": "dependency injection product",
+      "baseline": {
+        "precision5": 0.4,
+        "mrr": 1,
+        "ndcg": 0.9197207891481876,
+        "topRelevantScore": 0.598,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "postTraining": {
+        "precision5": 0.4,
+        "mrr": 1,
+        "ndcg": 0.9197207891481876,
+        "topRelevantScore": 0.598,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-02",
+      "category": "config",
+      "query": "event configuration catalog",
+      "baseline": {
+        "precision5": 0.4,
+        "mrr": 1,
+        "ndcg": 0.8752903992561912,
+        "topRelevantScore": 0.802,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 0.4,
+        "mrr": 1,
+        "ndcg": 0.8752903992561912,
+        "topRelevantScore": 0.802,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 18
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-03",
+      "category": "config",
+      "query": "sales module system settings",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.734,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.645,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 16
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": -0.08899999999999997
+      }
+    },
+    {
+      "id": "eval-config-04",
+      "category": "config",
+      "query": "checkout webapi routes",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.891,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.891,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-05",
+      "category": "config",
+      "query": "customer module di config",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 0.9842184869190973,
+        "topRelevantScore": 0.891,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 0.9842184869190973,
+        "topRelevantScore": 0.891,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-06",
+      "category": "config",
+      "query": "catalog database schema",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 0.9860433320650158,
+        "topRelevantScore": 0.866,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 0.9860433320650158,
+        "topRelevantScore": 0.866,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 16
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-07",
+      "category": "config",
+      "query": "cron job schedule configuration",
+      "baseline": {
+        "precision5": 0.4,
+        "mrr": 0.25,
+        "ndcg": 0.6631747728725313,
+        "topRelevantScore": 0.958,
+        "firstRelevantRank": 4,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 0.4,
+        "mrr": 0.25,
+        "ndcg": 0.6631747728725313,
+        "topRelevantScore": 0.958,
+        "firstRelevantRank": 4,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-08",
+      "category": "config",
+      "query": "admin menu navigation config",
+      "baseline": {
+        "precision5": 0.6,
+        "mrr": 1,
+        "ndcg": 0.8995023444012693,
+        "topRelevantScore": 0.982,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 0.6,
+        "mrr": 1,
+        "ndcg": 0.8995023444012693,
+        "topRelevantScore": 0.982,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 18
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-09",
+      "category": "config",
+      "query": "acl resource definition permissions",
+      "baseline": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "topRelevantScore": 0,
+        "firstRelevantRank": 0,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "topRelevantScore": 0,
+        "firstRelevantRank": 0,
+        "resultCount": 10,
+        "latency": 17
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-10",
+      "category": "config",
+      "query": "widget configuration xml",
+      "baseline": {
+        "precision5": 0.8,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.879,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 0.8,
+        "mrr": 1,
+        "ndcg": 0.9896062251871525,
+        "topRelevantScore": 0.879,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 20
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": -0.010393774812847534,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-11",
+      "category": "config",
+      "query": "fieldset mapping configuration",
+      "baseline": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "topRelevantScore": 0,
+        "firstRelevantRank": 0,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "topRelevantScore": 0,
+        "firstRelevantRank": 0,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-12",
+      "category": "config",
+      "query": "module sequence declaration",
+      "baseline": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "topRelevantScore": 0,
+        "firstRelevantRank": 0,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "postTraining": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "topRelevantScore": 0,
+        "firstRelevantRank": 0,
+        "resultCount": 10,
+        "latency": 18
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-13",
+      "category": "config",
+      "query": "routes configuration frontend",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.814,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 9
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.875,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0.061000000000000054
+      }
+    },
+    {
+      "id": "eval-config-14",
+      "category": "config",
+      "query": "layout xml catalog category",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.92,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.92,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-15",
+      "category": "config",
+      "query": "email template configuration",
+      "baseline": {
+        "precision5": 0.2,
+        "mrr": 0.3333333333333333,
+        "ndcg": 0.5,
+        "topRelevantScore": 0.93,
+        "firstRelevantRank": 3,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 0.2,
+        "mrr": 0.3333333333333333,
+        "ndcg": 0.5,
+        "topRelevantScore": 0.93,
+        "firstRelevantRank": 3,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-16",
+      "category": "config",
+      "query": "indexer configuration settings",
+      "baseline": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "topRelevantScore": 0,
+        "firstRelevantRank": 0,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "topRelevantScore": 0,
+        "firstRelevantRank": 0,
+        "resultCount": 10,
+        "latency": 18
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-17",
+      "category": "config",
+      "query": "mview configuration changelog",
+      "baseline": {
+        "precision5": 0,
+        "mrr": 0.1111111111111111,
+        "ndcg": 0.3010299956639812,
+        "topRelevantScore": 0.674,
+        "firstRelevantRank": 9,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 0,
+        "mrr": 0.1111111111111111,
+        "ndcg": 0.3010299956639812,
+        "topRelevantScore": 0.674,
+        "firstRelevantRank": 9,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-18",
+      "category": "config",
+      "query": "sales webapi rest routes",
+      "baseline": {
+        "precision5": 0.4,
+        "mrr": 1,
+        "ndcg": 0.8663365527202843,
+        "topRelevantScore": 0.975,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 0.4,
+        "mrr": 1,
+        "ndcg": 0.8663365527202843,
+        "topRelevantScore": 0.975,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-19",
+      "category": "config",
+      "query": "product type configuration",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.009,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.009,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 16
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-20",
+      "category": "config",
+      "query": "payment method config settings",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.048,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.048,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-21",
+      "category": "config",
+      "query": "shipping methods config xml",
+      "baseline": {
+        "precision5": 0.8,
+        "mrr": 1,
+        "ndcg": 0.9782917460822231,
+        "topRelevantScore": 0.875,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 0.9842184869190973,
+        "topRelevantScore": 0.973,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0.19999999999999996,
+        "mrr": 0,
+        "ndcg": 0.005926740836874167,
+        "rank": 0,
+        "score": 0.09799999999999998
+      }
+    },
+    {
+      "id": "eval-config-22",
+      "category": "config",
+      "query": "customer attributes eav config",
+      "baseline": {
+        "precision5": 0.2,
+        "mrr": 0.3333333333333333,
+        "ndcg": 0.6125353345843497,
+        "topRelevantScore": 0.867,
+        "firstRelevantRank": 3,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 0.2,
+        "mrr": 0.3333333333333333,
+        "ndcg": 0.6125353345843497,
+        "topRelevantScore": 0.867,
+        "firstRelevantRank": 3,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-23",
+      "category": "config",
+      "query": "cache type configuration",
+      "baseline": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "topRelevantScore": 0,
+        "firstRelevantRank": 0,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "topRelevantScore": 0,
+        "firstRelevantRank": 0,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-24",
+      "category": "config",
+      "query": "extension attributes config",
+      "baseline": {
+        "precision5": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg": 0.4227898344066503,
+        "topRelevantScore": 0.769,
+        "firstRelevantRank": 6,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg": 0.4227898344066503,
+        "topRelevantScore": 0.769,
+        "firstRelevantRank": 6,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-config-25",
+      "category": "config",
+      "query": "search request configuration",
+      "baseline": {
+        "precision5": 0.6,
+        "mrr": 1,
+        "ndcg": 0.9267582364714126,
+        "topRelevantScore": 1.016,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 0.6,
+        "mrr": 1,
+        "ndcg": 0.9267582364714126,
+        "topRelevantScore": 1.016,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-01",
+      "category": "block",
+      "query": "product listing layout",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.858,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.858,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 17
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-02",
+      "category": "block",
+      "query": "minicart rendering block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.708,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.708,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-03",
+      "category": "block",
+      "query": "category navigation block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.04,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.04,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-04",
+      "category": "block",
+      "query": "product review list block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.103,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.103,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-05",
+      "category": "block",
+      "query": "customer account navigation",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.959,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 9
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.959,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-06",
+      "category": "block",
+      "query": "checkout totals block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.082,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.082,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-07",
+      "category": "block",
+      "query": "breadcrumbs layout block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.074,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.074,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-08",
+      "category": "block",
+      "query": "product gallery images block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.058,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.058,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-09",
+      "category": "block",
+      "query": "top menu html rendering",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 0.9971876401972101,
+        "topRelevantScore": 1.029,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 0.9971876401972101,
+        "topRelevantScore": 1.029,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 16
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-10",
+      "category": "block",
+      "query": "product info price block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.959,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.959,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-11",
+      "category": "block",
+      "query": "order items grid admin block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.158,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.158,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-12",
+      "category": "block",
+      "query": "checkout shipping method block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.989,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.989,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-13",
+      "category": "block",
+      "query": "customer address edit form block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-14",
+      "category": "block",
+      "query": "product tab related block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.127,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.127,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-15",
+      "category": "block",
+      "query": "cms static block widget",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.198,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.198,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-16",
+      "category": "block",
+      "query": "product options custom block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.092,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.092,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-17",
+      "category": "block",
+      "query": "admin dashboard chart block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.155,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.155,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-18",
+      "category": "block",
+      "query": "footer links block template",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.079,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.079,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-19",
+      "category": "block",
+      "query": "layered navigation filter block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.154,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.154,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-block-20",
+      "category": "block",
+      "query": "product compare list block",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.183,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.183,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-01",
+      "category": "crossgen",
+      "query": "product repository plugin extension",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.885,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.885,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-02",
+      "category": "crossgen",
+      "query": "order event observer dispatch",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.946,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.946,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 16
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-03",
+      "category": "crossgen",
+      "query": "customer model repository class",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.958,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.958,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-04",
+      "category": "crossgen",
+      "query": "cart controller action execute",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.995,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.995,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-05",
+      "category": "crossgen",
+      "query": "catalog di.xml config preferences",
+      "baseline": {
+        "precision5": 0.8,
+        "mrr": 0.5,
+        "ndcg": 0.7816510974258781,
+        "topRelevantScore": 0.785,
+        "firstRelevantRank": 2,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 0.8,
+        "mrr": 0.5,
+        "ndcg": 0.7816510974258781,
+        "topRelevantScore": 0.785,
+        "firstRelevantRank": 2,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-06",
+      "category": "crossgen",
+      "query": "product block template rendering",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.916,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.916,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-07",
+      "category": "crossgen",
+      "query": "order repository implementation pattern",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.006,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.006,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 17
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-08",
+      "category": "crossgen",
+      "query": "checkout event configuration module",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.823,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.823,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 16
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-09",
+      "category": "crossgen",
+      "query": "product collection plugin filter",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.033,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.033,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 17
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-10",
+      "category": "crossgen",
+      "query": "category model plugin override behavior",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.864,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.864,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-11",
+      "category": "crossgen",
+      "query": "customer registration observer event",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.011,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.011,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-12",
+      "category": "crossgen",
+      "query": "checkout cart controller add action",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.004,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.004,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-13",
+      "category": "crossgen",
+      "query": "sales module database schema table",
+      "baseline": {
+        "precision5": 0.6,
+        "mrr": 1,
+        "ndcg": 0.9447176050778178,
+        "topRelevantScore": 0.925,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 0.6,
+        "mrr": 1,
+        "ndcg": 0.9447176050778178,
+        "topRelevantScore": 0.925,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-14",
+      "category": "crossgen",
+      "query": "product review block list rendering",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.012,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.012,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-15",
+      "category": "crossgen",
+      "query": "catalog category tree builder class",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.039,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.039,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 16
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-16",
+      "category": "crossgen",
+      "query": "cron schedule config job runner",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.021,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.021,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 15
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-17",
+      "category": "crossgen",
+      "query": "payment capture observer handler",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.915,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.915,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-18",
+      "category": "crossgen",
+      "query": "admin controller order save action",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.109,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.109,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-19",
+      "category": "crossgen",
+      "query": "store group model class repository",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.069,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.069,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-crossgen-20",
+      "category": "crossgen",
+      "query": "customer session plugin interceptor",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.985,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.985,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-01",
+      "category": "ambiguous",
+      "query": "product save handling",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.769,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.769,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-02",
+      "category": "ambiguous",
+      "query": "checkout modification",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.67,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.67,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-03",
+      "category": "ambiguous",
+      "query": "customer data processing",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.753,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.753,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-04",
+      "category": "ambiguous",
+      "query": "order flow customization",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.77,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.77,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-05",
+      "category": "ambiguous",
+      "query": "payment integration extension",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.891,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.891,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-06",
+      "category": "ambiguous",
+      "query": "catalog search improvement",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.787,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.787,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-07",
+      "category": "ambiguous",
+      "query": "inventory management logic",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.805,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.805,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-08",
+      "category": "ambiguous",
+      "query": "admin panel customization",
+      "baseline": {
+        "precision5": 0.8,
+        "mrr": 0.5,
+        "ndcg": 0.8328978515038054,
+        "topRelevantScore": 0.604,
+        "firstRelevantRank": 2,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 0.8,
+        "mrr": 0.5,
+        "ndcg": 0.8328978515038054,
+        "topRelevantScore": 0.604,
+        "firstRelevantRank": 2,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-09",
+      "category": "ambiguous",
+      "query": "email notification system",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.874,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.874,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-10",
+      "category": "ambiguous",
+      "query": "url routing mechanism",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.765,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.765,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-11",
+      "category": "ambiguous",
+      "query": "price calculation engine",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.825,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.825,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-12",
+      "category": "ambiguous",
+      "query": "image processing pipeline",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.619,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.619,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-13",
+      "category": "ambiguous",
+      "query": "cache invalidation logic",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.826,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.826,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-14",
+      "category": "ambiguous",
+      "query": "form validation handler",
+      "baseline": {
+        "precision5": 0.2,
+        "mrr": 0.2,
+        "ndcg": 0.5513882925917463,
+        "topRelevantScore": 0.722,
+        "firstRelevantRank": 5,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 0,
+        "mrr": 0.16666666666666666,
+        "ndcg": 0.5098501619682683,
+        "topRelevantScore": 0.685,
+        "firstRelevantRank": 6,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": -0.2,
+        "mrr": -0.033333333333333354,
+        "ndcg": -0.041538130623478,
+        "rank": -1,
+        "score": -0.03699999999999992
+      }
+    },
+    {
+      "id": "eval-ambig-15",
+      "category": "ambiguous",
+      "query": "api endpoint definition",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.654,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.652,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": -0.0020000000000000018
+      }
+    },
+    {
+      "id": "eval-ambig-16",
+      "category": "ambiguous",
+      "query": "access control authorization",
+      "baseline": {
+        "precision5": 0.4,
+        "mrr": 1,
+        "ndcg": 0.8117854639642847,
+        "topRelevantScore": 0.827,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 0.4,
+        "mrr": 1,
+        "ndcg": 0.8117854639642847,
+        "topRelevantScore": 0.827,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-17",
+      "category": "ambiguous",
+      "query": "data migration setup",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.955,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.955,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 14
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-18",
+      "category": "ambiguous",
+      "query": "logging system handler",
+      "baseline": {
+        "precision5": 0.8,
+        "mrr": 1,
+        "ndcg": 0.9770153702993118,
+        "topRelevantScore": 1,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 0.8,
+        "mrr": 1,
+        "ndcg": 0.9770153702993118,
+        "topRelevantScore": 1,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-19",
+      "category": "ambiguous",
+      "query": "queue message processing",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.077,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 10
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 1.077,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 12
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    },
+    {
+      "id": "eval-ambig-20",
+      "category": "ambiguous",
+      "query": "frontend asset compilation",
+      "baseline": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.761,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 11
+      },
+      "postTraining": {
+        "precision5": 1,
+        "mrr": 1,
+        "ndcg": 1,
+        "topRelevantScore": 0.761,
+        "firstRelevantRank": 1,
+        "resultCount": 10,
+        "latency": 13
+      },
+      "delta": {
+        "precision5": 0,
+        "mrr": 0,
+        "ndcg": 0,
+        "rank": 0,
+        "score": 0
+      }
+    }
+  ]
+}

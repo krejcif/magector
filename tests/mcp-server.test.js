@@ -262,6 +262,9 @@ async function main() {
       .replace('Magector MCP server started (Rust core backend)\n', '')
       .replace('Serve process not ready in time, will use fallback\n', '')
       .replace('Serve process ready (persistent mode)\n', '')
+      .replace(/Database format incompatible\. Starting background re-index[^\n]*\n/g, '')
+      .replace(/Background re-index completed[^\n]*\n/g, '')
+      .replace(/Cannot auto-reindex[^\n]*\n/g, '')
       .trim();
     log(
       stderrClean.length === 0 ? 'PASS' : 'FAIL',

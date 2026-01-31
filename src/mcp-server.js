@@ -16,7 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { execFileSync, spawn } from 'child_process';
 import { createInterface } from 'readline';
-import { existsSync } from 'fs';
+import { existsSync, statSync, unlinkSync, appendFileSync, writeFileSync } from 'fs';
 import { stat } from 'fs/promises';
 import { glob } from 'glob';
 import path from 'path';
@@ -40,6 +40,23 @@ const config = {
   get modelCache() { return resolveModels() || process.env.MAGECTOR_MODELS || './models'; }
 };
 
+// ─── Logging ─────────────────────────────────────────────────────
+// All activity is logged to magector.log in the project root (MAGENTO_ROOT).
+
+const LOG_PATH = path.join(config.magentoRoot, 'magector.log');
+
+function logToFile(level, message) {
+  const ts = new Date().toISOString();
+  try {
+    appendFileSync(LOG_PATH, `[${ts}] [${level}] ${message}\n`);
+  } catch {
+    // Logging should never crash the server
+  }
+}
+
+// Initialize log file on startup
+try { writeFileSync(LOG_PATH, `[${new Date().toISOString()}] [INFO] Magector MCP server starting\n`); } catch {}
+
 // ─── Rust Core Integration ──────────────────────────────────────
 
 // Env vars to suppress ONNX Runtime native logs that would pollute stdout/JSON-RPC
@@ -48,6 +65,128 @@ const rustEnv = {
   ORT_LOG_LEVEL: 'error',
   RUST_LOG: 'error',
 };
+
+/**
+ * Extract JSON from stdout that may contain tracing/log lines.
+ * The npm-distributed binary can emit ANSI-colored tracing lines to stdout
+ * even with RUST_LOG=error. This strips non-JSON lines before parsing.
+ */
+function extractJson(stdout) {
+  const lines = stdout.split('\n');
+  // Try each line from the end (JSON output is typically last)
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    try {
+      return JSON.parse(line);
+    } catch {
+      // not JSON, skip
+    }
+  }
+  // Fallback: try parsing the entire output (handles multi-line JSON)
+  // Strip lines that look like tracing (start with ANSI escape or timestamp bracket)
+  const cleaned = lines
+    .filter(l => !l.match(/^\s*(\x1b\[|\[[\d\-T:.Z]+)/) && l.trim())
+    .join('\n')
+    .trim();
+  if (cleaned) {
+    return JSON.parse(cleaned);
+  }
+  throw new SyntaxError('No valid JSON found in command output');
+}
+
+// ─── Database Format Check & Background Re-index ────────────────
+
+let reindexInProgress = false;
+let reindexProcess = null;
+
+/**
+ * Check if the database file is compatible with the current binary.
+ * Returns true if OK, false if format mismatch (file has data but binary reads 0 vectors).
+ */
+function checkDbFormat() {
+  if (!existsSync(config.dbPath)) return true;
+
+  try {
+    // Check if file is non-trivial (has actual index data)
+    const fstat = statSync(config.dbPath);
+    if (fstat.size < 100) return true; // Tiny file = likely empty/new
+
+    const result = execFileSync(config.rustBinary, [
+      'stats', '-d', config.dbPath
+    ], { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
+
+    const vectors = parseInt(result.match(/Total vectors:\s*(\d+)/)?.[1] || '0');
+    // File has real data but binary sees 0 vectors → format incompatible
+    return vectors > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Start a background re-index process. Logs to magector.log in project root.
+ * MCP tools return an informative error while this is running.
+ */
+function startBackgroundReindex() {
+  if (reindexInProgress) return;
+  if (!config.magentoRoot || !existsSync(config.magentoRoot)) {
+    const msg = 'Cannot auto-reindex: MAGENTO_ROOT not set or not found';
+    console.error(msg);
+    logToFile('WARN', msg);
+    return;
+  }
+
+  reindexInProgress = true;
+
+  // Remove incompatible DB before re-indexing
+  try { if (existsSync(config.dbPath)) unlinkSync(config.dbPath); } catch {}
+
+  logToFile('WARN', `Database format incompatible. Starting background re-index.`);
+  console.error(`Database format incompatible. Starting background re-index (log: ${LOG_PATH})`);
+
+  reindexProcess = spawn(config.rustBinary, [
+    'index',
+    '-m', config.magentoRoot,
+    '-d', config.dbPath,
+    '-c', config.modelCache
+  ], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: rustEnv,
+  });
+
+  // Pipe reindex stdout/stderr to log file (strip ANSI codes)
+  reindexProcess.stdout.on('data', (d) => {
+    const text = d.toString().replace(/\x1b\[[0-9;]*m/g, '').trim();
+    if (text) logToFile('INDEX', text);
+  });
+  reindexProcess.stderr.on('data', (d) => {
+    const text = d.toString().replace(/\x1b\[[0-9;]*m/g, '').trim();
+    if (text) logToFile('INDEX', text);
+  });
+
+  reindexProcess.on('exit', (code) => {
+    reindexInProgress = false;
+    reindexProcess = null;
+    if (code === 0) {
+      logToFile('INFO', 'Background re-index completed. Restarting serve process.');
+      console.error('Background re-index completed. Restarting serve process.');
+      if (serveProcess) serveProcess.kill();
+      searchCache.clear();
+      startServeProcess();
+    } else {
+      logToFile('ERR', `Background re-index failed (exit code ${code})`);
+      console.error(`Background re-index failed (exit code ${code}). Check ${LOG_PATH}`);
+    }
+  });
+
+  reindexProcess.on('error', (err) => {
+    reindexInProgress = false;
+    reindexProcess = null;
+    logToFile('ERR', `Background re-index error: ${err.message}`);
+    console.error(`Background re-index error: ${err.message}`);
+  });
+}
 
 /**
  * Query cache: avoid re-embedding identical queries.
@@ -63,6 +202,70 @@ function cacheSet(key, value) {
   }
   searchCache.set(key, value);
 }
+
+// ─── SONA: MCP Feedback Signal Tracker ────────────────────────
+class SessionTracker {
+  constructor() {
+    this.lastSearch = null;       // {query, resultPaths, timestamp}
+    this.feedbackQueue = [];
+  }
+
+  recordToolCall(toolName, args, results) {
+    const now = Date.now();
+
+    if (toolName === 'magento_search') {
+      // If previous search was < 60s ago and query differs → query_refinement
+      if (this.lastSearch && (now - this.lastSearch.timestamp) < 60000
+          && args.query !== this.lastSearch.query) {
+        this.feedbackQueue.push({
+          type: 'query_refinement',
+          originalQuery: this.lastSearch.query,
+          refinedQuery: args.query,
+          originalResultPaths: this.lastSearch.resultPaths,
+          timestamp: now
+        });
+      }
+      this.lastSearch = {
+        query: args.query,
+        resultPaths: (results || []).map(r => r.path || r.metadata?.path).filter(Boolean),
+        timestamp: now
+      };
+      return;
+    }
+
+    // Follow-up tool after search (within 30s)
+    if (this.lastSearch && (now - this.lastSearch.timestamp) < 30000) {
+      const refinementMap = {
+        'magento_find_plugin': 'refinement_to_plugin',
+        'magento_find_class': 'refinement_to_class',
+        'magento_find_config': 'refinement_to_config',
+        'magento_find_observer': 'refinement_to_observer',
+        'magento_find_controller': 'refinement_to_controller',
+        'magento_find_block': 'refinement_to_block',
+        'magento_trace_flow': 'trace_after_search',
+      };
+      const signalType = refinementMap[toolName];
+      if (signalType) {
+        this.feedbackQueue.push({
+          type: signalType,
+          query: this.lastSearch.query,
+          searchResultPaths: this.lastSearch.resultPaths,
+          followedTool: toolName,
+          followedArgs: args,
+          timestamp: now
+        });
+      }
+    }
+  }
+
+  flush() {
+    const signals = this.feedbackQueue;
+    this.feedbackQueue = [];
+    return signals;
+  }
+}
+
+const sessionTracker = new SessionTracker();
 
 // ─── Persistent Rust Serve Process ──────────────────────────────
 // Keeps ONNX model + HNSW index loaded; eliminates ~2.6s cold start per query.
@@ -93,7 +296,12 @@ function startServeProcess() {
 
     proc.on('error', () => { serveProcess = null; serveReady = false; if (serveReadyResolve) { serveReadyResolve(false); serveReadyResolve = null; } });
     proc.on('exit', () => { serveProcess = null; serveReady = false; if (serveReadyResolve) { serveReadyResolve(false); serveReadyResolve = null; } });
-    proc.stderr.on('data', () => {}); // drain stderr
+    proc.stderr.on('data', (d) => {
+      // Log serve process stderr (watcher events, tracing, errors) to magector.log
+      // Strip ANSI escape codes for clean log output
+      const text = d.toString().replace(/\x1b\[[0-9;]*m/g, '').trim();
+      if (text) logToFile('SERVE', text);
+    });
 
     serveReadline = createInterface({ input: proc.stdout });
     serveReadline.on('line', (line) => {
@@ -178,7 +386,7 @@ function rustSearchSync(query, limit = 10) {
     '-l', String(limit),
     '-f', 'json'
   ], { encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
-  const parsed = JSON.parse(result);
+  const parsed = extractJson(result);
   cacheSet(cacheKey, parsed);
   return parsed;
 }
@@ -657,7 +865,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'number',
             description: 'Maximum results to return (default: 10, max: 100)',
             default: 10
-          }
+          },
         },
         required: ['query']
       }
@@ -980,18 +1188,40 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ['entryPoint']
       }
-    }
+    },
   ]
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  const reqStart = Date.now();
+  logToFile('REQ', `${name}(${JSON.stringify(args || {})})`);
+
+  // Block search tools while re-indexing is in progress
+  if (reindexInProgress && name !== 'magento_stats' && name !== 'magento_analyze_diff' && name !== 'magento_complexity') {
+    logToFile('REQ', `${name} → blocked (re-indexing in progress)`);
+    return {
+      content: [{
+        type: 'text',
+        text: 'Re-indexing in progress. The database format was incompatible and is being rebuilt automatically. Check magector.log for progress. Search tools will be available once re-indexing completes.'
+      }],
+      isError: true,
+    };
+  }
+
+  // SONA: record non-search tool calls before processing (for follow-up detection)
+  if (name !== 'magento_search') {
+    sessionTracker.recordToolCall(name, args || {});
+  }
 
   try {
     switch (name) {
       case 'magento_search': {
         const raw = await rustSearchAsync(args.query, args.limit || 10);
-        const results = raw.map(normalizeResult);
+        const arr = Array.isArray(raw) ? raw : [];
+        const results = arr.map(normalizeResult);
+        // SONA: record search with results for follow-up tracking
+        sessionTracker.recordToolCall(name, args || {}, arr);
         return {
           content: [{
             type: 'text',
@@ -1456,6 +1686,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+
+
       default:
         return {
           content: [{
@@ -1466,6 +1698,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
     }
   } catch (error) {
+    const elapsed = Date.now() - reqStart;
+    logToFile('ERR', `${name} → error: ${error.message} (${elapsed}ms)`);
     return {
       content: [{
         type: 'text',
@@ -1473,6 +1707,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }],
       isError: true
     };
+  } finally {
+    const elapsed = Date.now() - reqStart;
+    logToFile('RES', `${name} completed (${elapsed}ms)`);
+    // SONA: flush accumulated feedback signals to Rust core
+    const signals = sessionTracker.flush();
+    if (signals.length > 0 && serveProcess && serveReady) {
+      serveQuery('feedback', { signals }).catch(() => {});
+    }
   }
 });
 
@@ -1505,27 +1747,37 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 });
 
 async function main() {
+  // Check database format compatibility before starting serve process
+  if (existsSync(config.dbPath) && !checkDbFormat()) {
+    startBackgroundReindex();
+  }
+
   // Try to start persistent Rust serve process for fast queries
-  try {
-    startServeProcess();
-    // Wait for the serve process to load ONNX model + HNSW index (up to 15s)
-    if (serveReadyPromise) {
-      const ready = await Promise.race([
-        serveReadyPromise,
-        new Promise(r => setTimeout(() => r(false), 15000))
-      ]);
-      if (ready) {
-        console.error('Serve process ready (persistent mode)');
-      } else {
-        console.error('Serve process not ready in time, will use fallback');
+  if (!reindexInProgress) {
+    try {
+      startServeProcess();
+      // Wait for the serve process to load ONNX model + HNSW index (up to 15s)
+      if (serveReadyPromise) {
+        const ready = await Promise.race([
+          serveReadyPromise,
+          new Promise(r => setTimeout(() => r(false), 15000))
+        ]);
+        if (ready) {
+          logToFile('INFO', 'Serve process ready (persistent mode)');
+          console.error('Serve process ready (persistent mode)');
+        } else {
+          logToFile('WARN', 'Serve process not ready in time, will use fallback');
+          console.error('Serve process not ready in time, will use fallback');
+        }
       }
+    } catch {
+      // Non-fatal: falls back to execFileSync per query
     }
-  } catch {
-    // Non-fatal: falls back to execFileSync per query
   }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  logToFile('INFO', 'Magector MCP server started (Rust core backend)');
   console.error('Magector MCP server started (Rust core backend)');
 }
 

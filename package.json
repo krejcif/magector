@@ -1,6 +1,6 @@
 {
   "name": "magector",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Semantic code search for Magento 2 — index, search, MCP server",
   "type": "module",
   "main": "src/mcp-server.js",
@@ -23,7 +23,9 @@
     "test": "node tests/mcp-server.test.js",
     "test:no-index": "node tests/mcp-server.test.js --no-index",
     "test:accuracy": "node tests/mcp-accuracy.test.js",
-    "test:accuracy:verbose": "node tests/mcp-accuracy.test.js --verbose"
+    "test:accuracy:verbose": "node tests/mcp-accuracy.test.js --verbose",
+    "test:sona-eval": "node tests/mcp-sona-eval.test.js",
+    "test:sona-eval:verbose": "node tests/mcp-sona-eval.test.js --verbose"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

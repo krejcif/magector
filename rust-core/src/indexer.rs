@@ -84,6 +84,8 @@ pub struct Indexer {
     xml_analyzer: XmlAnalyzer,
     magento_root: PathBuf,
     ast_available: AstAvailability,
+    pub sona: Option<crate::sona::SonaEngine>,
+    pub db_path: Option<PathBuf>,
 }
 
 impl Indexer {
@@ -105,12 +107,19 @@ impl Indexer {
             if !js_ok { tracing::warn!("JS AST analyzer not available"); }
         }
 
+        let sona = {
+            let sona_path = db_path.with_extension("sona");
+            crate::sona::SonaEngine::open(&sona_path).ok()
+        };
+
         Ok(Self {
             embedder,
             vectordb,
             xml_analyzer: XmlAnalyzer::new(),
             magento_root: magento_root.to_path_buf(),
             ast_available: AstAvailability { php: php_ok, js: js_ok },
+            sona: sona.or_else(|| Some(crate::sona::SonaEngine::new())),
+            db_path: Some(db_path.to_path_buf()),
         })
     }
 
@@ -881,10 +890,24 @@ impl Indexer {
         self.vectordb.save(path)
     }
 
+    /// Embed a query string (public accessor for feedback/LoRA training)
+    pub fn embed_query(&mut self, query: &str) -> Result<Vec<f32>> {
+        self.embedder.embed(query)
+    }
+
     /// Search the index (hybrid: semantic + keyword re-ranking)
     pub fn search(&mut self, query: &str, k: usize) -> Result<Vec<crate::vectordb::SearchResult>> {
-        let query_embedding = self.embedder.embed(query)?;
-        Ok(self.vectordb.hybrid_search(&query_embedding, query, k))
+        let mut query_embedding = self.embedder.embed(query)?;
+        // Apply MicroLoRA adjustment before HNSW search
+        if let Some(ref sona) = self.sona {
+            sona.adjust_query_embedding(&mut query_embedding);
+        }
+        Ok(self.vectordb.hybrid_search(
+            &query_embedding,
+            query,
+            k,
+            self.sona.as_ref(),
+        ))
     }
 
     /// Get index statistics

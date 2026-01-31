@@ -46,7 +46,10 @@ The CLI auto-detects the local Rust build at `rust-core/target/release/magector-
 
 The release is triggered by pushing a `v*` tag to GitHub. The CI workflow (`.github/workflows/release.yml`) builds all platform binaries and publishes to npm.
 
-**Before releasing**, update `README.md` to reflect any new or changed MCP tools, CLI commands, or features added since the last release. The README is user-facing documentation and must stay in sync with the actual tool set in `src/mcp-server.js`.
+**Before releasing:**
+
+1. Update `README.md` to reflect any new or changed MCP tools, CLI commands, or features added since the last release. The README is user-facing documentation and must stay in sync with the actual tool set in `src/mcp-server.js`.
+2. Update `CHANGELOG.md` with a new section for the version being released. Follow the [Keep a Changelog](https://keepachangelog.com/) format using `Added`, `Changed`, `Fixed`, and `Removed` subsections. Describe user-visible changes only — not internal refactors or CI tweaks unless they affect behavior.
 
 **Preferred (one command):**
 
