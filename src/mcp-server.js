@@ -120,6 +120,62 @@ function extractJson(stdout) {
   throw new SyntaxError('No valid JSON found in command output');
 }
 
+// ─── PID File & Orphan Cleanup ──────────────────────────────────
+// Track the serve process PID to clean up orphans on restart.
+
+const PID_PATH = path.join(config.magentoRoot, '.magector', 'serve.pid');
+
+/**
+ * Write the serve process PID to disk so future instances can clean up orphans.
+ */
+function writePidFile(pid) {
+  try { writeFileSync(PID_PATH, String(pid)); } catch {}
+}
+
+function removePidFile() {
+  try { if (existsSync(PID_PATH)) unlinkSync(PID_PATH); } catch {}
+}
+
+/**
+ * Kill any stale serve process from a previous MCP server instance.
+ * This handles the common case where the MCP server was killed without
+ * triggering its exit handler (SIGKILL, crash, IDE disconnect).
+ */
+function killStaleServeProcess() {
+  try {
+    if (!existsSync(PID_PATH)) return;
+    const stalePid = parseInt(readFileSync(PID_PATH, 'utf-8').trim(), 10);
+    if (!stalePid || isNaN(stalePid)) return;
+
+    // Check if the process is still alive
+    try {
+      process.kill(stalePid, 0); // signal 0 = existence check
+    } catch {
+      // Process doesn't exist, clean up stale PID file
+      removePidFile();
+      return;
+    }
+
+    logToFile('WARN', `Killing stale serve process (PID ${stalePid}) from previous session`);
+    console.error(`Killing stale serve process (PID ${stalePid})`);
+    try { process.kill(stalePid, 'SIGTERM'); } catch {}
+
+    // Give it a moment, then force kill if still alive
+    setTimeout(() => {
+      try {
+        process.kill(stalePid, 0);
+        process.kill(stalePid, 'SIGKILL');
+      } catch {
+        // Already dead, good
+      }
+    }, 2000);
+
+    removePidFile();
+  } catch {
+    // Non-fatal
+  }
+}
+
 // ─── Database Format Check & Background Re-index ────────────────
 
 let reindexInProgress = false;
@@ -329,8 +385,8 @@ function startServeProcess() {
     const proc = spawn(config.rustBinary, args,
       { stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
 
-    proc.on('error', () => { serveProcess = null; serveReady = false; if (serveReadyResolve) { serveReadyResolve(false); serveReadyResolve = null; } });
-    proc.on('exit', () => { serveProcess = null; serveReady = false; if (serveReadyResolve) { serveReadyResolve(false); serveReadyResolve = null; } });
+    proc.on('error', () => { serveProcess = null; serveReady = false; removePidFile(); if (serveReadyResolve) { serveReadyResolve(false); serveReadyResolve = null; } });
+    proc.on('exit', () => { serveProcess = null; serveReady = false; removePidFile(); if (serveReadyResolve) { serveReadyResolve(false); serveReadyResolve = null; } });
     proc.stderr.on('data', (d) => {
       // Log serve process stderr (watcher events, tracing, errors) to .magector/magector.log
       // Strip ANSI escape codes for clean log output
@@ -359,6 +415,7 @@ function startServeProcess() {
     });
 
     serveProcess = proc;
+    writePidFile(proc.pid);
   } catch {
     serveProcess = null;
     serveReady = false;
@@ -1871,6 +1928,9 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 });
 
 async function main() {
+  // Kill any orphaned serve process from a previous session
+  killStaleServeProcess();
+
   // Check database format compatibility before starting serve process
   if (existsSync(config.dbPath) && !checkDbFormat()) {
     startBackgroundReindex();
@@ -1908,11 +1968,22 @@ async function main() {
   console.error('Magector MCP server started (Rust core backend)');
 }
 
-// Cleanup on exit
-process.on('exit', () => {
+// Cleanup on exit — kill all child processes and remove PID file
+function cleanup() {
   if (serveProcess) {
-    serveProcess.kill();
+    try { serveProcess.kill(); } catch {}
+    serveProcess = null;
   }
-});
+  if (reindexProcess) {
+    try { reindexProcess.kill(); } catch {}
+    reindexProcess = null;
+  }
+  removePidFile();
+}
+
+process.on('exit', cleanup);
+process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+process.on('SIGINT', () => { cleanup(); process.exit(0); });
+process.on('SIGHUP', () => { cleanup(); process.exit(0); });
 
 main().catch(console.error);
