@@ -4,6 +4,19 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [1.5.1] - 2026-03-06
+
+### Added
+- Auto-update check on every CLI run — checks npm registry for newer version (cached 1h), re-execs via `npx magector@<latest>` to self-update seamlessly. Set `MAGECTOR_NO_UPDATE=1` to disable.
+- Comprehensive logging to `.magector/magector.log` — config dump at startup, serve process lifecycle (spawn args, PID, exit code/signal), every serve query with ID and timeout tracking, search cache hits, fallback decisions, cleanup signals, and fatal errors with stack traces
+- Version number displayed in `npx magector init` header (`Magector Init v1.5.1`)
+
+### Fixed
+- Orphaned `magector-core serve` processes flooding CPU on IDE restart — added PID file tracking (`.magector/serve.pid`), stale process cleanup on startup, and SIGTERM/SIGINT/SIGHUP signal handlers
+
+### Changed
+- `RUST_LOG` upgraded from `error` to `info` — Rust-side watcher events, indexing progress, model loading, and HNSW operations now logged to `.magector/magector.log`
+
 ## [1.5.0] - 2026-01-31
 
 ### Added
