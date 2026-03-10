@@ -533,8 +533,16 @@ function rustIndex(magentoRoot) {
   if (existsSync(descDbPath)) {
     indexArgs.push('--descriptions-db', descDbPath);
   }
-  const result = execFileSync(config.rustBinary, indexArgs, { encoding: 'utf-8', timeout: 600000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
-  return result;
+  const indexTimeout = parseInt(process.env.MAGECTOR_INDEX_TIMEOUT, 10) || 1800000;
+  try {
+    const result = execFileSync(config.rustBinary, indexArgs, { encoding: 'utf-8', timeout: indexTimeout, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
+    return result;
+  } catch (err) {
+    if (err.message && err.message.includes('ETIMEDOUT')) {
+      throw new Error(`Indexing timed out after ${indexTimeout / 1000}s. Set MAGECTOR_INDEX_TIMEOUT=3600000 (or higher) in your environment to increase the limit.`);
+    }
+    throw err;
+  }
 }
 
 function rustStats() {

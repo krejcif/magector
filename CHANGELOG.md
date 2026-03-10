@@ -4,6 +4,15 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [1.5.3] - 2026-03-10
+
+### Fixed
+- Indexing timeout on large codebases (`ETIMEDOUT`) — increased default from 10 minutes to 30 minutes across CLI, init, and MCP server
+- Clear error message on timeout with instructions to increase via `MAGECTOR_INDEX_TIMEOUT` env var
+
+### Added
+- `MAGECTOR_INDEX_TIMEOUT` environment variable — override indexing timeout in milliseconds (default: 1800000)
+
 ## [1.5.2] - 2026-03-06
 
 ### Added

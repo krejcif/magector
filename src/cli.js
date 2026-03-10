@@ -85,6 +85,7 @@ async function runIndex(targetPath) {
   const magectorDir = path.resolve(root, '.magector');
   mkdirSync(magectorDir, { recursive: true });
 
+  const indexTimeout = parseInt(process.env.MAGECTOR_INDEX_TIMEOUT, 10) || 1800000;
   try {
     const indexArgs = [
       'index',
@@ -97,14 +98,18 @@ async function runIndex(targetPath) {
     if (existsSync(descDbPath)) {
       indexArgs.push('--descriptions-db', descDbPath);
     }
-    execFileSync(binary, indexArgs, { timeout: 600000, stdio: 'inherit' });
+    execFileSync(binary, indexArgs, { timeout: indexTimeout, stdio: 'inherit' });
     console.log('\nIndexing complete.');
   } catch (err) {
     if (err.status) {
       console.error('Indexing failed.');
       process.exit(err.status);
     }
-    console.error(`Indexing error: ${err.message}`);
+    if (err.message && err.message.includes('ETIMEDOUT')) {
+      console.error(`Indexing timed out after ${indexTimeout / 1000}s. For large codebases, increase the timeout:\n  MAGECTOR_INDEX_TIMEOUT=3600000 npx magector index`);
+    } else {
+      console.error(`Indexing error: ${err.message}`);
+    }
     process.exit(1);
   }
 }

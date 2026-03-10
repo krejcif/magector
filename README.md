@@ -318,6 +318,7 @@ The `describe` command and `magento_describe` MCP tool require an Anthropic API 
 | `MAGECTOR_DB` | Path to index database | `./.magector/index.db` |
 | `MAGECTOR_BIN` | Path to magector-core binary | Auto-detected |
 | `MAGECTOR_MODELS` | Path to ONNX model directory | `~/.magector/models/` |
+| `MAGECTOR_INDEX_TIMEOUT` | Indexing timeout in milliseconds | `1800000` (30 min) |
 | `ANTHROPIC_API_KEY` | API key for description generation (`describe` command) | — |
 
 ---

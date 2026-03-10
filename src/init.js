@@ -250,13 +250,18 @@ export async function init(projectPath) {
       '-m', projectPath,
       '-d', dbPath,
       '-c', modelPath
-    ], { timeout: 600000, stdio: 'inherit' });
+    ], { timeout: parseInt(process.env.MAGECTOR_INDEX_TIMEOUT, 10) || 1800000, stdio: 'inherit' });
   } catch (err) {
     if (err.status) {
       console.error('Indexing failed.');
       process.exit(err.status);
     }
-    console.error(`Indexing error: ${err.message}`);
+    const initTimeout = parseInt(process.env.MAGECTOR_INDEX_TIMEOUT, 10) || 1800000;
+    if (err.message && err.message.includes('ETIMEDOUT')) {
+      console.error(`Indexing timed out after ${initTimeout / 1000}s. For large codebases, increase the timeout:\n  MAGECTOR_INDEX_TIMEOUT=3600000 npx magector init ${projectPath}`);
+    } else {
+      console.error(`Indexing error: ${err.message}`);
+    }
     process.exit(1);
   }
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
