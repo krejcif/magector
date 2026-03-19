@@ -23,7 +23,6 @@ pub(crate) const INCLUDE_EXTENSIONS: &[&str] = &["php", "xml", "phtml", "js", "g
 /// Directories to always skip (matched against directory name, not path)
 pub(crate) const EXCLUDE_DIRS: &[&str] = &[
     "node_modules",
-    "vendor",
     ".git",
     "var",
     "generated",
@@ -39,6 +38,7 @@ pub(crate) const EXCLUDE_DIRS: &[&str] = &[
 /// Additional directories to skip by relative path prefix.
 /// These handle cases where the directory name alone is too generic (e.g., "static").
 pub(crate) const EXCLUDE_PATHS: &[&str] = &[
+    "vendor/bin",
     "pub/static",
     "dev/tests",
     "dev/tools",

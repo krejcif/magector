@@ -4,6 +4,12 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [1.6.1] - 2026-03-19
+
+### Fixed
+- **`vendor/` directory is now indexed** — v1.6.0 over-corrected by adding `vendor` to `EXCLUDE_DIRS`, which excluded the entire vendor/ tree. For Magento 2, vendor/ contains ~40,000-50,000 PHP files essential for semantic search. Now only `vendor/bin` is excluded (via `EXCLUDE_PATHS`), restoring full vendor/ indexing.
+- Release workflow `permissions.contents` changed from `read` to `write` so CI can create GitHub releases with binaries
+
 ## [1.6.0] - 2026-03-13
 
 ### Added
