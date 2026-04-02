@@ -22,11 +22,24 @@ pub struct Embedder {
 }
 
 impl Embedder {
-    /// Create a new embedder from model files
-    pub fn new(model_path: &Path, tokenizer_path: &Path) -> Result<Self> {
-        // Use all available cores for ONNX intra-op parallelism
-        let num_threads = num_cpus::get().max(1);
-        tracing::info!("ONNX intra_threads: {}", num_threads);
+    /// Create a new embedder from model files.
+    /// `max_threads`: if Some, caps ONNX intra-op threads; if None, uses half of available cores
+    /// (minimum 1). Override via MAGECTOR_THREADS env var.
+    pub fn new(model_path: &Path, tokenizer_path: &Path, max_threads: Option<usize>) -> Result<Self> {
+        let available = num_cpus::get().max(1);
+        let num_threads = match max_threads {
+            Some(t) => t.max(1).min(available),
+            None => {
+                // Check env var, otherwise default to half of cores
+                std::env::var("MAGECTOR_THREADS")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(available / 2)
+                    .max(1)
+                    .min(available)
+            }
+        };
+        tracing::info!("ONNX intra_threads: {} (available: {})", num_threads, available);
 
         // Initialize ONNX session
         let session = Session::builder()?
@@ -45,6 +58,11 @@ impl Embedder {
 
     /// Download and initialize with default model (all-MiniLM-L6-v2)
     pub fn from_pretrained(cache_dir: &Path) -> Result<Self> {
+        Self::from_pretrained_with_threads(cache_dir, None)
+    }
+
+    /// Download and initialize with thread limit
+    pub fn from_pretrained_with_threads(cache_dir: &Path, max_threads: Option<usize>) -> Result<Self> {
         let model_path = cache_dir.join("all-MiniLM-L6-v2.onnx");
         let tokenizer_path = cache_dir.join("tokenizer.json");
 
@@ -53,7 +71,7 @@ impl Embedder {
             Self::download_model(cache_dir)?;
         }
 
-        Self::new(&model_path, &tokenizer_path)
+        Self::new(&model_path, &tokenizer_path, max_threads)
     }
 
     /// Download the default model

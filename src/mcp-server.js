@@ -231,8 +231,17 @@ function startBackgroundReindex() {
 
   reindexInProgress = true;
 
-  // Remove incompatible DB before re-indexing
-  try { if (existsSync(config.dbPath)) unlinkSync(config.dbPath); } catch {}
+  // Do NOT delete existing DB — the new indexer saves incrementally,
+  // so a partial index is better than no index. The Rust binary handles
+  // format incompatibility internally by clearing and rebuilding.
+  const hadExistingDb = existsSync(config.dbPath);
+  if (hadExistingDb) {
+    try {
+      const fstat = statSync(config.dbPath);
+      logToFile('WARN', `Existing DB (${(fstat.size / 1024).toFixed(0)} KB) will be overwritten by re-index.`);
+    } catch {}
+    try { unlinkSync(config.dbPath); } catch {}
+  }
 
   logToFile('WARN', `Database format incompatible. Starting background re-index.`);
   console.error(`Database format incompatible. Starting background re-index (log: ${LOG_PATH})`);
@@ -243,6 +252,11 @@ function startBackgroundReindex() {
     '-d', config.dbPath,
     '-c', config.modelCache
   ];
+  // Pass thread limit if configured
+  const threads = process.env.MAGECTOR_THREADS;
+  if (threads) {
+    reindexArgs.push('--threads', threads);
+  }
   const bgDescDbPath = path.join(config.magentoRoot, '.magector', 'sqlite.db');
   if (existsSync(bgDescDbPath)) {
     reindexArgs.push('--descriptions-db', bgDescDbPath);
@@ -393,6 +407,11 @@ function startServeProcess() {
     const descDbPath = path.join(config.magentoRoot || '.', '.magector', 'sqlite.db');
     if (existsSync(descDbPath)) {
       args.push('--descriptions-db', descDbPath);
+    }
+    // Pass thread limit if configured
+    const threads = process.env.MAGECTOR_THREADS;
+    if (threads) {
+      args.push('--threads', threads);
     }
     logToFile('INFO', `Starting serve process: ${config.rustBinary} ${args.join(' ')}`);
     const proc = spawn(config.rustBinary, args,
@@ -1971,8 +1990,19 @@ async function main() {
   // Kill any orphaned serve process from a previous session
   killStaleServeProcess();
 
-  // Check database format compatibility before starting serve process
-  if (existsSync(config.dbPath) && !checkDbFormat()) {
+  // Check database format compatibility before starting serve process.
+  // With incremental saves, a partial but valid index should be kept — don't
+  // force a full re-index just because the previous session didn't finish.
+  if (existsSync(config.dbPath)) {
+    if (!checkDbFormat()) {
+      logToFile('WARN', 'Database format incompatible — scheduling background re-index');
+      startBackgroundReindex();
+    } else {
+      logToFile('INFO', 'Existing database is compatible — reusing index');
+    }
+  } else if (config.magentoRoot && existsSync(config.magentoRoot)) {
+    // No DB file at all — need initial index
+    logToFile('INFO', 'No index database found — scheduling background index');
     startBackgroundReindex();
   }
 

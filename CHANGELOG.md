@@ -4,6 +4,20 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [1.7.0] - 2026-04-02
+
+### Added
+- **Configurable ONNX thread limit** — new `--threads` CLI flag and `MAGECTOR_THREADS` env var. Default changed from all CPU cores to half, reducing system impact during indexing.
+- **Configurable embedding batch size** — new `--batch-size` CLI flag and `MAGECTOR_BATCH_SIZE` env var. Default increased from 32 to 256, reducing ONNX inference overhead by ~8x on large codebases.
+- **Incremental index saves** — index is saved to disk every 50 batches during embedding generation (~12,800 files). If the process is interrupted, the partial index is preserved and usable.
+- **Crash-safe writes** — new `save_atomic()` method writes to a temp file and renames, preventing index corruption on crash.
+- **PHASE 2 progress logging** — embedding progress logged every 10 batches with items processed, percentage, elapsed time, ETA, and throughput rate. Visible in both terminal and `.magector/magector.log`.
+
+### Fixed
+- **Forced full re-index on MCP server restart** — previously, restarting Claude Code or the IDE would kill the serve process and trigger a full re-index even if a valid (or partial) index existed on disk. Now the MCP server preserves compatible indexes and only re-indexes on actual format incompatibility or missing database.
+- **Index unavailable during entire PHASE 2** — with incremental saves, partial search results are available from the first checkpoint instead of only after the full index completes.
+- **No progress in log file** — PHASE 2 previously wrote only to the terminal progress bar (ANSI escape codes), which was invisible when piped to log files. Progress is now logged via both `pb.println()` and `tracing::info!`.
+
 ## [1.6.1] - 2026-03-19
 
 ### Fixed

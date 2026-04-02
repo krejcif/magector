@@ -286,6 +286,37 @@ impl VectorDB {
         Ok(())
     }
 
+    /// Crash-safe save: write to a temp file, then atomic rename.
+    /// If the process dies mid-write, the original DB file remains intact.
+    pub fn save_atomic(&self, path: &Path) -> Result<()> {
+        fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
+
+        let tmp_path = path.with_extension("db.tmp");
+
+        let state = PersistedStateV2 {
+            metadata: self.metadata.clone(),
+            vectors: self.vectors.clone(),
+            next_id: self.next_id,
+            tombstones: self.tombstones.clone(),
+        };
+
+        {
+            let file = File::create(&tmp_path)?;
+            let mut writer = BufWriter::with_capacity(1 << 20, file);
+            use std::io::Write;
+            writer.write_all(&[PERSIST_VERSION_V2])?;
+            bincode::serialize_into(&mut writer, &state)
+                .context("Failed to serialize database")?;
+            writer.flush()?;
+        }
+
+        // Atomic rename — either fully replaces or doesn't change the file
+        fs::rename(&tmp_path, path)
+            .context("Failed to atomically rename temp DB")?;
+
+        Ok(())
+    }
+
     /// Insert a vector with metadata
     pub fn insert(&mut self, vector: &[f32], metadata: IndexMetadata) -> usize {
         assert_eq!(vector.len(), EMBEDDING_DIM);
@@ -752,5 +783,36 @@ mod tests {
         let query = vec![0.0f32; EMBEDDING_DIM];
         let results = db.search(&query, 3);
         assert!(results.len() <= 3);
+    }
+
+    #[test]
+    fn test_save_atomic_roundtrip() {
+        let dir = std::env::temp_dir().join("magector_test_atomic");
+        let _ = fs::create_dir_all(&dir);
+        let db_path = dir.join("atomic_test.db");
+
+        // Create DB with some vectors and save atomically
+        {
+            let mut db = VectorDB::new();
+            let v1 = vec![0.1f32; EMBEDDING_DIM];
+            let v2 = vec![0.2f32; EMBEDDING_DIM];
+            db.insert(&v1, make_test_meta("a.php"));
+            db.insert(&v2, make_test_meta("b.php"));
+            db.save_atomic(&db_path).unwrap();
+        }
+
+        // Verify file exists and has data
+        assert!(db_path.exists());
+        let file_size = fs::metadata(&db_path).unwrap().len();
+        assert!(file_size > 100, "DB file should have substantial data, got {} bytes", file_size);
+
+        // Reload and verify
+        let db = VectorDB::open(&db_path).unwrap();
+        assert_eq!(db.len(), 2, "Expected 2 vectors after save_atomic roundtrip");
+
+        // Verify no temp file left
+        assert!(!db_path.with_extension("db.tmp").exists());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

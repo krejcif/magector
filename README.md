@@ -319,6 +319,8 @@ The `describe` command and `magento_describe` MCP tool require an Anthropic API 
 | `MAGECTOR_BIN` | Path to magector-core binary | Auto-detected |
 | `MAGECTOR_MODELS` | Path to ONNX model directory | `~/.magector/models/` |
 | `MAGECTOR_INDEX_TIMEOUT` | Indexing timeout in milliseconds | `1800000` (30 min) |
+| `MAGECTOR_THREADS` | Max ONNX threads for embedding generation | Half of CPU cores |
+| `MAGECTOR_BATCH_SIZE` | Embedding batch size (higher = faster, more RAM) | `256` |
 | `ANTHROPIC_API_KEY` | API key for description generation (`describe` command) | — |
 
 ---

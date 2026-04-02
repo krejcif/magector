@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-01-31T18:59:24.218Z",
+  "timestamp": "2026-04-02T14:25:47.135Z",
   "summary": {
     "totalQueries": 101,
     "totalPassed": 101,
@@ -8,7 +8,7 @@
     "avgPrecision": 0.9841584158415843,
     "avgMRR": 0.995049504950495,
     "avgNDCG": 0.9881555248261024,
-    "avgLatency": 48.34653465346535,
+    "avgLatency": 111.7128712871287,
     "grade": "A+",
     "score": 99.2,
     "emptyResults": 0
@@ -22,7 +22,7 @@
       "avgPrecision": 1,
       "avgMRR": 1,
       "avgNDCG": 1,
-      "avgLatency": 97.8,
+      "avgLatency": 274.3,
       "emptyResults": 0,
       "failures": []
     },
@@ -34,7 +34,7 @@
       "avgPrecision": 0.9541666666666666,
       "avgMRR": 0.9375,
       "avgNDCG": 0.9783365796421277,
-      "avgLatency": 13.75,
+      "avgLatency": 30.5,
       "emptyResults": 0,
       "failures": []
     },
@@ -46,7 +46,7 @@
       "avgPrecision": 1,
       "avgMRR": 1,
       "avgNDCG": 1,
-      "avgLatency": 12.714285714285714,
+      "avgLatency": 28.857142857142858,
       "emptyResults": 0,
       "failures": []
     },
@@ -58,7 +58,7 @@
       "avgPrecision": 1,
       "avgMRR": 1,
       "avgNDCG": 1,
-      "avgLatency": 11.4,
+      "avgLatency": 21.8,
       "emptyResults": 0,
       "failures": []
     },
@@ -70,7 +70,7 @@
       "avgPrecision": 0.9733333333333334,
       "avgMRR": 1,
       "avgNDCG": 1,
-      "avgLatency": 11.6,
+      "avgLatency": 21.8,
       "emptyResults": 0,
       "failures": []
     },
@@ -82,7 +82,7 @@
       "avgPrecision": 1,
       "avgMRR": 1,
       "avgNDCG": 1,
-      "avgLatency": 14.4,
+      "avgLatency": 21.4,
       "emptyResults": 0,
       "failures": []
     },
@@ -94,7 +94,7 @@
       "avgPrecision": 1,
       "avgMRR": 1,
       "avgNDCG": 1,
-      "avgLatency": 11,
+      "avgLatency": 27.4,
       "emptyResults": 0,
       "failures": []
     },
@@ -106,7 +106,7 @@
       "avgPrecision": 1,
       "avgMRR": 1,
       "avgNDCG": 1,
-      "avgLatency": 11.6,
+      "avgLatency": 26,
       "emptyResults": 0,
       "failures": []
     },
@@ -118,7 +118,7 @@
       "avgPrecision": 1,
       "avgMRR": 1,
       "avgNDCG": 1,
-      "avgLatency": 11.8,
+      "avgLatency": 33,
       "emptyResults": 0,
       "failures": []
     },
@@ -130,7 +130,7 @@
       "avgPrecision": 1,
       "avgMRR": 1,
       "avgNDCG": 1,
-      "avgLatency": 12.2,
+      "avgLatency": 27.8,
       "emptyResults": 0,
       "failures": []
     },
@@ -142,7 +142,7 @@
       "avgPrecision": 1,
       "avgMRR": 1,
       "avgNDCG": 1,
-      "avgLatency": 11.8,
+      "avgLatency": 28.8,
       "emptyResults": 0,
       "failures": []
     },
@@ -154,7 +154,7 @@
       "avgPrecision": 1,
       "avgMRR": 1,
       "avgNDCG": 1,
-      "avgLatency": 13.857142857142858,
+      "avgLatency": 26.428571428571427,
       "emptyResults": 0,
       "failures": []
     },
@@ -166,7 +166,7 @@
       "avgPrecision": 1,
       "avgMRR": 1,
       "avgNDCG": 1,
-      "avgLatency": 11.8,
+      "avgLatency": 23,
       "emptyResults": 0,
       "failures": []
     },
@@ -178,7 +178,7 @@
       "avgPrecision": 0.9944444444444444,
       "avgMRR": 1,
       "avgNDCG": 0.9987230761277396,
-      "avgLatency": 10.61111111111111,
+      "avgLatency": 25.22222222222222,
       "emptyResults": 0,
       "failures": []
     },
@@ -190,7 +190,7 @@
       "avgPrecision": 1,
       "avgMRR": 1,
       "avgNDCG": 1,
-      "avgLatency": 17.2,
+      "avgLatency": 40.4,
       "emptyResults": 0,
       "failures": []
     },
@@ -202,7 +202,7 @@
       "avgPrecision": 0,
       "avgMRR": 1,
       "avgNDCG": 0,
-      "avgLatency": 2794,
+      "avgLatency": 6098,
       "emptyResults": 0,
       "failures": []
     }
@@ -219,7 +219,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 876,
+      "latency": 2478,
       "failedChecks": []
     },
     {
@@ -233,7 +233,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 23,
       "failedChecks": []
     },
     {
@@ -247,7 +247,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 46,
       "failedChecks": []
     },
     {
@@ -261,7 +261,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 23,
       "failedChecks": []
     },
     {
@@ -271,11 +271,11 @@
         "className": "CustomerRepository"
       },
       "passed": true,
-      "resultCount": 3,
+      "resultCount": 2,
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 22,
       "failedChecks": []
     },
     {
@@ -289,7 +289,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 39,
       "failedChecks": []
     },
     {
@@ -303,7 +303,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 27,
       "failedChecks": []
     },
     {
@@ -317,7 +317,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 28,
       "failedChecks": []
     },
     {
@@ -331,7 +331,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 27,
       "failedChecks": []
     },
     {
@@ -346,7 +346,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 30,
       "failedChecks": []
     },
     {
@@ -360,7 +360,7 @@
       "precision": 0.9,
       "mrr": 1,
       "ndcg": 0.9937947856332161,
-      "latency": 14,
+      "latency": 30,
       "failedChecks": []
     },
     {
@@ -374,7 +374,7 @@
       "precision": 0.9,
       "mrr": 0.5,
       "ndcg": 0.8328978515038054,
-      "latency": 13,
+      "latency": 33,
       "failedChecks": []
     },
     {
@@ -388,7 +388,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 14,
+      "latency": 34,
       "failedChecks": []
     },
     {
@@ -402,7 +402,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 14,
+      "latency": 36,
       "failedChecks": []
     },
     {
@@ -416,7 +416,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 35,
       "failedChecks": []
     },
     {
@@ -430,7 +430,7 @@
       "precision": 0.8333333333333334,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 16,
+      "latency": 26,
       "failedChecks": []
     },
     {
@@ -444,7 +444,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 15,
+      "latency": 25,
       "failedChecks": []
     },
     {
@@ -458,7 +458,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 25,
       "failedChecks": []
     },
     {
@@ -472,7 +472,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 26,
       "failedChecks": []
     },
     {
@@ -482,11 +482,11 @@
         "route": "checkout/cart/add"
       },
       "passed": true,
-      "resultCount": 39,
+      "resultCount": 37,
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 25,
       "failedChecks": []
     },
     {
@@ -500,7 +500,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 26,
       "failedChecks": []
     },
     {
@@ -514,7 +514,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 26,
       "failedChecks": []
     },
     {
@@ -528,7 +528,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 36,
       "failedChecks": []
     },
     {
@@ -538,11 +538,11 @@
         "route": "wishlist/index/add"
       },
       "passed": true,
-      "resultCount": 27,
+      "resultCount": 26,
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 32,
       "failedChecks": []
     },
     {
@@ -556,7 +556,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 31,
       "failedChecks": []
     },
     {
@@ -570,7 +570,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 20,
       "failedChecks": []
     },
     {
@@ -584,7 +584,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 23,
       "failedChecks": []
     },
     {
@@ -598,7 +598,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 23,
       "failedChecks": []
     },
     {
@@ -612,7 +612,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 22,
       "failedChecks": []
     },
     {
@@ -626,7 +626,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 21,
       "failedChecks": []
     },
     {
@@ -640,7 +640,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 22,
       "failedChecks": []
     },
     {
@@ -650,11 +650,11 @@
         "targetClass": "CartManagement"
       },
       "passed": true,
-      "resultCount": 10,
+      "resultCount": 11,
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 20,
       "failedChecks": []
     },
     {
@@ -668,7 +668,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 22,
       "failedChecks": []
     },
     {
@@ -682,7 +682,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 22,
       "failedChecks": []
     },
     {
@@ -697,7 +697,7 @@
       "precision": 0.8666666666666667,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 23,
       "failedChecks": []
     },
     {
@@ -707,11 +707,11 @@
         "interfaceName": "ProductRepositoryInterface"
       },
       "passed": true,
-      "resultCount": 8,
+      "resultCount": 7,
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 15,
+      "latency": 21,
       "failedChecks": []
     },
     {
@@ -725,7 +725,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 18,
+      "latency": 21,
       "failedChecks": []
     },
     {
@@ -735,11 +735,11 @@
         "interfaceName": "OrderRepositoryInterface"
       },
       "passed": true,
-      "resultCount": 13,
+      "resultCount": 15,
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 15,
+      "latency": 22,
       "failedChecks": []
     },
     {
@@ -753,7 +753,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 22,
       "failedChecks": []
     },
     {
@@ -767,7 +767,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 21,
       "failedChecks": []
     },
     {
@@ -781,7 +781,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 21,
       "failedChecks": []
     },
     {
@@ -795,7 +795,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 19,
       "failedChecks": []
     },
     {
@@ -809,7 +809,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 26,
       "failedChecks": []
     },
     {
@@ -823,7 +823,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 10,
+      "latency": 27,
       "failedChecks": []
     },
     {
@@ -837,7 +837,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 44,
       "failedChecks": []
     },
     {
@@ -851,7 +851,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 35,
       "failedChecks": []
     },
     {
@@ -865,7 +865,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 28,
       "failedChecks": []
     },
     {
@@ -879,7 +879,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 21,
       "failedChecks": []
     },
     {
@@ -893,7 +893,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 10,
+      "latency": 23,
       "failedChecks": []
     },
     {
@@ -907,7 +907,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 14,
+      "latency": 23,
       "failedChecks": []
     },
     {
@@ -921,7 +921,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 24,
       "failedChecks": []
     },
     {
@@ -935,7 +935,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 44,
       "failedChecks": []
     },
     {
@@ -949,7 +949,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 39,
       "failedChecks": []
     },
     {
@@ -959,11 +959,11 @@
         "tableName": "quote"
       },
       "passed": true,
-      "resultCount": 15,
+      "resultCount": 14,
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 29,
       "failedChecks": []
     },
     {
@@ -973,11 +973,11 @@
         "tableName": "cms_page"
       },
       "passed": true,
-      "resultCount": 11,
+      "resultCount": 12,
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 29,
       "failedChecks": []
     },
     {
@@ -991,7 +991,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 29,
       "failedChecks": []
     },
     {
@@ -1005,7 +1005,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 36,
       "failedChecks": []
     },
     {
@@ -1019,7 +1019,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 31,
       "failedChecks": []
     },
     {
@@ -1033,7 +1033,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 21,
       "failedChecks": []
     },
     {
@@ -1047,7 +1047,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 22,
       "failedChecks": []
     },
     {
@@ -1061,7 +1061,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 29,
       "failedChecks": []
     },
     {
@@ -1071,11 +1071,11 @@
         "query": "cart totals"
       },
       "passed": true,
-      "resultCount": 10,
+      "resultCount": 9,
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 34,
       "failedChecks": []
     },
     {
@@ -1085,11 +1085,11 @@
         "query": "category listing"
       },
       "passed": true,
-      "resultCount": 15,
+      "resultCount": 14,
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 40,
       "failedChecks": []
     },
     {
@@ -1099,11 +1099,11 @@
         "query": "customer account navigation"
       },
       "passed": true,
-      "resultCount": 12,
+      "resultCount": 11,
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 20,
       "failedChecks": []
     },
     {
@@ -1117,7 +1117,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 21,
       "failedChecks": []
     },
     {
@@ -1132,7 +1132,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 14,
+      "latency": 26,
       "failedChecks": []
     },
     {
@@ -1147,7 +1147,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 14,
+      "latency": 27,
       "failedChecks": []
     },
     {
@@ -1162,7 +1162,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 26,
       "failedChecks": []
     },
     {
@@ -1177,7 +1177,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 27,
       "failedChecks": []
     },
     {
@@ -1192,7 +1192,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 17,
+      "latency": 26,
       "failedChecks": []
     },
     {
@@ -1207,7 +1207,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 26,
       "failedChecks": []
     },
     {
@@ -1222,7 +1222,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 27,
       "failedChecks": []
     },
     {
@@ -1236,7 +1236,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 27,
       "failedChecks": []
     },
     {
@@ -1250,7 +1250,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 22,
       "failedChecks": []
     },
     {
@@ -1264,7 +1264,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 12,
+      "latency": 23,
       "failedChecks": []
     },
     {
@@ -1278,7 +1278,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 21,
       "failedChecks": []
     },
     {
@@ -1292,7 +1292,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 22,
       "failedChecks": []
     },
     {
@@ -1307,7 +1307,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 10,
+      "latency": 22,
       "failedChecks": []
     },
     {
@@ -1322,7 +1322,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 10,
+      "latency": 21,
       "failedChecks": []
     },
     {
@@ -1337,7 +1337,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 22,
       "failedChecks": []
     },
     {
@@ -1352,7 +1352,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 32,
       "failedChecks": []
     },
     {
@@ -1367,7 +1367,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 10,
+      "latency": 30,
       "failedChecks": []
     },
     {
@@ -1382,7 +1382,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 10,
+      "latency": 33,
       "failedChecks": []
     },
     {
@@ -1397,7 +1397,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 10,
+      "latency": 24,
       "failedChecks": []
     },
     {
@@ -1412,7 +1412,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 22,
       "failedChecks": []
     },
     {
@@ -1427,7 +1427,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 10,
+      "latency": 26,
       "failedChecks": []
     },
     {
@@ -1442,7 +1442,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 10,
+      "latency": 22,
       "failedChecks": []
     },
     {
@@ -1457,7 +1457,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 10,
+      "latency": 21,
       "failedChecks": []
     },
     {
@@ -1472,7 +1472,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 10,
+      "latency": 23,
       "failedChecks": []
     },
     {
@@ -1487,7 +1487,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 25,
       "failedChecks": []
     },
     {
@@ -1502,7 +1502,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 13,
+      "latency": 35,
       "failedChecks": []
     },
     {
@@ -1517,7 +1517,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 29,
       "failedChecks": []
     },
     {
@@ -1532,7 +1532,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 24,
       "failedChecks": []
     },
     {
@@ -1547,7 +1547,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 11,
+      "latency": 23,
       "failedChecks": []
     },
     {
@@ -1562,7 +1562,7 @@
       "precision": 0.9,
       "mrr": 1,
       "ndcg": 0.9770153702993118,
-      "latency": 11,
+      "latency": 20,
       "failedChecks": []
     },
     {
@@ -1576,7 +1576,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 17,
+      "latency": 31,
       "failedChecks": []
     },
     {
@@ -1590,7 +1590,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 18,
+      "latency": 34,
       "failedChecks": []
     },
     {
@@ -1604,7 +1604,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 17,
+      "latency": 47,
       "failedChecks": []
     },
     {
@@ -1618,7 +1618,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 15,
+      "latency": 44,
       "failedChecks": []
     },
     {
@@ -1632,7 +1632,7 @@
       "precision": 1,
       "mrr": 1,
       "ndcg": 1,
-      "latency": 19,
+      "latency": 46,
       "failedChecks": []
     },
     {
@@ -1644,7 +1644,7 @@
       "precision": 0,
       "mrr": 1,
       "ndcg": 0,
-      "latency": 2794,
+      "latency": 6098,
       "failedChecks": []
     }
   ]

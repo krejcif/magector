@@ -47,6 +47,14 @@ enum Commands {
         /// Path to descriptions SQLite DB (descriptions are prepended to embeddings)
         #[arg(long)]
         descriptions_db: Option<PathBuf>,
+
+        /// Max ONNX threads (default: half of CPU cores). Also via MAGECTOR_THREADS env var.
+        #[arg(long)]
+        threads: Option<usize>,
+
+        /// Embedding batch size (default: 256). Also via MAGECTOR_BATCH_SIZE env var.
+        #[arg(long)]
+        batch_size: Option<usize>,
     },
 
     /// Search the index
@@ -167,6 +175,10 @@ enum Commands {
         /// Path to descriptions SQLite DB (descriptions are prepended to embeddings)
         #[arg(long)]
         descriptions_db: Option<PathBuf>,
+
+        /// Max ONNX threads (default: half of CPU cores). Also via MAGECTOR_THREADS env var.
+        #[arg(long)]
+        threads: Option<usize>,
     },
 }
 
@@ -190,8 +202,10 @@ fn main() -> Result<()> {
             database,
             model_cache,
             descriptions_db,
+            threads,
+            batch_size,
         } => {
-            run_index(&magento_root, &database, &model_cache, descriptions_db.as_deref())?;
+            run_index(&magento_root, &database, &model_cache, descriptions_db.as_deref(), threads, batch_size)?;
         }
 
         Commands::Search {
@@ -289,18 +303,19 @@ fn main() -> Result<()> {
             magento_root,
             watch_interval,
             descriptions_db,
+            threads,
         } => {
-            run_serve(&database, &model_cache, magento_root, watch_interval, descriptions_db)?;
+            run_serve(&database, &model_cache, magento_root, watch_interval, descriptions_db, threads)?;
         }
     }
 
     Ok(())
 }
 
-fn run_index(magento_root: &PathBuf, database: &PathBuf, model_cache: &PathBuf, descriptions_db: Option<&std::path::Path>) -> Result<()> {
+fn run_index(magento_root: &PathBuf, database: &PathBuf, model_cache: &PathBuf, descriptions_db: Option<&std::path::Path>, threads: Option<usize>, batch_size: Option<usize>) -> Result<()> {
     tracing::info!("Starting indexer...");
 
-    let mut indexer = Indexer::new(magento_root, model_cache, database)?;
+    let mut indexer = Indexer::with_options(magento_root, model_cache, database, threads, batch_size)?;
 
     // Auto-detect descriptions DB next to the main DB if not explicitly provided
     let desc_db_path = descriptions_db.map(|p| p.to_path_buf()).unwrap_or_else(|| {
@@ -313,8 +328,8 @@ fn run_index(magento_root: &PathBuf, database: &PathBuf, model_cache: &PathBuf, 
 
     let stats = indexer.index()?;
 
-    tracing::info!("Saving index to {:?}...", database);
-    indexer.save(database)?;
+    tracing::info!("Saving final index to {:?}...", database);
+    indexer.save_atomic(database)?;
 
     println!("Files found:    {}", stats.files_found);
     println!("Files indexed:  {}", stats.files_indexed);
@@ -367,7 +382,7 @@ fn run_validation(
         println!("Using existing index at {:?}", database);
     } else {
         println!("\nIndexing Magento codebase...\n");
-        run_index(&magento_path, database, model_cache, None)?;
+        run_index(&magento_path, database, model_cache, None, None, None)?;
     }
 
     // Load indexer for search
@@ -418,10 +433,11 @@ fn run_serve(
     magento_root: Option<PathBuf>,
     watch_interval: u64,
     descriptions_db: Option<PathBuf>,
+    threads: Option<usize>,
 ) -> Result<()> {
     eprintln!("Loading model and index for serve mode...");
     let mg_root = magento_root.clone().unwrap_or_default();
-    let mut indexer = Indexer::new(&mg_root, model_cache, database)?;
+    let mut indexer = Indexer::with_options(&mg_root, model_cache, database, threads, None)?;
 
     // Auto-detect descriptions DB
     let desc_db_path = descriptions_db.unwrap_or_else(|| {

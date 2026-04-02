@@ -67,8 +67,15 @@ pub(crate) struct ParsedFile {
     metadata: IndexMetadata,
 }
 
-/// Embedding batch size — balance between ONNX throughput and memory
-const EMBED_BATCH_SIZE: usize = 32;
+/// Default embedding batch size — larger batches amortize ONNX overhead.
+/// Override via MAGECTOR_BATCH_SIZE env var or --batch-size CLI flag.
+const DEFAULT_EMBED_BATCH_SIZE: usize = 256;
+
+/// Save index to disk every N batches during PHASE 2 (crash recovery)
+const SAVE_INTERVAL_BATCHES: usize = 50;
+
+/// Log progress every N batches
+const LOG_INTERVAL_BATCHES: usize = 10;
 
 // Thread-local AST analyzers (avoids mutex contention in parallel parsing)
 thread_local! {
@@ -94,13 +101,30 @@ pub struct Indexer {
     descriptions_db: Option<PathBuf>,
     /// Custom ignore patterns loaded from .magectorignore
     ignore_patterns: Vec<String>,
+    /// Embedding batch size (configurable)
+    batch_size: usize,
 }
 
 impl Indexer {
-    /// Create new indexer
+    /// Create new indexer with default settings
     pub fn new(magento_root: &Path, model_cache_dir: &Path, db_path: &Path) -> Result<Self> {
+        Self::with_options(magento_root, model_cache_dir, db_path, None, None)
+    }
+
+    /// Create new indexer with configurable threads and batch size
+    pub fn with_options(
+        magento_root: &Path,
+        model_cache_dir: &Path,
+        db_path: &Path,
+        max_threads: Option<usize>,
+        batch_size: Option<usize>,
+    ) -> Result<Self> {
         tracing::info!("Initializing embedder...");
-        let embedder = Embedder::from_pretrained(model_cache_dir)?;
+        let embedder = Embedder::from_pretrained_with_threads(model_cache_dir, max_threads)?;
+
+        let batch_size = batch_size
+            .or_else(|| std::env::var("MAGECTOR_BATCH_SIZE").ok().and_then(|v| v.parse().ok()))
+            .unwrap_or(DEFAULT_EMBED_BATCH_SIZE);
 
         tracing::info!("Opening vector database...");
         let vectordb = VectorDB::open(db_path)?;
@@ -123,6 +147,8 @@ impl Indexer {
         // Load .magectorignore patterns
         let ignore_patterns = Self::load_ignore_file(magento_root);
 
+        tracing::info!("Embedding batch size: {}", batch_size);
+
         Ok(Self {
             embedder,
             vectordb,
@@ -133,6 +159,7 @@ impl Indexer {
             db_path: Some(db_path.to_path_buf()),
             descriptions_db: None,
             ignore_patterns,
+            batch_size,
         })
     }
 
@@ -291,14 +318,16 @@ impl Indexer {
         }
 
         // Phase 2: Generate embeddings in batches
+        let batch_size = self.batch_size;
         println!("════════════════════════════════════════════════════════════");
-        println!("PHASE 2: Generating semantic embeddings (ONNX, batch={})", EMBED_BATCH_SIZE);
+        println!("PHASE 2: Generating semantic embeddings (ONNX, batch={})", batch_size);
         println!("════════════════════════════════════════════════════════════\n");
 
         // Pre-allocate vectordb with known capacity
         self.vectordb = VectorDB::with_capacity(parsed_results.len());
 
         let total_items = parsed_results.len();
+        let total_batches = (total_items + batch_size - 1) / batch_size;
         let pb = ProgressBar::new(total_items as u64);
         pb.set_style(
             ProgressStyle::default_bar()
@@ -309,9 +338,11 @@ impl Indexer {
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
         let mut embedded = 0;
+        let mut batch_num = 0;
+        let phase2_start = std::time::Instant::now();
 
-        // Process in batches
-        for chunk in parsed_results.chunks(EMBED_BATCH_SIZE) {
+        // Process in batches with incremental saves and progress logging
+        for chunk in parsed_results.chunks(batch_size) {
             let texts: Vec<&str> = chunk.iter().map(|p| p.embed_text.as_str()).collect();
 
             let embeddings = self.embedder.embed_batch(&texts)?;
@@ -326,8 +357,40 @@ impl Indexer {
             self.vectordb.insert_batch(batch_items);
 
             embedded += batch_len;
+            batch_num += 1;
             pb.inc(batch_len as u64);
             pb.set_message(format!("Embedded {} vectors", embedded));
+
+            // Log progress periodically — use pb.println() so indicatif doesn't overwrite,
+            // and tracing::info! so it also appears in the log file when piped
+            if batch_num % LOG_INTERVAL_BATCHES == 0 || batch_num == total_batches {
+                let elapsed = phase2_start.elapsed();
+                let rate = embedded as f64 / elapsed.as_secs_f64();
+                let remaining = total_items - embedded;
+                let eta_secs = if rate > 0.0 { remaining as f64 / rate } else { 0.0 };
+                let msg = format!(
+                    "[PHASE 2] {}/{} ({:.1}%) batch {}/{} elapsed={:.0}s eta={:.0}s rate={:.0} items/s",
+                    embedded, total_items,
+                    (embedded as f64 / total_items as f64) * 100.0,
+                    batch_num, total_batches,
+                    elapsed.as_secs_f64(), eta_secs, rate,
+                );
+                pb.println(&msg);
+                tracing::info!("{}", msg);
+            }
+
+            // Incremental save to disk — enables partial recovery on crash/restart
+            if batch_num % SAVE_INTERVAL_BATCHES == 0 {
+                if let Some(ref db_path) = self.db_path {
+                    if let Err(e) = self.vectordb.save_atomic(db_path) {
+                        tracing::warn!("Incremental save failed (non-fatal): {e}");
+                    } else {
+                        let msg = format!("Incremental save: {} vectors written to disk", embedded);
+                        pb.println(&msg);
+                        tracing::info!("{}", msg);
+                    }
+                }
+            }
         }
 
         pb.finish_with_message(format!("✓ Generated {} embeddings", embedded));
@@ -1007,7 +1070,7 @@ impl Indexer {
 
         // Embed and insert
         let mut result = Vec::new();
-        for chunk in parsed_results.chunks(EMBED_BATCH_SIZE) {
+        for chunk in parsed_results.chunks(self.batch_size) {
             let texts: Vec<&str> = chunk.iter().map(|p| p.embed_text.as_str()).collect();
             let embeddings = self.embedder.embed_batch(&texts)?;
 
@@ -1044,6 +1107,11 @@ impl Indexer {
     /// Save the index to disk
     pub fn save(&self, path: &Path) -> Result<()> {
         self.vectordb.save(path)
+    }
+
+    /// Crash-safe save: write to temp file, then atomic rename
+    pub fn save_atomic(&self, path: &Path) -> Result<()> {
+        self.vectordb.save_atomic(path)
     }
 
     /// Embed a query string (public accessor for feedback/LoRA training)
