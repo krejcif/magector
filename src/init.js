@@ -198,8 +198,13 @@ function updateGitignore(projectPath) {
 
 /**
  * Main init function.
+ *
+ * @param {string} projectPath  - Magento root (defaults to cwd).
+ * @param {object} [opts]
+ * @param {number|string} [opts.threads]   - Forwarded as `--threads` to magector-core.
+ * @param {number|string} [opts.batchSize] - Forwarded as `--batch-size`.
  */
-export async function init(projectPath) {
+export async function init(projectPath, opts = {}) {
   projectPath = path.resolve(projectPath || process.cwd());
   mkdirSync(path.join(projectPath, '.magector'), { recursive: true });
   const dbPath = path.join(projectPath, '.magector', 'index.db');
@@ -244,21 +249,36 @@ export async function init(projectPath) {
   // 4. Run indexing
   console.log('\nIndexing codebase...');
   const startTime = Date.now();
+  // Default 4 hours — generous enough for ~80K-file enterprise codebases under
+  // CPU constraint. Override via MAGECTOR_INDEX_TIMEOUT (milliseconds).
+  const initTimeout = parseInt(process.env.MAGECTOR_INDEX_TIMEOUT, 10) || 14400000;
   try {
-    execFileSync(binary, [
+    const indexArgs = [
       'index',
       '-m', projectPath,
       '-d', dbPath,
       '-c', modelPath
-    ], { timeout: parseInt(process.env.MAGECTOR_INDEX_TIMEOUT, 10) || 1800000, stdio: 'inherit' });
+    ];
+    if (opts.threads != null) {
+      indexArgs.push('--threads', String(opts.threads));
+    }
+    if (opts.batchSize != null) {
+      indexArgs.push('--batch-size', String(opts.batchSize));
+    }
+    execFileSync(binary, indexArgs, { timeout: initTimeout, stdio: 'inherit' });
   } catch (err) {
     if (err.status) {
       console.error('Indexing failed.');
       process.exit(err.status);
     }
-    const initTimeout = parseInt(process.env.MAGECTOR_INDEX_TIMEOUT, 10) || 1800000;
     if (err.message && err.message.includes('ETIMEDOUT')) {
-      console.error(`Indexing timed out after ${initTimeout / 1000}s. For large codebases, increase the timeout:\n  MAGECTOR_INDEX_TIMEOUT=3600000 npx magector init ${projectPath}`);
+      console.error(
+        `Indexing timed out after ${initTimeout / 1000}s.\n` +
+        `For large codebases or CPU-constrained environments, increase the timeout:\n` +
+        `  MAGECTOR_INDEX_TIMEOUT=28800000 npx magector init ${projectPath}    # 8 hours\n` +
+        `Or reduce CPU usage:\n` +
+        `  npx magector init ${projectPath} --threads 2`
+      );
     } else {
       console.error(`Indexing error: ${err.message}`);
     }

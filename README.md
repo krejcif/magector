@@ -318,10 +318,34 @@ The `describe` command and `magento_describe` MCP tool require an Anthropic API 
 | `MAGECTOR_DB` | Path to index database | `./.magector/index.db` |
 | `MAGECTOR_BIN` | Path to magector-core binary | Auto-detected |
 | `MAGECTOR_MODELS` | Path to ONNX model directory | `~/.magector/models/` |
-| `MAGECTOR_INDEX_TIMEOUT` | Indexing timeout in milliseconds | `1800000` (30 min) |
-| `MAGECTOR_THREADS` | Max ONNX threads for embedding generation | Half of CPU cores |
-| `MAGECTOR_BATCH_SIZE` | Embedding batch size (higher = faster, more RAM) | `256` |
+| `MAGECTOR_INDEX_TIMEOUT` | Indexing wall-clock timeout in milliseconds. Override for very large codebases or CPU-constrained environments. | `14400000` (4 h) |
+| `MAGECTOR_THREADS` | Max ONNX intra-op + rayon parsing threads. Equivalent to the `--threads` CLI flag. | Half of CPU cores |
+| `OMP_NUM_THREADS` | Fallback thread limit if `MAGECTOR_THREADS` is not set (de facto standard for ONNX/OpenMP). | — |
+| `MAGECTOR_BATCH_SIZE` | Embedding batch size (higher = faster, more RAM). Equivalent to `--batch-size`. | `256` |
 | `ANTHROPIC_API_KEY` | API key for description generation (`describe` command) | — |
+
+### Constraining CPU usage during indexing
+
+Indexing a large enterprise codebase (~80K files) can saturate CPU during PHASE 2 (ONNX embedding generation). To keep a developer machine responsive while indexing, lower the thread count:
+
+```bash
+npx magector index --threads 2                  # use only 2 cores for both parsing and embedding
+MAGECTOR_THREADS=2 npx magector index           # equivalent via env var
+OMP_NUM_THREADS=2 npx magector index            # also honored as a fallback
+```
+
+The `--threads` flag and `MAGECTOR_THREADS` / `OMP_NUM_THREADS` env vars constrain **both** the rayon thread pool used by PHASE 1 (parallel AST parsing) and the ONNX intra-op thread pool used by PHASE 2 (embedding inference). The active thread source is logged at startup so you can verify it took effect:
+
+```
+INFO Rayon global pool: 2 threads (available: 16)
+INFO ONNX intra_threads: 2 (available: 16, source: --threads flag)
+```
+
+For very large or CPU-constrained runs, you may also need to extend the wall-clock timeout (default 4 hours):
+
+```bash
+MAGECTOR_INDEX_TIMEOUT=28800000 npx magector index --threads 2   # 8 h timeout, 2 threads
+```
 
 ---
 

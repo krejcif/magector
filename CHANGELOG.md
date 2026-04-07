@@ -4,6 +4,19 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [1.7.1] - 2026-04-07
+
+### Added
+- **`--threads` and `--batch-size` flags now work via `npx magector index`** — the Node CLI previously parsed only `--limit`, `--format`, `--verbose`, and `--force`, silently dropping `--threads` and `--batch-size` even though the Rust binary already supported them. Both flags are now forwarded through `index` and `init` and documented in `npx magector help`.
+- **`OMP_NUM_THREADS` honored as a fallback** — the embedder now resolves the ONNX intra-op thread count from (in priority order) the `--threads` flag, `MAGECTOR_THREADS`, `OMP_NUM_THREADS`, then half of available cores. `OMP_NUM_THREADS` is the de facto standard for ONNX/OpenMP workloads, and many users reach for it first.
+- **Rayon thread pool constrained by the same setting** — PHASE 1 (parallel AST parsing) previously used all CPU cores regardless of `MAGECTOR_THREADS`, leaving the parsing phase saturating the machine. The Rust binary now configures rayon's global thread pool from `--threads` / `MAGECTOR_THREADS` / `OMP_NUM_THREADS` before any parallel work begins, so a single setting controls both phases.
+- **Thread source logged at startup** — the embedder log line now shows where the limit came from (`--threads flag`, `MAGECTOR_THREADS`, `OMP_NUM_THREADS`, or `default (half of cores)`), making it obvious whether your env var actually took effect.
+- **`MAGECTOR_INDEX_TIMEOUT` documented in `--help`** — along with `MAGECTOR_THREADS`, `MAGECTOR_BATCH_SIZE`, and `OMP_NUM_THREADS`. New "Index options" section in `npx magector help`. README has a new "Constraining CPU usage during indexing" subsection.
+
+### Changed
+- **Default indexing timeout raised from 30 minutes to 4 hours** (`MAGECTOR_INDEX_TIMEOUT` default `1800000` → `14400000`). The previous default was insufficient for ~80K-file enterprise Magento installations under any kind of CPU constraint, causing silent timeouts with no partial result. Users with smaller codebases see no difference; users with large codebases or `CPUQuota=` constraints no longer need to discover the env var the hard way.
+- **Improved timeout error message** — on `ETIMEDOUT`, the CLI now suggests both raising the timeout *and* lowering `--threads` instead of only mentioning the env var.
+
 ## [1.7.0] - 2026-04-02
 
 ### Added

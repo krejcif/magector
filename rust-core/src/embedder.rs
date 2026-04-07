@@ -23,23 +23,35 @@ pub struct Embedder {
 
 impl Embedder {
     /// Create a new embedder from model files.
-    /// `max_threads`: if Some, caps ONNX intra-op threads; if None, uses half of available cores
-    /// (minimum 1). Override via MAGECTOR_THREADS env var.
+    ///
+    /// `max_threads` selects the ONNX intra-op thread count. Resolution order:
+    ///   1. Explicit `Some(n)` argument (from `--threads` CLI flag)
+    ///   2. `MAGECTOR_THREADS` env var
+    ///   3. `OMP_NUM_THREADS` env var (de facto standard for ONNX/OpenMP workloads)
+    ///   4. Half of available CPU cores
+    ///
+    /// The result is always clamped to `[1, num_cpus]`.
     pub fn new(model_path: &Path, tokenizer_path: &Path, max_threads: Option<usize>) -> Result<Self> {
         let available = num_cpus::get().max(1);
-        let num_threads = match max_threads {
-            Some(t) => t.max(1).min(available),
-            None => {
-                // Check env var, otherwise default to half of cores
-                std::env::var("MAGECTOR_THREADS")
-                    .ok()
-                    .and_then(|v| v.parse::<usize>().ok())
-                    .unwrap_or(available / 2)
-                    .max(1)
-                    .min(available)
+        let resolved = max_threads
+            .or_else(|| std::env::var("MAGECTOR_THREADS").ok().and_then(|v| v.parse().ok()))
+            .or_else(|| std::env::var("OMP_NUM_THREADS").ok().and_then(|v| v.parse().ok()))
+            .unwrap_or(available / 2);
+        let num_threads = resolved.max(1).min(available);
+        tracing::info!(
+            "ONNX intra_threads: {} (available: {}, source: {})",
+            num_threads,
+            available,
+            if max_threads.is_some() {
+                "--threads flag"
+            } else if std::env::var("MAGECTOR_THREADS").is_ok() {
+                "MAGECTOR_THREADS"
+            } else if std::env::var("OMP_NUM_THREADS").is_ok() {
+                "OMP_NUM_THREADS"
+            } else {
+                "default (half of cores)"
             }
-        };
-        tracing::info!("ONNX intra_threads: {} (available: {})", num_threads, available);
+        );
 
         // Initialize ONNX session
         let session = Session::builder()?

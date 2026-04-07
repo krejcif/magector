@@ -182,6 +182,29 @@ enum Commands {
     },
 }
 
+/// Resolve the global thread limit from (in priority order):
+///   1. Explicit `--threads` flag
+///   2. `MAGECTOR_THREADS` env var
+///   3. `OMP_NUM_THREADS` env var
+/// Returns `None` if nothing is set (callers should fall back to their own default).
+fn resolve_thread_limit(explicit: Option<usize>) -> Option<usize> {
+    explicit
+        .or_else(|| std::env::var("MAGECTOR_THREADS").ok().and_then(|v| v.parse().ok()))
+        .or_else(|| std::env::var("OMP_NUM_THREADS").ok().and_then(|v| v.parse().ok()))
+}
+
+/// Configure the global rayon thread pool. Must be called before any parallel work
+/// happens (otherwise rayon initializes its default pool with all CPU cores).
+/// Idempotent failure: if rayon is already initialized we log a warning and continue.
+fn configure_rayon(threads: usize) {
+    let available = num_cpus::get().max(1);
+    let n = threads.max(1).min(available);
+    match rayon::ThreadPoolBuilder::new().num_threads(n).build_global() {
+        Ok(()) => tracing::info!("Rayon global pool: {} threads (available: {})", n, available),
+        Err(e) => tracing::warn!("Could not set rayon thread count to {}: {}", n, e),
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -195,6 +218,17 @@ fn main() -> Result<()> {
         .with(tracing_subscriber::EnvFilter::new(filter))
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
+
+    // Configure rayon early — must happen before any par_iter() in PHASE 1.
+    // For Index/Serve we honor --threads; for other commands we fall back to env vars only.
+    let cmd_threads = match &cli.command {
+        Commands::Index { threads, .. } => *threads,
+        Commands::Serve { threads, .. } => *threads,
+        _ => None,
+    };
+    if let Some(n) = resolve_thread_limit(cmd_threads) {
+        configure_rayon(n);
+    }
 
     match cli.command {
         Commands::Index {

@@ -30,21 +30,35 @@ Usage:
   npx magector setup [path]      IDE setup only (no indexing)
   npx magector help              Show this help
 
-Options:
-  -l, --limit <n>    Number of search results (default: 10)
-  -f, --format <fmt> Output format: text, json (default: text)
+Search options:
+  -l, --limit <n>      Number of search results (default: 10)
+  -f, --format <fmt>   Output format: text, json (default: text)
+
+Index options:
+  --threads <n>        Max ONNX/rayon threads (default: half of CPU cores).
+                       Lower this on shared developer machines to keep the
+                       system responsive during indexing.
+  --batch-size <n>     Embedding batch size (default: 256). Higher = faster
+                       but more RAM.
+  --force              Force re-index even if index exists
 
 Environment Variables:
-  MAGENTO_ROOT     Path to Magento installation (default: cwd)
-  MAGECTOR_DB      Path to index database (default: ./.magector/index.db)
-  MAGECTOR_BIN     Path to magector-core binary
-  MAGECTOR_MODELS  Path to ONNX model directory
+  MAGENTO_ROOT             Path to Magento installation (default: cwd)
+  MAGECTOR_DB              Path to index database (default: ./.magector/index.db)
+  MAGECTOR_BIN             Path to magector-core binary
+  MAGECTOR_MODELS          Path to ONNX model directory
+  MAGECTOR_THREADS         Max threads (overridden by --threads)
+  MAGECTOR_BATCH_SIZE      Embedding batch size (overridden by --batch-size)
+  MAGECTOR_INDEX_TIMEOUT   Indexing wall-clock timeout in ms (default: 14400000 = 4h)
+  OMP_NUM_THREADS          Fallback thread limit if MAGECTOR_THREADS unset
 
 Examples:
   npx magector init /var/www/magento
   npx magector search "product price calculation"
   npx magector search "checkout controller" -l 20
   npx magector index
+  npx magector index --threads 4 --batch-size 128
+  MAGECTOR_INDEX_TIMEOUT=28800000 npx magector index   # 8h timeout
   npx magector mcp
 `);
 }
@@ -67,12 +81,16 @@ function parseArgs(argv) {
       opts.verbose = true;
     } else if (argv[i] === '--force') {
       opts.force = true;
+    } else if (argv[i] === '--threads') {
+      opts.threads = argv[++i];
+    } else if (argv[i] === '--batch-size') {
+      opts.batchSize = argv[++i];
     }
   }
   return opts;
 }
 
-async function runIndex(targetPath) {
+async function runIndex(targetPath, opts = {}) {
   const config = getConfig();
   const root = targetPath || config.magentoRoot;
   const binary = resolveBinary();
@@ -85,7 +103,9 @@ async function runIndex(targetPath) {
   const magectorDir = path.resolve(root, '.magector');
   mkdirSync(magectorDir, { recursive: true });
 
-  const indexTimeout = parseInt(process.env.MAGECTOR_INDEX_TIMEOUT, 10) || 1800000;
+  // Default 4 hours — generous enough for ~80K-file enterprise codebases under
+  // CPU constraint. Override via MAGECTOR_INDEX_TIMEOUT (milliseconds).
+  const indexTimeout = parseInt(process.env.MAGECTOR_INDEX_TIMEOUT, 10) || 14400000;
   try {
     const indexArgs = [
       'index',
@@ -93,6 +113,15 @@ async function runIndex(targetPath) {
       '-d', path.resolve(config.dbPath),
       '-c', modelPath
     ];
+    // Forward thread/batch limits to the Rust binary. The Rust side already
+    // honors MAGECTOR_THREADS / OMP_NUM_THREADS via env, but explicit flags
+    // give the user a CLI-level override and make the limit visible in logs.
+    if (opts.threads != null) {
+      indexArgs.push('--threads', String(opts.threads));
+    }
+    if (opts.batchSize != null) {
+      indexArgs.push('--batch-size', String(opts.batchSize));
+    }
     // Pass descriptions DB if it exists
     const descDbPath = path.resolve(root, '.magector', 'sqlite.db');
     if (existsSync(descDbPath)) {
@@ -106,7 +135,13 @@ async function runIndex(targetPath) {
       process.exit(err.status);
     }
     if (err.message && err.message.includes('ETIMEDOUT')) {
-      console.error(`Indexing timed out after ${indexTimeout / 1000}s. For large codebases, increase the timeout:\n  MAGECTOR_INDEX_TIMEOUT=3600000 npx magector index`);
+      console.error(
+        `Indexing timed out after ${indexTimeout / 1000}s.\n` +
+        `For large codebases or CPU-constrained environments, increase the timeout:\n` +
+        `  MAGECTOR_INDEX_TIMEOUT=28800000 npx magector index    # 8 hours\n` +
+        `Or reduce CPU usage with fewer threads:\n` +
+        `  npx magector index --threads 2`
+      );
     } else {
       console.error(`Indexing error: ${err.message}`);
     }
@@ -202,13 +237,22 @@ async function main() {
   await checkForUpdate(command, args);
 
   switch (command) {
-    case 'init':
-      await init(args[1]);
+    case 'init': {
+      const initArgv = args.slice(1);
+      const initTarget = initArgv.find(a => !a.startsWith('-'));
+      const initOpts = parseArgs(initArgv);
+      await init(initTarget, initOpts);
       break;
+    }
 
-    case 'index':
-      await runIndex(args[1]);
+    case 'index': {
+      // First non-flag arg after `index` is the path; everything else is options.
+      const indexArgv = args.slice(1);
+      const targetPath = indexArgv.find(a => !a.startsWith('-'));
+      const indexOpts = parseArgs(indexArgv);
+      await runIndex(targetPath, indexOpts);
       break;
+    }
 
     case 'search': {
       const query = args.slice(1).filter(a => !a.startsWith('-')).join(' ');
