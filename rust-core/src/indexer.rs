@@ -17,6 +17,8 @@ use crate::magento::{
 };
 use crate::vectordb::{IndexMetadata, VectorDB};
 
+use std::collections::HashSet;
+
 /// File patterns to index
 pub(crate) const INCLUDE_EXTENSIONS: &[&str] = &["php", "xml", "phtml", "js", "graphqls"];
 
@@ -168,8 +170,38 @@ impl Indexer {
         self.descriptions_db = Some(path);
     }
 
-    /// Index the Magento codebase
+    /// Collect paths (relative to magento_root, as stored in IndexMetadata)
+    /// of files that already have at least one vector in the current DB.
+    /// Used by resume mode to avoid re-embedding work from a previous run.
+    fn indexed_paths(&self) -> HashSet<String> {
+        // IndexMetadata.path stores the path relative to magento_root, so it is
+        // directly comparable with parse_file's output. Multiple vectors per
+        // file all share the same path — HashSet naturally dedupes them.
+        self.vectordb
+            .metadata_iter()
+            .map(|(_, meta)| meta.path.clone())
+            .collect()
+    }
+
+    /// Index the Magento codebase.
+    ///
+    /// If a previous run left a partial index on disk, this auto-resumes:
+    /// already-embedded files are skipped, the existing HNSW state is
+    /// preserved, and only the remaining files are parsed and embedded.
+    /// Pass `force=true` (or use the `--force` CLI flag) to clear the old
+    /// index and rebuild from scratch.
     pub fn index(&mut self) -> Result<IndexStats> {
+        self.index_with_options(false)
+    }
+
+    /// Index with explicit control over resume behavior.
+    ///
+    /// `force=true` clears the existing index and re-embeds everything.
+    /// `force=false` (the default) auto-resumes from any partial index saved
+    /// by a previous run — files already present in the DB are skipped during
+    /// both PHASE 1 parsing and PHASE 2 embedding, and the existing HNSW is
+    /// preserved rather than thrown away.
+    pub fn index_with_options(&mut self, force: bool) -> Result<IndexStats> {
         let mut stats = IndexStats::default();
 
         println!();
@@ -186,14 +218,76 @@ impl Indexer {
         if !self.ignore_patterns.is_empty() {
             println!("📋 .magectorignore: {} custom patterns loaded", self.ignore_patterns.len());
         }
+
+        // Decide resume vs full rebuild. Build the already-indexed path set
+        // *before* clearing anything, so we can filter file discovery below.
+        let preexisting_vectors = self.vectordb.len();
+        let resume = !force && preexisting_vectors > 0;
+        let already_indexed: HashSet<String> = if resume {
+            self.indexed_paths()
+        } else {
+            HashSet::new()
+        };
+
+        if force && preexisting_vectors > 0 {
+            println!("🗑  --force specified — clearing existing index ({} vectors)", preexisting_vectors);
+            tracing::info!("--force: clearing existing index ({} vectors)", preexisting_vectors);
+            self.vectordb.clear();
+        } else if resume {
+            println!(
+                "♻️  Resuming from previous run: {} vectors across {} files already indexed",
+                preexisting_vectors,
+                already_indexed.len()
+            );
+            println!("   (use --force to rebuild from scratch)");
+            tracing::info!(
+                "Resume mode: {} vectors / {} files already indexed",
+                preexisting_vectors,
+                already_indexed.len()
+            );
+        } else {
+            // No existing index — nothing to clear, nothing to resume.
+            self.vectordb.clear();
+        }
+
         println!("🔍 Discovering files...");
 
-        let files = self.discover_files()?;
-        stats.files_found = files.len();
+        let all_files = self.discover_files()?;
+        stats.files_found = all_files.len();
 
-        println!("✓ Found {} files to index\n", files.len());
+        // In resume mode, filter out files that already have vectors in the DB.
+        // The path stored in IndexMetadata is relative to magento_root, so we
+        // compute the same relative path here for comparison.
+        let (files, skipped_resume): (Vec<PathBuf>, usize) = if resume {
+            let root = &self.magento_root;
+            let mut skipped = 0usize;
+            let remaining: Vec<PathBuf> = all_files
+                .into_iter()
+                .filter(|p| {
+                    let rel = p.strip_prefix(root).unwrap_or(p).to_string_lossy().to_string();
+                    if already_indexed.contains(&rel) {
+                        skipped += 1;
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+            (remaining, skipped)
+        } else {
+            (all_files, 0)
+        };
 
-        // Show file type breakdown
+        if resume {
+            println!(
+                "✓ Found {} total files; {} already indexed, {} remaining to process\n",
+                stats.files_found, skipped_resume, files.len()
+            );
+        } else {
+            println!("✓ Found {} files to index\n", files.len());
+        }
+
+        // Show file type breakdown (of the files we'll actually process)
         let mut php_files = 0;
         let mut js_files = 0;
         let mut xml_files = 0;
@@ -212,8 +306,13 @@ impl Indexer {
         println!("  XML: {} files", xml_files);
         println!("  Other: {} files\n", other_files);
 
-        // Clear existing data
-        self.vectordb.clear();
+        // Early-out: nothing to do. A previous run finished (or all discovered
+        // files are already embedded) — just report stats and return.
+        if files.is_empty() {
+            println!("✓ Nothing to index — all discovered files already have vectors.\n");
+            stats.vectors_created = self.vectordb.len();
+            return Ok(stats);
+        }
 
         // Phase 1: Parse files in parallel (no embedding needed)
         println!("════════════════════════════════════════════════════════════");
@@ -323,8 +422,15 @@ impl Indexer {
         println!("PHASE 2: Generating semantic embeddings (ONNX, batch={})", batch_size);
         println!("════════════════════════════════════════════════════════════\n");
 
-        // Pre-allocate vectordb with known capacity
-        self.vectordb = VectorDB::with_capacity(parsed_results.len());
+        // In non-resume mode we previously replaced vectordb entirely with a
+        // fresh capacity-tuned instance. In resume mode that would wipe the
+        // state we just loaded from disk. Only do the reset on a fresh run.
+        // (On a resume the HNSW will be slightly oversized relative to what a
+        // fresh-capacity allocation would give, but correctness beats
+        // micro-optimization here.)
+        if !resume && preexisting_vectors == 0 {
+            self.vectordb = VectorDB::with_capacity(parsed_results.len());
+        }
 
         let total_items = parsed_results.len();
         let total_batches = (total_items + batch_size - 1) / batch_size;

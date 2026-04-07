@@ -347,6 +347,24 @@ For very large or CPU-constrained runs, you may also need to extend the wall-clo
 MAGECTOR_INDEX_TIMEOUT=28800000 npx magector index --threads 2   # 8 h timeout, 2 threads
 ```
 
+### Resume after timeout or interrupt
+
+Indexing writes a crash-safe checkpoint to disk every 50 batches (~12,800 files). If the process is killed or times out mid-run, **just re-run `npx magector index`** — it auto-resumes from the last checkpoint:
+
+```bash
+npx magector index
+# ♻️  Resuming from previous run: 38400 vectors across 12200 files already indexed
+# ✓ Found 79771 total files; 12200 already indexed, 67571 remaining to process
+```
+
+The indexer collects already-embedded file paths from the existing DB, filters them out of file discovery, preserves the existing HNSW state, and only parses/embeds the files that aren't in the DB yet. Partial resume also picks up new files added to the tree since the previous run.
+
+To force a full rebuild (e.g. after a schema change or if you want to discard stale vectors), pass `--force`:
+
+```bash
+npx magector index --force
+```
+
 ---
 
 ## MCP Server Tools

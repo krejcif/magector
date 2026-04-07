@@ -55,6 +55,11 @@ enum Commands {
         /// Embedding batch size (default: 256). Also via MAGECTOR_BATCH_SIZE env var.
         #[arg(long)]
         batch_size: Option<usize>,
+
+        /// Force full re-index, discarding any existing index on disk.
+        /// Without this flag, indexing auto-resumes from the previous run.
+        #[arg(long)]
+        force: bool,
     },
 
     /// Search the index
@@ -238,8 +243,9 @@ fn main() -> Result<()> {
             descriptions_db,
             threads,
             batch_size,
+            force,
         } => {
-            run_index(&magento_root, &database, &model_cache, descriptions_db.as_deref(), threads, batch_size)?;
+            run_index(&magento_root, &database, &model_cache, descriptions_db.as_deref(), threads, batch_size, force)?;
         }
 
         Commands::Search {
@@ -346,7 +352,15 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_index(magento_root: &PathBuf, database: &PathBuf, model_cache: &PathBuf, descriptions_db: Option<&std::path::Path>, threads: Option<usize>, batch_size: Option<usize>) -> Result<()> {
+fn run_index(
+    magento_root: &PathBuf,
+    database: &PathBuf,
+    model_cache: &PathBuf,
+    descriptions_db: Option<&std::path::Path>,
+    threads: Option<usize>,
+    batch_size: Option<usize>,
+    force: bool,
+) -> Result<()> {
     tracing::info!("Starting indexer...");
 
     let mut indexer = Indexer::with_options(magento_root, model_cache, database, threads, batch_size)?;
@@ -360,7 +374,7 @@ fn run_index(magento_root: &PathBuf, database: &PathBuf, model_cache: &PathBuf, 
         indexer.set_descriptions_db(desc_db_path);
     }
 
-    let stats = indexer.index()?;
+    let stats = indexer.index_with_options(force)?;
 
     tracing::info!("Saving final index to {:?}...", database);
     indexer.save_atomic(database)?;
@@ -416,7 +430,8 @@ fn run_validation(
         println!("Using existing index at {:?}", database);
     } else {
         println!("\nIndexing Magento codebase...\n");
-        run_index(&magento_path, database, model_cache, None, None, None)?;
+        // Validation runs always start fresh so results are reproducible.
+        run_index(&magento_path, database, model_cache, None, None, None, true)?;
     }
 
     // Load indexer for search

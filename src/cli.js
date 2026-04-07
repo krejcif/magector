@@ -40,7 +40,9 @@ Index options:
                        system responsive during indexing.
   --batch-size <n>     Embedding batch size (default: 256). Higher = faster
                        but more RAM.
-  --force              Force re-index even if index exists
+  --force              Discard any existing index and rebuild from scratch.
+                       Without --force, indexing auto-resumes from the last
+                       incremental save (written every ~50 batches).
 
 Environment Variables:
   MAGENTO_ROOT             Path to Magento installation (default: cwd)
@@ -122,6 +124,12 @@ async function runIndex(targetPath, opts = {}) {
     if (opts.batchSize != null) {
       indexArgs.push('--batch-size', String(opts.batchSize));
     }
+    // --force discards any existing partial index and rebuilds from scratch.
+    // Without it, the Rust indexer auto-resumes from the last incremental
+    // save on disk and only re-embeds files that aren't in the DB yet.
+    if (opts.force) {
+      indexArgs.push('--force');
+    }
     // Pass descriptions DB if it exists
     const descDbPath = path.resolve(root, '.magector', 'sqlite.db');
     if (existsSync(descDbPath)) {
@@ -137,10 +145,12 @@ async function runIndex(targetPath, opts = {}) {
     if (err.message && err.message.includes('ETIMEDOUT')) {
       console.error(
         `Indexing timed out after ${indexTimeout / 1000}s.\n` +
-        `For large codebases or CPU-constrained environments, increase the timeout:\n` +
+        `Partial progress was saved to disk every ~50 batches — re-run\n` +
+        `'npx magector index' to auto-resume from the last checkpoint.\n` +
+        `\n` +
+        `For large codebases or CPU-constrained environments, also consider:\n` +
         `  MAGECTOR_INDEX_TIMEOUT=28800000 npx magector index    # 8 hours\n` +
-        `Or reduce CPU usage with fewer threads:\n` +
-        `  npx magector index --threads 2`
+        `  npx magector index --threads 2                        # lower CPU usage`
       );
     } else {
       console.error(`Indexing error: ${err.message}`);

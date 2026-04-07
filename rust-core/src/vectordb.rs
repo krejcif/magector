@@ -563,6 +563,15 @@ impl VectorDB {
         self.tombstones.clear();
     }
 
+    /// Iterate over `(id, metadata)` pairs for all non-tombstoned vectors.
+    /// Used by resume mode to collect already-indexed file paths.
+    pub fn metadata_iter(&self) -> impl Iterator<Item = (usize, &IndexMetadata)> {
+        self.metadata
+            .iter()
+            .filter(|(id, _)| !self.tombstones.contains(id))
+            .map(|(&id, meta)| (id, meta))
+    }
+
     /// Get total number of live (non-tombstoned) vectors
     pub fn len(&self) -> usize {
         self.metadata.len().saturating_sub(self.tombstones.len())

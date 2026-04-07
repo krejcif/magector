@@ -552,13 +552,21 @@ function rustIndex(magentoRoot) {
   if (existsSync(descDbPath)) {
     indexArgs.push('--descriptions-db', descDbPath);
   }
-  const indexTimeout = parseInt(process.env.MAGECTOR_INDEX_TIMEOUT, 10) || 1800000;
+  // Default 4 hours, matching cli.js/init.js. Previously 1800000 (30 min),
+  // which was too short for ~80K-file enterprise Magento installs under CPU
+  // constraint and caused silent re-index loops via the MCP auto-index path.
+  const indexTimeout = parseInt(process.env.MAGECTOR_INDEX_TIMEOUT, 10) || 14400000;
   try {
     const result = execFileSync(config.rustBinary, indexArgs, { encoding: 'utf-8', timeout: indexTimeout, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
     return result;
   } catch (err) {
     if (err.message && err.message.includes('ETIMEDOUT')) {
-      throw new Error(`Indexing timed out after ${indexTimeout / 1000}s. Set MAGECTOR_INDEX_TIMEOUT=3600000 (or higher) in your environment to increase the limit.`);
+      throw new Error(
+        `Indexing timed out after ${indexTimeout / 1000}s. Partial progress was saved ` +
+        `to disk — the next indexing run will auto-resume from the last checkpoint. ` +
+        `To raise the timeout further, set MAGECTOR_INDEX_TIMEOUT (milliseconds) in the ` +
+        `MCP server env, e.g. MAGECTOR_INDEX_TIMEOUT=28800000 for 8 hours.`
+      );
     }
     throw err;
   }

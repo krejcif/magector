@@ -265,6 +265,9 @@ export async function init(projectPath, opts = {}) {
     if (opts.batchSize != null) {
       indexArgs.push('--batch-size', String(opts.batchSize));
     }
+    if (opts.force) {
+      indexArgs.push('--force');
+    }
     execFileSync(binary, indexArgs, { timeout: initTimeout, stdio: 'inherit' });
   } catch (err) {
     if (err.status) {

@@ -4,6 +4,16 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [1.7.2] - 2026-04-07
+
+### Fixed
+- **Incremental saves are now actually usable for resume.** Since v1.7.0 the indexer had written a checkpoint to disk every 50 batches, but the checkpoint was ignored on the next run — the indexer always called `vectordb.clear()` and started from 0%. On an 80K-file enterprise codebase a single timeout meant losing ~2 hours of work. The indexer now auto-resumes: on startup it collects the paths of every already-embedded file from the existing DB, filters them out of file discovery, preserves the existing HNSW state, and only parses/embeds files that aren't in the DB yet. Partial resume works too — new files added to the tree since the last run are picked up without re-embedding the old ones.
+- **MCP server auto-index timeout raised from 30 min to 4 h** (`src/mcp-server.js`). v1.7.1 bumped the default in `cli.js` and `init.js`, but the MCP server's `rustIndex()` path still used the old 1800000 literal, so users running indexing through Claude Code / Cursor hit the old 30-minute cliff. Error message now mentions that partial progress is preserved and the next run will resume.
+
+### Added
+- **`--force` flag on `npx magector index`** — discards any existing index and rebuilds from scratch. Without `--force`, indexing auto-resumes from the last incremental save. Useful when you want to pick up major schema or detection changes without waiting for a natural re-index. Forwarded from `src/cli.js` and `src/init.js` to the Rust binary's new `--force` clap flag.
+- **`VectorDB::metadata_iter()`** — read-only iterator over live `(id, &IndexMetadata)` pairs, used by resume mode to collect already-indexed paths without exposing internal maps.
+
 ## [1.7.1] - 2026-04-07
 
 ### Added
