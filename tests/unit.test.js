@@ -1303,6 +1303,7 @@ function testQueryExpansion() {
 function testModuleFiltering() {
   console.log('\n── Module Filtering ──');
 
+  // Updated filterByModule matching the new implementation in mcp-server.js
   function filterByModule(results, moduleFilter) {
     if (!moduleFilter) return results;
     const patterns = Array.isArray(moduleFilter) ? moduleFilter : [moduleFilter];
@@ -1311,11 +1312,33 @@ function testModuleFiltering() {
       const filePath = r.path || '';
       return patterns.some(pat => {
         if (pat.includes('*')) {
-          const regex = new RegExp('^' + pat.replace(/\*/g, '.*') + '$', 'i');
-          return regex.test(mod) || regex.test(filePath);
+          const normalized = pat.replace(/[/_]/g, '[/_]');
+          const regex = new RegExp('^' + normalized.replace(/\*/g, '.*') + '$', 'i');
+          if (regex.test(mod) || regex.test(filePath)) return true;
+          const vendorPrefix = pat.split(/[/*_]/)[0];
+          if (vendorPrefix) {
+            const pfx = vendorPrefix.toLowerCase();
+            if (mod.toLowerCase().startsWith(pfx)) return true;
+            if (filePath.toLowerCase().includes('vendor/' + pfx) ||
+                filePath.toLowerCase().includes('app/code/' + pfx)) return true;
+          }
+          return false;
         }
-        return mod.toLowerCase().includes(pat.toLowerCase()) ||
-               filePath.toLowerCase().includes(pat.toLowerCase());
+        const patLower = pat.toLowerCase();
+        if (mod.toLowerCase().includes(patLower) || filePath.toLowerCase().includes(patLower)) return true;
+        const patParts = patLower.split(/[/_]/);
+        if (patParts.length >= 2) {
+          const modLower = mod.toLowerCase();
+          const modParts = modLower.split(/[/_]/);
+          if (modParts.length >= 2) {
+            const vendorMatch = modParts[0].startsWith(patParts[0]) || patParts[0].startsWith(modParts[0]);
+            const modulePart = modParts.slice(1).join('-');
+            const patModule = patParts.slice(1).join('-');
+            const moduleMatch = modulePart.includes(patModule) || modulePart.replace(/^module-/, '').includes(patModule);
+            if (vendorMatch && moduleMatch) return true;
+          }
+        }
+        return false;
       });
     });
   }
@@ -1355,6 +1378,39 @@ function testModuleFiltering() {
   // No match
   const noMatch = filterByModule(testResults, 'NonExistent');
   assertEq(noMatch.length, 0, 'Module filter: no match returns empty');
+
+  // ── New: separator normalization and vendor prefix matching ──
+  const composerResults = [
+    { path: 'vendor/acme-extensions/module-order-split/Model/Split.php', module: 'acme-extensions_module-order-split' },
+    { path: 'vendor/acme/module-quote/Plugin/Plugin.php', module: 'acme_module-quote' },
+    { path: 'vendor/magento/module-catalog/Model/Product.php', module: 'magento_module-catalog' },
+    { path: 'vendor/magento/module-sales/Model/Order.php', module: 'magento_module-sales' },
+    { path: 'vendor/thirdparty/sdk-php-front/src/Request.php', module: 'thirdparty_sdk-php-front' },
+  ];
+
+  // Wildcard with / separator should match _ separator in module field
+  const slashWild = filterByModule(composerResults, 'magento/*');
+  assertEq(slashWild.length, 2, 'Module filter: slash wildcard matches underscore modules');
+
+  // Vendor prefix: "acme/*" should match both "acme_" and "acme-extensions_"
+  const vendorPrefix = filterByModule(composerResults, 'acme/*');
+  assertEq(vendorPrefix.length, 2, 'Module filter: vendor prefix matches related vendors');
+
+  // Exact vendor: "acme-extensions/*" should match only acme-extensions
+  const exactVendor = filterByModule(composerResults, 'acme-extensions/*');
+  assertEq(exactVendor.length, 1, 'Module filter: exact vendor wildcard');
+
+  // Non-wildcard structured match: "Magento_Catalog" matches "magento_module-catalog"
+  const structuredMatch = filterByModule(composerResults, 'Magento_Catalog');
+  assertEq(structuredMatch.length, 1, 'Module filter: structured match strips module- prefix');
+
+  // Slash separator non-wildcard: "Magento/Sales" matches "magento_module-sales"
+  const slashNonWild = filterByModule(composerResults, 'Magento/Sales');
+  assertEq(slashNonWild.length, 1, 'Module filter: slash non-wildcard structured match');
+
+  // False negative prevention: "thirdparty_catalog" should NOT match "thirdparty_sdk-php-front"
+  const falseNeg = filterByModule(composerResults, 'thirdparty_catalog');
+  assertEq(falseNeg.length, 0, 'Module filter: no false positive on different module');
 }
 
 // ─── Layout XML Parsing Tests ──────────────────────────────────
@@ -1944,6 +2000,308 @@ async function testStdinCleanup() {
   try { child.kill('SIGKILL'); } catch {}
 }
 
+// ─── Find Implementors Tests ────────────────────────────────────
+
+async function testFindImplementors() {
+  console.log('\n── Find Implementors ──');
+
+  const tmpDir = path.join(__dirname, '__fixtures_impl');
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/Model'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/Api'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/etc'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-bar/Model'), { recursive: true });
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/Api/WidgetInterface.php'),
+    `<?php\nnamespace Acme\\Foo\\Api;\ninterface WidgetInterface {\n    public function run(): void;\n}\n`);
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/Model/Widget.php'),
+    `<?php\nnamespace Acme\\Foo\\Model;\nuse Acme\\Foo\\Api\\WidgetInterface;\nclass Widget implements WidgetInterface {\n    public function run(): void {}\n}\n`);
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-bar/Model/SpecialWidget.php'),
+    `<?php\nnamespace Acme\\Bar\\Model;\nuse Acme\\Foo\\Api\\WidgetInterface;\nclass SpecialWidget implements WidgetInterface {\n    public function run(): void {}\n}\n`);
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/etc/di.xml'),
+    `<config><preference for="Acme\\Foo\\Api\\WidgetInterface" type="Acme\\Foo\\Model\\Widget"/></config>`);
+
+  const { glob: globFn } = await import('glob');
+  const { readFileSync: readFn } = await import('fs');
+  const root = tmpDir;
+  const interfaceName = 'Acme\\Foo\\Api\\WidgetInterface';
+  const shortName = 'WidgetInterface';
+
+  // DI preferences
+  const diFiles = await globFn('**/etc/**/di.xml', { cwd: root, absolute: true, nodir: true });
+  const diPrefs = [];
+  for (const diFile of diFiles) {
+    const content = readFn(diFile, 'utf-8');
+    const prefRegex = /<preference\s+for="([^"]+)"\s+type="([^"]+)"\s*\/?>/g;
+    let m;
+    while ((m = prefRegex.exec(content)) !== null) {
+      if (m[1] === interfaceName || m[1].endsWith('\\' + shortName)) diPrefs.push({ for: m[1], type: m[2] });
+    }
+  }
+  assertEq(diPrefs.length, 1, 'findImplementors: finds DI preference');
+  assertEq(diPrefs[0].type, 'Acme\\Foo\\Model\\Widget', 'findImplementors: correct preference type');
+
+  // PHP implementors
+  const phpFiles = await globFn('**/*.php', { cwd: root, absolute: true, nodir: true });
+  const implementsRegex = new RegExp(`implements\\s+[^{]*\\b${shortName}\\b`, 'i');
+  const implementors = [];
+  for (const phpFile of phpFiles) {
+    const content = readFn(phpFile, 'utf-8');
+    if (implementsRegex.test(content)) {
+      const classMatch = content.match(/class\s+(\w+)/);
+      if (classMatch) implementors.push(classMatch[1]);
+    }
+  }
+  assertEq(implementors.length, 2, 'findImplementors: finds 2 PHP implementors');
+  assert(implementors.includes('Widget'), 'findImplementors: includes Widget');
+  assert(implementors.includes('SpecialWidget'), 'findImplementors: includes SpecialWidget');
+
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+}
+
+// ─── Find Callers Tests ─────────────────────────────────────────
+
+async function testFindCallers() {
+  console.log('\n── Find Callers ──');
+
+  const tmpDir = path.join(__dirname, '__fixtures_callers');
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/Model'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/etc'), { recursive: true });
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/Model/Service.php'),
+    `<?php\nnamespace Acme\\Foo\\Model;\nclass Service {\n    public function doWork() {\n        $this->helper->calculate();\n    }\n}\n`);
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/Model/Controller.php'),
+    `<?php\nnamespace Acme\\Foo\\Model;\nclass Controller {\n    public function run() {\n        $this->service->doWork();\n    }\n}\n`);
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/etc/crontab.xml'),
+    `<config><group id="default"><job name="test" instance="Acme\\Foo\\Model\\Service" method="doWork"/></group></config>`);
+
+  const { glob: globFn } = await import('glob');
+  const { readFileSync: readFn } = await import('fs');
+  const root = tmpDir;
+
+  const phpFiles = await globFn('**/*.php', { cwd: root, absolute: true, nodir: true });
+  const methodRegex = /(?:->|::)doWork\s*\(/g;
+  const callers = [];
+  for (const phpFile of phpFiles) {
+    const content = readFn(phpFile, 'utf-8');
+    if (methodRegex.test(content)) callers.push(phpFile.replace(root + '/', ''));
+    methodRegex.lastIndex = 0;
+  }
+  assertEq(callers.length, 1, 'findCallers: finds 1 PHP file calling ->doWork()');
+
+  const xmlFiles = await globFn('**/etc/**/*.xml', { cwd: root, absolute: true, nodir: true });
+  const xmlRefs = [];
+  for (const xmlFile of xmlFiles) {
+    const content = readFn(xmlFile, 'utf-8');
+    if (content.includes('doWork')) xmlRefs.push(xmlFile.replace(root + '/', ''));
+  }
+  assertEq(xmlRefs.length, 1, 'findCallers: finds XML reference in crontab.xml');
+
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+}
+
+// ─── Find DI Wiring Tests ───────────────────────────────────────
+
+async function testFindDiWiring() {
+  console.log('\n── Find DI Wiring ──');
+
+  const tmpDir = path.join(__dirname, '__fixtures_di');
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/etc'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/Model'), { recursive: true });
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/etc/di.xml'),
+    `<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+  <preference for="Acme\\Foo\\Api\\WidgetInterface" type="Acme\\Foo\\Model\\Widget"/>
+  <type name="Acme\\Foo\\Model\\Widget">
+    <plugin name="test_plugin" type="Acme\\Foo\\Plugin\\WidgetPlugin"/>
+    <arguments>
+      <argument name="logger" xsi:type="object">Psr\\Log\\LoggerInterface</argument>
+    </arguments>
+  </type>
+  <virtualType name="Acme\\Foo\\Model\\VirtualWidget" type="Acme\\Foo\\Model\\Widget">
+    <arguments>
+      <argument name="mode" xsi:type="string">virtual</argument>
+    </arguments>
+  </virtualType>
+</config>`);
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/Model/Widget.php'),
+    `<?php\nnamespace Acme\\Foo\\Model;\nclass Widget {\n    public function __construct(\n        \\Psr\\Log\\LoggerInterface $logger,\n        string $mode = 'default'\n    ) {}\n}\n`);
+
+  const { glob: globFn } = await import('glob');
+  const { readFileSync: readFn } = await import('fs');
+  const root = tmpDir;
+  const shortLower = 'widget';
+
+  const diFiles = await globFn('**/etc/**/di.xml', { cwd: root, absolute: true, nodir: true });
+  let prefCount = 0, pluginCount = 0, vtCount = 0;
+
+  for (const diFile of diFiles) {
+    const content = readFn(diFile, 'utf-8');
+    if (!content.toLowerCase().includes(shortLower)) continue;
+
+    const prefRegex = /<preference\s+for="([^"]+)"\s+type="([^"]+)"\s*\/?>/g;
+    let m;
+    while ((m = prefRegex.exec(content)) !== null) {
+      if (m[1].toLowerCase().includes(shortLower) || m[2].toLowerCase().includes(shortLower)) prefCount++;
+    }
+
+    const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
+    let tm;
+    while ((tm = typeBlockRegex.exec(content)) !== null) {
+      if (!tm[1].toLowerCase().includes(shortLower)) continue;
+      const pluginRegex = /<plugin\s+name="([^"]+)"[^>]*type="([^"]+)"[^>]*/g;
+      let pm;
+      while ((pm = pluginRegex.exec(tm[2])) !== null) pluginCount++;
+    }
+
+    const vtRegex = /<virtualType\s+name="([^"]+)"[^>]*type="([^"]+)"/g;
+    while ((m = vtRegex.exec(content)) !== null) {
+      if (m[2].toLowerCase().includes(shortLower)) vtCount++;
+    }
+  }
+
+  assertEq(prefCount, 1, 'findDiWiring: finds 1 preference');
+  assertEq(pluginCount, 1, 'findDiWiring: finds 1 plugin');
+  assertEq(vtCount, 1, 'findDiWiring: finds 1 virtualType');
+
+  // Constructor from PHP
+  const phpFiles = await globFn('**/Widget.php', { cwd: root, absolute: true, nodir: true });
+  let ctorArgCount = 0;
+  for (const phpFile of phpFiles) {
+    const content = readFn(phpFile, 'utf-8');
+    const ctorMatch = content.match(/function\s+__construct\s*\(([\s\S]*?)\)\s*[{:]/);
+    if (ctorMatch) {
+      const paramRegex = /(?:([\w\\]+)\s+)?(\$\w+)/g;
+      let pm;
+      while ((pm = paramRegex.exec(ctorMatch[1])) !== null) ctorArgCount++;
+    }
+  }
+  assertEq(ctorArgCount, 2, 'findDiWiring: extracts 2 constructor args from PHP');
+
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+}
+
+// ─── Trace Call Chain Tests ─────────────────────────────────────
+
+async function testTraceCallChain() {
+  console.log('\n── Trace Call Chain ──');
+
+  const tmpDir = path.join(__dirname, '__fixtures_trace');
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/Model'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/etc'), { recursive: true });
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/Model/OrderProcessor.php'),
+    `<?php
+namespace Acme\\Foo\\Model;
+class OrderProcessor {
+    private $eventManager;
+    private $validator;
+    public function __construct(
+        \\Magento\\Framework\\Event\\ManagerInterface $eventManager,
+        ValidatorInterface $validator
+    ) {
+        $this->eventManager = $eventManager;
+        $this->validator = $validator;
+    }
+    public function process($order) {
+        $this->validateOrder($order);
+        $this->eventManager->dispatch('order_process_before', ['order' => $order]);
+        $this->validator->validate($order);
+    }
+    private function validateOrder($order) {
+        return $order->getId() > 0;
+    }
+}
+`);
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/etc/events.xml'),
+    `<?xml version="1.0"?>
+<config>
+  <event name="order_process_before">
+    <observer name="test_observer" instance="Acme\\Foo\\Observer\\OrderObserver"/>
+  </event>
+</config>`);
+
+  const { readFileSync: readFn } = await import('fs');
+  const { glob: globFn } = await import('glob');
+
+  // Test method body extraction
+  const content = readFn(path.join(tmpDir, 'vendor/acme/module-foo/Model/OrderProcessor.php'), 'utf-8');
+  const methodRegex = /function\s+process\s*\([^)]*\)[^{]*\{/;
+  const methodStart = content.search(methodRegex);
+  assert(methodStart > -1, 'traceCallChain: finds process method');
+
+  // Extract method body
+  let braceCount = 0;
+  let bodyStart = content.indexOf('{', methodStart);
+  let bodyEnd = bodyStart;
+  for (let i = bodyStart; i < content.length; i++) {
+    if (content[i] === '{') braceCount++;
+    if (content[i] === '}') braceCount--;
+    if (braceCount === 0) { bodyEnd = i; break; }
+  }
+  const methodBody = content.slice(bodyStart, bodyEnd + 1);
+
+  // Self-call detection
+  const selfCallRegex = /\$this->(\w+)\s*\(/g;
+  const selfCalls = [];
+  let sc;
+  while ((sc = selfCallRegex.exec(methodBody)) !== null) {
+    if (sc[1] !== 'process' && sc[1] !== '__construct') selfCalls.push(sc[1]);
+  }
+  assert(selfCalls.includes('validateOrder'), 'traceCallChain: detects $this->validateOrder()');
+
+  // Dependency call detection
+  const depCallRegex = /\$this->(\w+)->(\w+)\s*\(/g;
+  const depCalls = [];
+  let dc;
+  while ((dc = depCallRegex.exec(methodBody)) !== null) {
+    depCalls.push({ property: dc[1], method: dc[2] });
+  }
+  assert(depCalls.some(c => c.property === 'validator' && c.method === 'validate'),
+    'traceCallChain: detects $this->validator->validate()');
+
+  // Event dispatch detection
+  const dispatchRegex = /(?:eventManager|_eventManager)->dispatch\s*\(\s*['"]([^'"]+)['"]/g;
+  const dispatches = [];
+  let dm;
+  while ((dm = dispatchRegex.exec(methodBody)) !== null) dispatches.push(dm[1]);
+  assertEq(dispatches.length, 1, 'traceCallChain: detects 1 event dispatch');
+  assertEq(dispatches[0], 'order_process_before', 'traceCallChain: correct event name');
+
+  // Event→observer mapping
+  const root = tmpDir;
+  const eventFiles = await globFn('**/etc/**/events.xml', { cwd: root, absolute: true, nodir: true });
+  const eventObserverMap = new Map();
+  for (const evFile of eventFiles) {
+    const evContent = readFn(evFile, 'utf-8');
+    const eventRegex = /<event\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/event>/g;
+    let em;
+    while ((em = eventRegex.exec(evContent)) !== null) {
+      const obsRegex = /<observer\s+[^>]*name="([^"]+)"[^>]*instance="([^"]+)"[^>]*/g;
+      let om;
+      while ((om = obsRegex.exec(em[2])) !== null) {
+        if (!eventObserverMap.has(em[1])) eventObserverMap.set(em[1], []);
+        eventObserverMap.get(em[1]).push({ name: om[1], class: om[2] });
+      }
+    }
+  }
+  const observers = eventObserverMap.get('order_process_before') || [];
+  assertEq(observers.length, 1, 'traceCallChain: maps event to 1 observer');
+  assertEq(observers[0].class, 'Acme\\Foo\\Observer\\OrderObserver', 'traceCallChain: correct observer class');
+
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+}
+
 // ─── Run All ───────────────────────────────────────────────────
 
 async function main() {
@@ -1978,6 +2336,10 @@ async function main() {
   testReindexDeduplication();
   testSingletonAndWarmup();
   await testStdinCleanup();
+  await testFindImplementors();
+  await testFindCallers();
+  await testFindDiWiring();
+  await testTraceCallChain();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);

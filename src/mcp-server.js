@@ -2074,6 +2074,505 @@ async function findTests(className, methodName) {
   return result;
 }
 
+// ─── Find Implementors ──────────────────────────────────────────
+// Find all classes implementing a given interface: PHP `implements` + DI preferences
+
+async function findImplementors(interfaceName) {
+  const root = config.magentoRoot;
+  const shortName = interfaceName.split('\\').pop();
+
+  const result = {
+    interface: interfaceName,
+    implementors: [],
+    diPreferences: []
+  };
+
+  // 1. Search DI preferences for this interface
+  const diFiles = await glob('**/etc/**/di.xml', { cwd: root, absolute: true, nodir: true });
+  for (const diFile of diFiles) {
+    let content;
+    try { content = readFileSync(diFile, 'utf-8'); } catch { continue; }
+    const relativePath = diFile.replace(root + '/', '');
+
+    const prefRegex = /<preference\s+for="([^"]+)"\s+type="([^"]+)"\s*\/?>/g;
+    let m;
+    while ((m = prefRegex.exec(content)) !== null) {
+      const forClass = m[1];
+      if (forClass === interfaceName || forClass.endsWith('\\' + shortName) ||
+          forClass.toLowerCase() === interfaceName.toLowerCase()) {
+        result.diPreferences.push({ for: forClass, type: m[2], file: relativePath });
+      }
+    }
+  }
+
+  // 2. Grep PHP files for `implements ...InterfaceName`
+  const phpFiles = await glob('**/*.php', {
+    cwd: root, absolute: true, nodir: true,
+    ignore: ['**/test/**', '**/tests/**', '**/Test/**', '**/Tests/**']
+  });
+
+  const implementsRegex = new RegExp(
+    `implements\\s+[^{]*\\b${shortName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'
+  );
+
+  for (const phpFile of phpFiles) {
+    let content;
+    try { content = readFileSync(phpFile, 'utf-8'); } catch { continue; }
+    if (!implementsRegex.test(content)) continue;
+
+    const relativePath = phpFile.replace(root + '/', '');
+    const classMatch = content.match(/(?:class|abstract\s+class)\s+(\w+)/);
+    const nsMatch = content.match(/namespace\s+([\w\\]+)/);
+    const className = classMatch ? classMatch[1] : path.basename(phpFile, '.php');
+    const fqcn = nsMatch ? `${nsMatch[1]}\\${className}` : className;
+
+    // Verify it references the right interface (not just a name collision)
+    const useStatements = content.match(/use\s+([\w\\]+);/g) || [];
+    const usesFullInterface = useStatements.some(u =>
+      u.includes(interfaceName) || u.endsWith(shortName + ';')
+    );
+
+    if (usesFullInterface || content.includes(interfaceName)) {
+      result.implementors.push({ class: fqcn, file: relativePath });
+    } else {
+      result.implementors.push({ class: fqcn, file: relativePath, matchType: 'shortName' });
+    }
+  }
+
+  return result;
+}
+
+// ─── Find Callers ───────────────────────────────────────────────
+// Find all call sites of a method across PHP and XML files
+
+async function findCallers(methodName, className) {
+  const root = config.magentoRoot;
+  const shortClass = className ? className.split('\\').pop() : null;
+
+  const result = {
+    method: methodName,
+    className: className || null,
+    phpCallers: [],
+    xmlReferences: [],
+    totalScanned: 0
+  };
+
+  // 1. PHP call sites: ->methodName( and ::methodName(
+  const phpFiles = await glob('**/*.php', { cwd: root, absolute: true, nodir: true });
+  result.totalScanned = phpFiles.length;
+
+  const methodRegex = new RegExp(
+    `(?:->|::)${methodName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`, 'g'
+  );
+
+  for (const phpFile of phpFiles) {
+    let content;
+    try { content = readFileSync(phpFile, 'utf-8'); } catch { continue; }
+    if (!methodRegex.test(content)) continue;
+    methodRegex.lastIndex = 0;
+
+    const relativePath = phpFile.replace(root + '/', '');
+    const lines = content.split('\n');
+    const callSites = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      if (methodRegex.test(lines[i])) {
+        if (shortClass) {
+          const usesClass = content.includes(shortClass);
+          if (!usesClass) continue;
+        }
+        callSites.push({ line: i + 1, snippet: lines[i].trim().slice(0, 150) });
+      }
+      methodRegex.lastIndex = 0;
+    }
+
+    if (callSites.length > 0) {
+      const nsMatch = content.match(/namespace\s+([\w\\]+)/);
+      const classMatch = content.match(/(?:class|trait)\s+(\w+)/);
+      const callerClass = nsMatch && classMatch ? `${nsMatch[1]}\\${classMatch[1]}` : null;
+
+      result.phpCallers.push({
+        file: relativePath, callerClass,
+        calls: callSites.slice(0, 5)
+      });
+    }
+  }
+
+  // 2. XML references
+  const xmlFiles = await glob('**/etc/**/*.xml', { cwd: root, absolute: true, nodir: true });
+  for (const xmlFile of xmlFiles) {
+    let content;
+    try { content = readFileSync(xmlFile, 'utf-8'); } catch { continue; }
+    if (!content.includes(methodName)) continue;
+
+    const relativePath = xmlFile.replace(root + '/', '');
+    const lines = content.split('\n');
+    const refs = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes(methodName)) {
+        refs.push({ line: i + 1, snippet: lines[i].trim().slice(0, 150) });
+      }
+    }
+    if (refs.length > 0) {
+      result.xmlReferences.push({ file: relativePath, refs: refs.slice(0, 5) });
+    }
+  }
+
+  // Sort: files referencing the class get priority
+  if (shortClass) {
+    result.phpCallers.sort((a, b) => {
+      const aHas = a.callerClass?.includes(shortClass) ? 0 : 1;
+      const bHas = b.callerClass?.includes(shortClass) ? 0 : 1;
+      return aHas - bHas;
+    });
+  }
+
+  return result;
+}
+
+// ─── Find DI Wiring ─────────────────────────────────────────────
+// Complete DI picture: preferences, plugins, constructor args, virtual types
+
+async function findDiWiring(className) {
+  const root = config.magentoRoot;
+  const shortName = className.split('\\').pop();
+  const shortLower = shortName.toLowerCase();
+
+  const result = {
+    className,
+    preferences: [],
+    plugins: [],
+    constructorArguments: [],
+    virtualTypes: [],
+    typeArguments: [],
+    totalDiFiles: 0
+  };
+
+  const diFiles = await glob('**/etc/**/di.xml', { cwd: root, absolute: true, nodir: true });
+  result.totalDiFiles = diFiles.length;
+
+  for (const diFile of diFiles) {
+    let content;
+    try { content = readFileSync(diFile, 'utf-8'); } catch { continue; }
+    const relativePath = diFile.replace(root + '/', '');
+    const contentLower = content.toLowerCase();
+
+    if (!contentLower.includes(shortLower)) continue;
+
+    // 1. Preferences where this class is the "for" or "type"
+    const prefRegex = /<preference\s+for="([^"]+)"\s+type="([^"]+)"\s*\/?>/g;
+    let m;
+    while ((m = prefRegex.exec(content)) !== null) {
+      const forLower = m[1].toLowerCase();
+      const typeLower = m[2].toLowerCase();
+      if (forLower.includes(shortLower) || typeLower.includes(shortLower)) {
+        result.preferences.push({ for: m[1], type: m[2], file: relativePath });
+      }
+    }
+
+    // 2. Plugins and type arguments
+    const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
+    let typeMatch;
+    while ((typeMatch = typeBlockRegex.exec(content)) !== null) {
+      const typeName = typeMatch[1];
+      const typeNameLower = typeName.toLowerCase();
+      const typeBlock = typeMatch[2];
+
+      if (!typeNameLower.includes(shortLower)) continue;
+
+      // Plugins
+      const pluginRegex = /<plugin\s+name="([^"]+)"[^>]*type="([^"]+)"[^>]*/g;
+      let pMatch;
+      while ((pMatch = pluginRegex.exec(typeBlock)) !== null) {
+        result.plugins.push({
+          target: typeName, pluginName: pMatch[1],
+          pluginClass: pMatch[2], file: relativePath
+        });
+      }
+
+      // Simple arguments
+      const argSimpleRegex = /<argument\s+name="([^"]+)"[^>]*xsi:type="([^"]+)"[^>]*>([^<]*)<\/argument>/g;
+      let aMatch;
+      while ((aMatch = argSimpleRegex.exec(typeBlock)) !== null) {
+        result.typeArguments.push({
+          target: typeName, name: aMatch[1],
+          type: aMatch[2], value: aMatch[3].trim().slice(0, 200), file: relativePath
+        });
+      }
+
+      // Array arguments
+      const argArrayRegex = /<argument\s+name="([^"]+)"[^>]*xsi:type="array"[^>]*>([\s\S]*?)<\/argument>/g;
+      let arrMatch;
+      while ((arrMatch = argArrayRegex.exec(typeBlock)) !== null) {
+        const argName = arrMatch[1];
+        const argBlock = arrMatch[2];
+        const itemRegex = /<item\s+name="([^"]+)"[^>]*xsi:type="([^"]+)"[^>]*>([^<]*)<\/item>/g;
+        let iMatch;
+        const items = [];
+        while ((iMatch = itemRegex.exec(argBlock)) !== null) {
+          items.push({ name: iMatch[1], type: iMatch[2], value: iMatch[3].trim().slice(0, 200) });
+        }
+        if (items.length > 0) {
+          result.typeArguments.push({
+            target: typeName, name: argName,
+            type: 'array', items, file: relativePath
+          });
+        }
+      }
+    }
+
+    // 3. Virtual types extending this class
+    const vtRegex = /<virtualType\s+name="([^"]+)"[^>]*type="([^"]+)"[^>]*(?:\/>|>([\s\S]*?)<\/virtualType>)/g;
+    while ((m = vtRegex.exec(content)) !== null) {
+      const vtType = m[2];
+      if (!vtType.toLowerCase().includes(shortLower)) continue;
+      const vtEntry = { name: m[1], type: vtType, file: relativePath };
+      if (m[3]) {
+        const argRegex = /<argument\s+name="([^"]+)"[^>]*xsi:type="([^"]+)"[^>]*>([^<]*)<\/argument>/g;
+        const vtArgs = [];
+        let vam;
+        while ((vam = argRegex.exec(m[3])) !== null) {
+          vtArgs.push({ name: vam[1], type: vam[2], value: vam[3].trim().slice(0, 200) });
+        }
+        if (vtArgs.length > 0) vtEntry.arguments = vtArgs;
+      }
+      result.virtualTypes.push(vtEntry);
+    }
+  }
+
+  // 4. Constructor arguments from PHP class
+  const phpFiles = await glob(`**/${shortName}.php`, { cwd: root, absolute: true, nodir: true });
+  for (const phpFile of phpFiles) {
+    let content;
+    try { content = readFileSync(phpFile, 'utf-8'); } catch { continue; }
+    const classMatch = content.match(/(?:class|abstract\s+class)\s+(\w+)/);
+    if (!classMatch || classMatch[1] !== shortName) continue;
+
+    const ctorMatch = content.match(/function\s+__construct\s*\(([\s\S]*?)\)\s*[{:]/);
+    if (ctorMatch) {
+      const paramRegex = /(?:([\w\\]+)\s+)?(\$\w+)/g;
+      let pm;
+      while ((pm = paramRegex.exec(ctorMatch[1])) !== null) {
+        result.constructorArguments.push({ typeHint: pm[1] || null, variable: pm[2] });
+      }
+    }
+    break;
+  }
+
+  return result;
+}
+
+// ─── Trace Call Chain ───────────────────────────────────────────
+// Trace internal method execution: method calls, dispatched events, observers
+
+async function traceCallChain(startClass, startMethod, maxDepth = 3) {
+  const root = config.magentoRoot;
+
+  const result = {
+    entryPoint: `${startClass}::${startMethod}`,
+    chain: [],
+    events: [],
+    observers: [],
+    depth: 0
+  };
+
+  const classFileMap = new Map();
+
+  async function resolveClassFile(className) {
+    const shortName = className.split('\\').pop();
+    if (classFileMap.has(className)) return classFileMap.get(className);
+
+    // Try common Magento path patterns
+    const nsPath = className.replace(/\\/g, '/') + '.php';
+    const candidates = [
+      `app/code/${nsPath}`,
+      `vendor/${nsPath}`
+    ];
+
+    for (const c of candidates) {
+      const full = path.join(root, c);
+      if (existsSync(full)) {
+        classFileMap.set(className, full);
+        return full;
+      }
+    }
+
+    // Fallback: glob for the class file
+    const matches = await glob(`**/${shortName}.php`, {
+      cwd: root, absolute: true, nodir: true,
+      ignore: ['**/test/**', '**/tests/**', '**/Test/**', '**/Tests/**']
+    });
+
+    for (const match of matches) {
+      let content;
+      try { content = readFileSync(match, 'utf-8'); } catch { continue; }
+      const nsMatch = content.match(/namespace\s+([\w\\]+)/);
+      const classMatch = content.match(/(?:class|abstract\s+class|trait)\s+(\w+)/);
+      if (classMatch && classMatch[1] === shortName) {
+        const fqcn = nsMatch ? `${nsMatch[1]}\\${classMatch[1]}` : classMatch[1];
+        classFileMap.set(fqcn, match);
+        if (fqcn === className || classMatch[1] === shortName) {
+          classFileMap.set(className, match);
+          return match;
+        }
+      }
+    }
+
+    classFileMap.set(className, null);
+    return null;
+  }
+
+  // Load events.xml index
+  const eventObserverMap = new Map();
+  const eventFiles = await glob('**/etc/**/events.xml', { cwd: root, absolute: true, nodir: true });
+  for (const evFile of eventFiles) {
+    let content;
+    try { content = readFileSync(evFile, 'utf-8'); } catch { continue; }
+    const relativePath = evFile.replace(root + '/', '');
+
+    const eventRegex = /<event\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/event>/g;
+    let em;
+    while ((em = eventRegex.exec(content)) !== null) {
+      const eventName = em[1];
+      const eventBlock = em[2];
+      const obsRegex = /<observer\s+[^>]*name="([^"]+)"[^>]*instance="([^"]+)"[^>]*/g;
+      let om;
+      while ((om = obsRegex.exec(eventBlock)) !== null) {
+        if (!eventObserverMap.has(eventName)) eventObserverMap.set(eventName, []);
+        eventObserverMap.get(eventName).push({
+          name: om[1], class: om[2], file: relativePath
+        });
+      }
+    }
+  }
+
+  // Resolve DI preference for an interface
+  const prefCache = new Map();
+  async function resolvePreference(interfaceName) {
+    if (prefCache.has(interfaceName)) return prefCache.get(interfaceName);
+    const shortName = interfaceName.split('\\').pop();
+    const diXmlFiles = await glob('**/etc/di.xml', { cwd: root, absolute: true, nodir: true });
+    for (const diFile of diXmlFiles) {
+      let content;
+      try { content = readFileSync(diFile, 'utf-8'); } catch { continue; }
+      const prefRegex = /<preference\s+for="([^"]+)"\s+type="([^"]+)"\s*\/?>/g;
+      let m;
+      while ((m = prefRegex.exec(content)) !== null) {
+        if (m[1] === interfaceName || m[1].endsWith('\\' + shortName)) {
+          prefCache.set(interfaceName, m[2]);
+          return m[2];
+        }
+      }
+    }
+    prefCache.set(interfaceName, null);
+    return null;
+  }
+
+  async function traceMethod(className, methodName, depth) {
+    if (depth > maxDepth) return;
+
+    const filePath = await resolveClassFile(className);
+    if (!filePath) {
+      result.chain.push({ depth, class: className, method: methodName, status: 'unresolved' });
+      return;
+    }
+
+    let content;
+    try { content = readFileSync(filePath, 'utf-8'); } catch { return; }
+    const relativePath = filePath.replace(root + '/', '');
+
+    // Extract method body (brace counting)
+    const methodRegex = new RegExp(
+      `function\\s+${methodName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\([^)]*\\)[^{]*\\{`
+    );
+    const methodStart = content.search(methodRegex);
+    if (methodStart === -1) {
+      result.chain.push({ depth, class: className, method: methodName, file: relativePath, status: 'method_not_found' });
+      return;
+    }
+
+    let braceCount = 0;
+    let bodyStart = content.indexOf('{', methodStart);
+    let bodyEnd = bodyStart;
+    for (let i = bodyStart; i < content.length; i++) {
+      if (content[i] === '{') braceCount++;
+      if (content[i] === '}') braceCount--;
+      if (braceCount === 0) { bodyEnd = i; break; }
+    }
+    const methodBody = content.slice(bodyStart, bodyEnd + 1);
+
+    const chainEntry = {
+      depth, class: className, method: methodName, file: relativePath,
+      calls: [], dispatches: []
+    };
+
+    // $this->method( calls
+    const selfCallRegex = /\$this->(\w+)\s*\(/g;
+    let sc;
+    while ((sc = selfCallRegex.exec(methodBody)) !== null) {
+      const calledMethod = sc[1];
+      if (calledMethod !== methodName && calledMethod !== '__construct') {
+        chainEntry.calls.push({ type: 'self', method: calledMethod });
+      }
+    }
+
+    // $this->dependency->method( calls
+    const depCallRegex = /\$this->(\w+)->(\w+)\s*\(/g;
+    let dc;
+    while ((dc = depCallRegex.exec(methodBody)) !== null) {
+      const property = dc[1];
+      const calledMethod = dc[2];
+      // Resolve property type from constructor
+      const ctorMatch = content.match(/function\s+__construct\s*\(([\s\S]*?)\)\s*[{:]/);
+      let resolvedType = null;
+      if (ctorMatch) {
+        const paramRegex = new RegExp(`([\\w\\\\]+)\\s+\\$${property}\\b`);
+        const pm = ctorMatch[1].match(paramRegex);
+        if (pm) resolvedType = pm[1];
+      }
+      chainEntry.calls.push({ type: 'dependency', property, method: calledMethod, typeHint: resolvedType || null });
+    }
+
+    // eventManager->dispatch calls
+    const dispatchRegex = /(?:eventManager|_eventManager)->dispatch\s*\(\s*['"]([^'"]+)['"]/g;
+    let dm;
+    while ((dm = dispatchRegex.exec(methodBody)) !== null) {
+      const eventName = dm[1];
+      chainEntry.dispatches.push(eventName);
+      const observers = eventObserverMap.get(eventName) || [];
+      result.events.push({ event: eventName, dispatchedIn: `${className}::${methodName}`, observers });
+      for (const obs of observers) {
+        result.observers.push({ event: eventName, ...obs });
+      }
+    }
+
+    result.chain.push(chainEntry);
+    result.depth = Math.max(result.depth, depth);
+
+    // Recurse into $this-> calls
+    for (const call of chainEntry.calls) {
+      if (call.type === 'self') {
+        await traceMethod(className, call.method, depth + 1);
+      }
+    }
+
+    // Recurse into dependency calls (within depth limit)
+    if (depth < maxDepth - 1) {
+      for (const call of chainEntry.calls) {
+        if (call.type === 'dependency' && call.typeHint) {
+          const impl = await resolvePreference(call.typeHint);
+          const targetClass = impl || call.typeHint;
+          await traceMethod(targetClass, call.method, depth + 1);
+        }
+      }
+    }
+  }
+
+  await traceMethod(startClass, startMethod, 0);
+
+  return result;
+}
+
 // ─── MCP Server ─────────────────────────────────────────────────
 
 const server = new Server(
@@ -2566,6 +3065,75 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           }
         },
         required: ['className']
+      }
+    },
+    {
+      name: 'magento_find_implementors',
+      description: 'Find all classes that implement a given PHP interface. Scans PHP files for `implements` keyword and di.xml for `<preference>` declarations. Use this to discover all concrete implementations of an interface across the codebase.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          interfaceName: {
+            type: 'string',
+            description: 'Full or short PHP interface name. Examples: "OrderRepositoryInterface", "Magento\\Sales\\Api\\OrderRepositoryInterface", "ChildOrderValidatorInterface"'
+          }
+        },
+        required: ['interfaceName']
+      }
+    },
+    {
+      name: 'magento_find_callers',
+      description: 'Find all call sites of a PHP method across the codebase. Searches for ->method() and ::method() patterns in PHP files and method references in XML config files. Use this to understand where a method is used and trace data flow.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          methodName: {
+            type: 'string',
+            description: 'Method name to find callers for. Examples: "execute", "save", "collectTotals", "copySalesRuleIdsFromParentToDrmaxQuote"'
+          },
+          className: {
+            type: 'string',
+            description: 'Optional: class that owns the method — narrows results to files that reference this class. Examples: "SalesRuleManagement", "CartRepository"'
+          }
+        },
+        required: ['methodName']
+      }
+    },
+    {
+      name: 'magento_find_di_wiring',
+      description: 'Get the complete DI wiring picture for a PHP class: preferences (interface→implementation), plugins (interceptors), constructor arguments from di.xml, virtual types, and argument overrides. Also extracts the PHP constructor signature. Use this to understand how a class is configured and extended across all modules.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          className: {
+            type: 'string',
+            description: 'Full or short PHP class/interface name. Examples: "ChildOrderValidatorChain", "Magento\\SalesRule\\Model\\Rule", "CartManagementInterface"'
+          }
+        },
+        required: ['className']
+      }
+    },
+    {
+      name: 'magento_trace_call_chain',
+      description: 'Trace the internal method call chain starting from a specific class::method. Follows $this->method() calls (same class), $this->dependency->method() calls (resolves DI types), and eventManager->dispatch() calls (maps to observers from events.xml). Returns a call tree showing the execution path through the code.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          className: {
+            type: 'string',
+            description: 'Full PHP class name (FQCN) to start tracing from. Examples: "DrmaxMarketplace\\OrderSplit\\Model\\CreateOrder\\CreateChildOrder", "Magento\\Quote\\Model\\QuoteManagement"'
+          },
+          methodName: {
+            type: 'string',
+            description: 'Method name to start tracing. Examples: "execute", "submit", "collectTotals"'
+          },
+          maxDepth: {
+            type: 'number',
+            description: 'Maximum recursion depth for tracing (default: 3). Higher values trace deeper but take longer.',
+            default: 3
+          }
+        },
+        required: ['className', 'methodName']
       }
     },
   ]
@@ -3408,6 +3976,185 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
             text += '\n';
           }
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_find_implementors': {
+        const implResult = await findImplementors(args.interfaceName);
+
+        let text = `## Implementors of: ${implResult.interface}\n\n`;
+
+        if (implResult.diPreferences.length > 0) {
+          text += `### DI Preferences (${implResult.diPreferences.length})\n`;
+          for (const p of implResult.diPreferences) {
+            text += `- \`${p.for}\` → \`${p.type}\` (${p.file})\n`;
+          }
+          text += '\n';
+        }
+
+        if (implResult.implementors.length > 0) {
+          text += `### PHP Implementors (${implResult.implementors.length})\n`;
+          for (const impl of implResult.implementors) {
+            const suffix = impl.matchType === 'shortName' ? ' _(short name match)_' : '';
+            text += `- \`${impl.class}\` (${impl.file})${suffix}\n`;
+          }
+          text += '\n';
+        }
+
+        if (implResult.diPreferences.length === 0 && implResult.implementors.length === 0) {
+          text += '_No implementors found._\n';
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_find_callers': {
+        const callResult = await findCallers(args.methodName, args.className);
+
+        let text = `## Callers of: ${args.methodName}${args.className ? ` (${args.className})` : ''}\n\n`;
+        text += `Scanned ${callResult.totalScanned} PHP files.\n\n`;
+
+        if (callResult.phpCallers.length > 0) {
+          text += `### PHP Call Sites (${callResult.phpCallers.length})\n`;
+          for (const caller of callResult.phpCallers.slice(0, 30)) {
+            text += `- **${caller.file}**${caller.callerClass ? ` (\`${caller.callerClass}\`)` : ''}\n`;
+            for (const c of caller.calls) {
+              text += `  - L${c.line}: \`${c.snippet}\`\n`;
+            }
+          }
+          text += '\n';
+        }
+
+        if (callResult.xmlReferences.length > 0) {
+          text += `### XML References (${callResult.xmlReferences.length})\n`;
+          for (const ref of callResult.xmlReferences.slice(0, 15)) {
+            text += `- **${ref.file}**\n`;
+            for (const r of ref.refs) {
+              text += `  - L${r.line}: \`${r.snippet}\`\n`;
+            }
+          }
+          text += '\n';
+        }
+
+        if (callResult.phpCallers.length === 0 && callResult.xmlReferences.length === 0) {
+          text += '_No callers found._\n';
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_find_di_wiring': {
+        const diResult = await findDiWiring(args.className);
+
+        let text = `## DI Wiring: ${diResult.className}\n\n`;
+        text += `Scanned ${diResult.totalDiFiles} di.xml files.\n\n`;
+
+        if (diResult.constructorArguments.length > 0) {
+          text += `### Constructor Signature\n`;
+          for (const arg of diResult.constructorArguments) {
+            text += `- ${arg.typeHint || 'mixed'} ${arg.variable}\n`;
+          }
+          text += '\n';
+        }
+
+        if (diResult.preferences.length > 0) {
+          text += `### Preferences (${diResult.preferences.length})\n`;
+          for (const p of diResult.preferences) {
+            text += `- \`${p.for}\` → \`${p.type}\` (${p.file})\n`;
+          }
+          text += '\n';
+        }
+
+        if (diResult.plugins.length > 0) {
+          text += `### Plugins (${diResult.plugins.length})\n`;
+          for (const p of diResult.plugins) {
+            text += `- \`${p.pluginName}\`: \`${p.pluginClass}\` on \`${p.target}\` (${p.file})\n`;
+          }
+          text += '\n';
+        }
+
+        if (diResult.typeArguments.length > 0) {
+          text += `### DI Arguments (${diResult.typeArguments.length})\n`;
+          for (const a of diResult.typeArguments) {
+            if (a.type === 'array' && a.items) {
+              text += `- \`${a.target}\`.${a.name} (array, ${a.items.length} items) (${a.file})\n`;
+              for (const item of a.items.slice(0, 10)) {
+                text += `  - ${item.name}: \`${item.value}\`\n`;
+              }
+            } else {
+              text += `- \`${a.target}\`.${a.name} (${a.type}) = \`${a.value}\` (${a.file})\n`;
+            }
+          }
+          text += '\n';
+        }
+
+        if (diResult.virtualTypes.length > 0) {
+          text += `### Virtual Types (${diResult.virtualTypes.length})\n`;
+          for (const v of diResult.virtualTypes) {
+            text += `- \`${v.name}\` extends \`${v.type}\` (${v.file})\n`;
+            if (v.arguments) {
+              for (const a of v.arguments) {
+                text += `  - ${a.name}: \`${a.value}\`\n`;
+              }
+            }
+          }
+          text += '\n';
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_trace_call_chain': {
+        const traceResult = await traceCallChain(args.className, args.methodName, args.maxDepth || 3);
+
+        let text = `## Call Chain: ${traceResult.entryPoint}\n\n`;
+        text += `Max depth reached: ${traceResult.depth}\n\n`;
+
+        if (traceResult.chain.length > 0) {
+          text += `### Execution Chain (${traceResult.chain.length} methods)\n`;
+          for (const entry of traceResult.chain) {
+            const indent = '  '.repeat(entry.depth);
+            const status = entry.status ? ` [${entry.status}]` : '';
+            text += `${indent}- **${entry.class}::${entry.method}**${status}`;
+            if (entry.file) text += ` (${entry.file})`;
+            text += '\n';
+
+            if (entry.calls) {
+              for (const call of entry.calls) {
+                if (call.type === 'self') {
+                  text += `${indent}  → \`$this->${call.method}()\`\n`;
+                } else {
+                  text += `${indent}  → \`$this->${call.property}->${call.method}()\``;
+                  if (call.typeHint) text += ` [${call.typeHint}]`;
+                  text += '\n';
+                }
+              }
+            }
+
+            if (entry.dispatches) {
+              for (const evt of entry.dispatches) {
+                text += `${indent}  ⚡ dispatch(\`${evt}\`)\n`;
+              }
+            }
+          }
+          text += '\n';
+        }
+
+        if (traceResult.events.length > 0) {
+          text += `### Events Dispatched (${traceResult.events.length})\n`;
+          for (const evt of traceResult.events) {
+            text += `- **${evt.event}** (from ${evt.dispatchedIn})\n`;
+            if (evt.observers.length > 0) {
+              for (const obs of evt.observers) {
+                text += `  - \`${obs.name}\`: \`${obs.class}\` (${obs.file})\n`;
+              }
+            } else {
+              text += '  - _no observers registered_\n';
+            }
+          }
+          text += '\n';
         }
 
         return { content: [{ type: 'text', text }] };
