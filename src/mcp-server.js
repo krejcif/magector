@@ -1773,6 +1773,11 @@ function expandQuery(query) {
 
 // ─── Module Filtering ───────────────────────────────────────────
 // Filter search results by vendor/module namespace pattern.
+// Module values in the index use composer format: "vendor_package"
+// (e.g. "some-vendor_module-name"). Users may write patterns with
+// "/" or "_" as separator, and may use a vendor prefix that matches
+// only the start of the full vendor name (e.g. "acme/*" matching
+// "acme-extensions_module-foo").
 
 function filterByModule(results, moduleFilter) {
   if (!moduleFilter) return results;
@@ -1782,11 +1787,43 @@ function filterByModule(results, moduleFilter) {
     const filePath = r.path || '';
     return patterns.some(pat => {
       if (pat.includes('*')) {
-        const regex = new RegExp('^' + pat.replace(/\*/g, '.*') + '$', 'i');
-        return regex.test(mod) || regex.test(filePath);
+        // 1. Exact regex match — treat / and _ as interchangeable separators
+        const normalized = pat.replace(/[/_]/g, '[/_]');
+        const regex = new RegExp('^' + normalized.replace(/\*/g, '.*') + '$', 'i');
+        if (regex.test(mod) || regex.test(filePath)) return true;
+
+        // 2. Vendor prefix match: "vendor/*" should also match "vendor-extended_*"
+        //    Extract the vendor part (everything before the first separator or wildcard)
+        const vendorPrefix = pat.split(/[/*_]/)[0];
+        if (vendorPrefix) {
+          const pfx = vendorPrefix.toLowerCase();
+          // Module field starts with the vendor prefix
+          if (mod.toLowerCase().startsWith(pfx)) return true;
+          // File path contains vendor/<prefix> (covers vendor/ directory)
+          if (filePath.toLowerCase().includes('vendor/' + pfx) ||
+              filePath.toLowerCase().includes('app/code/' + pfx)) return true;
+        }
+        return false;
       }
-      return mod.toLowerCase().includes(pat.toLowerCase()) ||
-             filePath.toLowerCase().includes(pat.toLowerCase());
+      // Non-wildcard: substring match on module and path, with separator normalization
+      const patLower = pat.toLowerCase();
+      if (mod.toLowerCase().includes(patLower) || filePath.toLowerCase().includes(patLower)) return true;
+      // Structured match: split "Vendor_Module" into parts and match against
+      // index format "vendor_module-name" (composer packages use "module-" prefix)
+      const patParts = patLower.split(/[/_]/);
+      if (patParts.length >= 2) {
+        const modLower = mod.toLowerCase();
+        const modParts = modLower.split(/[/_]/);
+        if (modParts.length >= 2) {
+          const vendorMatch = modParts[0].startsWith(patParts[0]) || patParts[0].startsWith(modParts[0]);
+          const modulePart = modParts.slice(1).join('-');
+          const patModule = patParts.slice(1).join('-');
+          // "module-catalog" contains "catalog", or "catalog" matches after stripping "module-"
+          const moduleMatch = modulePart.includes(patModule) || modulePart.replace(/^module-/, '').includes(patModule);
+          if (vendorMatch && moduleMatch) return true;
+        }
+      }
+      return false;
     });
   });
 }
@@ -2071,7 +2108,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           moduleFilter: {
             type: 'string',
-            description: 'Filter results by vendor/module pattern. Supports wildcards. Examples: "Vendor_*" to show only custom modules, "Magento_Catalog" for specific module. Omit to search all modules.'
+            description: 'Filter results by vendor/module pattern. Supports wildcards and vendor prefix matching. Uses "/" or "_" interchangeably as separator. Examples: "Vendor_*" or "Vendor/*" to show modules from that vendor (also matches vendor-extended names like "Vendor-Extra_*"), "Magento_Catalog" for specific module. Omit to search all modules.'
           },
           expand: {
             type: 'boolean',
