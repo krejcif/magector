@@ -23,7 +23,7 @@ jobs:
             binary: magector-core
           - platform: linux-arm64
             target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
+            os: ubuntu-latest
             binary: magector-core
           - platform: win32-x64
             target: x86_64-pc-windows-msvc
