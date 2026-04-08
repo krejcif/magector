@@ -1742,7 +1742,7 @@ async function findTests(className, methodName) {
 const server = new Server(
   {
     name: 'magector',
-    version: '2.1.0'
+    version: '2.1.1'
   },
   {
     capabilities: {
