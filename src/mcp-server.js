@@ -141,6 +141,7 @@ function extractJson(stdout) {
 // Track the serve process PID to clean up orphans on restart.
 
 const PID_PATH = path.join(config.magentoRoot, '.magector', 'serve.pid');
+const REINDEX_PID_PATH = path.join(config.magentoRoot, '.magector', 'reindex.pid');
 
 /**
  * Write the serve process PID to disk so future instances can clean up orphans.
@@ -151,6 +152,32 @@ function writePidFile(pid) {
 
 function removePidFile() {
   try { if (existsSync(PID_PATH)) unlinkSync(PID_PATH); } catch {}
+}
+
+function writeReindexPidFile(pid) {
+  try { writeFileSync(REINDEX_PID_PATH, String(pid)); } catch {}
+}
+
+function removeReindexPidFile() {
+  try { if (existsSync(REINDEX_PID_PATH)) unlinkSync(REINDEX_PID_PATH); } catch {}
+}
+
+/**
+ * Check if another reindex process is already running (from another MCP instance).
+ * Returns the PID if alive, null otherwise.
+ */
+function getRunningReindexPid() {
+  try {
+    if (!existsSync(REINDEX_PID_PATH)) return null;
+    const pid = parseInt(readFileSync(REINDEX_PID_PATH, 'utf-8').trim(), 10);
+    if (!pid || isNaN(pid)) return null;
+    process.kill(pid, 0); // signal 0 = existence check
+    return pid;
+  } catch {
+    // Process doesn't exist or PID file unreadable — clean up
+    removeReindexPidFile();
+    return null;
+  }
 }
 
 /**
@@ -229,6 +256,27 @@ function checkDbFormat() {
  */
 function startBackgroundReindex() {
   if (reindexInProgress) return;
+
+  // Check if another MCP instance is already running a reindex
+  const existingPid = getRunningReindexPid();
+  if (existingPid) {
+    logToFile('INFO', `Reindex already running in another process (PID ${existingPid}) — skipping`);
+    console.error(`Reindex already running (PID ${existingPid}) — skipping`);
+    reindexInProgress = true; // mark locally so tools know
+    // Poll the external process and react when it finishes
+    const pollInterval = setInterval(() => {
+      if (!getRunningReindexPid()) {
+        clearInterval(pollInterval);
+        reindexInProgress = false;
+        logToFile('INFO', 'External reindex finished. Restarting serve process.');
+        if (serveProcess) serveProcess.kill();
+        searchCache.clear();
+        startServeProcess();
+      }
+    }, 10000);
+    return;
+  }
+
   if (!config.magentoRoot || !existsSync(config.magentoRoot)) {
     const msg = 'Cannot auto-reindex: MAGENTO_ROOT not set or not found';
     console.error(msg);
@@ -269,6 +317,9 @@ function startBackgroundReindex() {
     env: rustEnv,
   });
 
+  // Write PID file so other MCP instances know a reindex is running
+  writeReindexPidFile(reindexProcess.pid);
+
   reindexProcess.stdout.on('data', (d) => {
     const text = d.toString().replace(/\x1b\[[0-9;]*m/g, '').trim();
     if (text) logToFile('INDEX', text);
@@ -281,6 +332,7 @@ function startBackgroundReindex() {
   reindexProcess.on('exit', (code) => {
     reindexInProgress = false;
     reindexProcess = null;
+    removeReindexPidFile();
     if (code === 0) {
       // Atomic swap: old → .bak, new → current
       try {
@@ -311,6 +363,7 @@ function startBackgroundReindex() {
   reindexProcess.on('error', (err) => {
     reindexInProgress = false;
     reindexProcess = null;
+    removeReindexPidFile();
     logToFile('ERR', `Background re-index error: ${err.message}`);
     console.error(`Background re-index error: ${err.message}`);
   });
@@ -3202,6 +3255,7 @@ function cleanup(reason) {
     reindexProcess = null;
   }
   removePidFile();
+  removeReindexPidFile();
 }
 
 process.on('exit', () => cleanup('process exit'));

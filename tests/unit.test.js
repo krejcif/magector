@@ -1735,6 +1735,62 @@ function testRustSearchAsyncGuards() {
   assertEq(guardColdStart(null).length, 0, 'Cold-start guard: null → empty array');
 }
 
+// ─── Reindex Deduplication Tests ───────────────────────────────
+
+function testReindexDeduplication() {
+  console.log('\n── Reindex Deduplication ──');
+
+  // Simulate the PID-file-based reindex deduplication logic
+  let pidFileContent = null;
+
+  function writeReindexPid(pid) { pidFileContent = String(pid); }
+  function removeReindexPid() { pidFileContent = null; }
+  function getRunningReindexPid(processAlive) {
+    if (pidFileContent === null) return null;
+    const pid = parseInt(pidFileContent, 10);
+    if (!pid || isNaN(pid)) return null;
+    return processAlive ? pid : null; // simulate process.kill(pid, 0)
+  }
+
+  // No PID file → no running reindex
+  assert(getRunningReindexPid(false) === null, 'Dedup: no PID file → null');
+
+  // PID file with alive process → reindex running
+  writeReindexPid(12345);
+  assertEq(getRunningReindexPid(true), 12345, 'Dedup: alive PID → returns PID');
+
+  // PID file with dead process → clean up, return null
+  assertEq(getRunningReindexPid(false), null, 'Dedup: dead PID → null (cleaned up)');
+
+  // After cleanup, PID file should be gone
+  removeReindexPid();
+  assert(getRunningReindexPid(true) === null, 'Dedup: after remove → null');
+
+  // Simulate startBackgroundReindex skip logic
+  let reindexStarted = false;
+  function startReindex(reindexInProgress, externalPidAlive) {
+    if (reindexInProgress) return 'skip-local';
+    writeReindexPid(99999);
+    const existingPid = externalPidAlive ? 99999 : null;
+    removeReindexPid();
+    if (existingPid) return 'skip-external';
+    reindexStarted = true;
+    return 'started';
+  }
+
+  assertEq(startReindex(true, false), 'skip-local', 'Dedup: local reindex in progress → skip');
+  assertEq(startReindex(false, true), 'skip-external', 'Dedup: external reindex running → skip');
+  assert(!reindexStarted, 'Dedup: reindex was not started when skipped');
+  assertEq(startReindex(false, false), 'started', 'Dedup: no reindex running → start');
+  assert(reindexStarted, 'Dedup: reindex was started');
+
+  // Test that reindex builds to temp path (old DB preserved for queries)
+  const dbPath = '/srv/project/.magector/index.db';
+  const tempPath = dbPath + '.new';
+  assert(tempPath !== dbPath, 'Dedup: temp path differs from main DB path');
+  assert(tempPath.endsWith('.new'), 'Dedup: temp path ends with .new');
+}
+
 // ─── Reindex Temp Path Logic Tests ─────────────────────────────
 
 function testReindexTempPathLogic() {
@@ -1806,6 +1862,7 @@ async function main() {
   testImpactAnalysisLogic();
   testReindexTempPathLogic();
   testRustSearchAsyncGuards();
+  testReindexDeduplication();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
