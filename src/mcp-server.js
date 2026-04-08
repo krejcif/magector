@@ -16,7 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { execFileSync, spawn } from 'child_process';
 import { createInterface } from 'readline';
-import { existsSync, statSync, unlinkSync, appendFileSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
+import { existsSync, statSync, unlinkSync, copyFileSync, appendFileSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
 import { stat } from 'fs/promises';
 import { glob } from 'glob';
 import path from 'path';
@@ -229,19 +229,23 @@ function startBackgroundReindex() {
     return;
   }
 
-  reindexInProgress = true;
-
-  // Do NOT delete existing DB — the new indexer saves incrementally,
-  // so a partial index is better than no index. The Rust binary handles
-  // format incompatibility internally by clearing and rebuilding.
+  // Safety: back up existing DB before destructive re-index.
+  // A format-incompatible but intact DB is still recoverable by the
+  // matching binary version; deleting it forces a full rebuild (~1h).
   const hadExistingDb = existsSync(config.dbPath);
   if (hadExistingDb) {
     try {
       const fstat = statSync(config.dbPath);
-      logToFile('WARN', `Existing DB (${(fstat.size / 1024).toFixed(0)} KB) will be overwritten by re-index.`);
-    } catch {}
+      const backupPath = config.dbPath + '.bak';
+      logToFile('WARN', `Existing DB (${(fstat.size / 1024).toFixed(0)} KB) — backing up to ${backupPath} before re-index.`);
+      copyFileSync(config.dbPath, backupPath);
+    } catch (e) {
+      logToFile('WARN', `Failed to back up DB: ${e.message}`);
+    }
     try { unlinkSync(config.dbPath); } catch {}
   }
+
+  reindexInProgress = true;
 
   logToFile('WARN', `Database format incompatible. Starting background re-index.`);
   console.error(`Database format incompatible. Starting background re-index (log: ${LOG_PATH})`);

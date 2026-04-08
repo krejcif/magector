@@ -257,20 +257,44 @@ async function main() {
 
     case 'index': {
       // First non-flag arg after `index` is the path; everything else is options.
+      // Must skip values belonging to flags (e.g., "4" in "--threads 4").
       const indexArgv = args.slice(1);
-      const targetPath = indexArgv.find(a => !a.startsWith('-'));
       const indexOpts = parseArgs(indexArgv);
+      let targetPath = undefined;
+      for (let i = 0; i < indexArgv.length; i++) {
+        if (indexArgv[i] === '--threads' || indexArgv[i] === '--batch-size') {
+          i++; // skip the flag's value
+        } else if (indexArgv[i].startsWith('-')) {
+          // skip boolean flags like --force, --verbose
+        } else {
+          targetPath = indexArgv[i];
+          break; // first non-flag, non-value arg is the path
+        }
+      }
       await runIndex(targetPath, indexOpts);
       break;
     }
 
     case 'search': {
-      const query = args.slice(1).filter(a => !a.startsWith('-')).join(' ');
+      // Build query from non-flag arguments, skipping values that belong to flags
+      const searchArgv = args.slice(1);
+      const queryParts = [];
+      for (let i = 0; i < searchArgv.length; i++) {
+        if (searchArgv[i] === '-l' || searchArgv[i] === '--limit' ||
+            searchArgv[i] === '-f' || searchArgv[i] === '--format') {
+          i++; // skip the flag's value
+        } else if (searchArgv[i].startsWith('-')) {
+          // skip boolean flags like -v, --verbose
+        } else {
+          queryParts.push(searchArgv[i]);
+        }
+      }
+      const query = queryParts.join(' ');
       if (!query) {
         console.error('Usage: npx magector search <query>');
         process.exit(1);
       }
-      const opts = parseArgs(args.slice(1));
+      const opts = parseArgs(searchArgv);
       runSearch(query, opts);
       break;
     }
