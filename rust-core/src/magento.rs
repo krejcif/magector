@@ -516,6 +516,35 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_graphql_resolver_under_model() {
+        // Resolvers under Model/Resolver/ in graph-ql modules must be detected
+        // as GraphQlResolver, not Model (regression test for ordering fix)
+        assert_eq!(
+            detect_file_type("vendor/magento/module-catalog-graph-ql/Model/Resolver/Products.php"),
+            MagentoFileType::GraphQlResolver
+        );
+        assert_eq!(
+            detect_file_type("vendor/magento/module-quote-graph-ql/Model/Resolver/Cart.php"),
+            MagentoFileType::GraphQlResolver
+        );
+        // Standalone graphql resolvers (not under Model/) still work
+        assert_eq!(
+            detect_file_type("vendor/magento/module-catalog-graphql/Resolver/Category.php"),
+            MagentoFileType::GraphQlResolver
+        );
+        // Plain Model/ without graphql context remains Model
+        assert_eq!(
+            detect_file_type("vendor/magento/module-catalog/Model/Product.php"),
+            MagentoFileType::Model
+        );
+        // Repository under Model/ still detected as Repository
+        assert_eq!(
+            detect_file_type("vendor/magento/module-catalog/Model/ProductRepository.php"),
+            MagentoFileType::Repository
+        );
+    }
+
+    #[test]
     fn test_extract_module_info() {
         let info = extract_module_info("app/code/Magento/Catalog/Model/Product.php").unwrap();
         assert_eq!(info.vendor, "Magento");

@@ -1877,6 +1877,56 @@ function testReindexTempPathLogic() {
   assert(!shouldBlock(false, false, 'magento_search'), 'Reindex: not blocked when reindex not running');
 }
 
+// ─── Stdin Cleanup (orphan prevention) ────────────────────────
+
+async function testStdinCleanup() {
+  console.log('\n── Stdin Cleanup (orphan prevention) ──');
+
+  const { spawn } = await import('child_process');
+  const serverPath = path.resolve(__dirname, '..', 'src', 'mcp-server.js');
+
+  // Start MCP server, then close stdin — it should exit cleanly
+  const child = spawn('node', [serverPath], {
+    cwd: path.resolve(__dirname, '..'),
+    env: {
+      ...process.env,
+      MAGENTO_ROOT: '/tmp/magector-test-nonexistent',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let stderr = '';
+  child.stderr.on('data', (d) => { stderr += d.toString(); });
+
+  // Wait for server to start
+  await new Promise((resolve) => {
+    const onData = (d) => {
+      if (d.toString().includes('Warmup complete') || d.toString().includes('warming up')) {
+        child.stderr.off('data', onData);
+        resolve();
+      }
+    };
+    child.stderr.on('data', onData);
+    // Timeout after 15s
+    setTimeout(resolve, 15000);
+  });
+
+  // Close stdin — simulates Claude Code disconnecting
+  child.stdin.end();
+
+  // Process should exit within 5 seconds
+  const exitCode = await Promise.race([
+    new Promise((resolve) => child.on('exit', (code) => resolve(code))),
+    new Promise((resolve) => setTimeout(() => resolve('timeout'), 5000)),
+  ]);
+
+  assert(exitCode !== 'timeout', 'Process exits after stdin close (not orphaned)');
+  assertEq(exitCode, 0, 'Exit code is 0 (clean shutdown)');
+
+  // Cleanup just in case
+  try { child.kill('SIGKILL'); } catch {}
+}
+
 // ─── Run All ───────────────────────────────────────────────────
 
 async function main() {
@@ -1910,6 +1960,7 @@ async function main() {
   testRustSearchAsyncGuards();
   testReindexDeduplication();
   testSingletonAndWarmup();
+  await testStdinCleanup();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
