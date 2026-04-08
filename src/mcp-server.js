@@ -3525,6 +3525,17 @@ process.on('SIGTERM', () => { cleanup('SIGTERM'); process.exit(0); });
 process.on('SIGINT', () => { cleanup('SIGINT'); process.exit(0); });
 process.on('SIGHUP', () => { cleanup('SIGHUP'); process.exit(0); });
 
+// Exit when parent (Claude Code) closes stdin — prevents orphaned processes
+process.stdin.on('end', () => {
+  logToFile('INFO', 'stdin closed (parent disconnected) — shutting down');
+  cleanup('stdin end');
+  process.exit(0);
+});
+process.stdin.on('error', () => {
+  cleanup('stdin error');
+  process.exit(0);
+});
+
 main().catch((err) => {
   logToFile('FATAL', `Startup failed: ${err.message}\n${err.stack}`);
   console.error(err);

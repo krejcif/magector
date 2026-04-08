@@ -120,14 +120,17 @@ pub fn detect_file_type(path: &str) -> MagentoFileType {
     if path_lower.contains("/cron/") {
         return MagentoFileType::Cron;
     }
+    // GraphQL resolver check BEFORE /model/ — resolvers live under
+    // Model/Resolver/ in graph-ql modules and would otherwise be classified
+    // as plain models.
+    if path_lower.contains("resolver") && (path_lower.contains("graph-ql") || path_lower.contains("graphql")) {
+        return MagentoFileType::GraphQlResolver;
+    }
     if path_lower.contains("/model/") {
         if path_lower.contains("repository") {
             return MagentoFileType::Repository;
         }
         return MagentoFileType::Model;
-    }
-    if path_lower.contains("graphql") && path_lower.contains("resolver") {
-        return MagentoFileType::GraphQlResolver;
     }
 
     // Other file types

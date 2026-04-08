@@ -416,6 +416,8 @@ impl VectorDB {
         let wants_repository = query_terms.contains(&"repository");
         let wants_setup = query_terms.contains(&"setup");
         let wants_observer = query_terms.contains(&"observer");
+        let wants_resolver = query_terms.contains(&"resolver");
+        let wants_graphql = query_terms.contains(&"graphql");
 
         let mut scored: Vec<SearchResult> = results
             .into_iter()
@@ -485,10 +487,27 @@ impl VectorDB {
                     if wants_observer && (mtype == "observer" || path_lower.contains("/observer/") || meta.is_observer) {
                         keyword_bonus += 0.15;
                     }
+                    if wants_resolver && (mtype == "graphql_resolver" || meta.is_resolver) {
+                        keyword_bonus += 0.15;
+                    }
+                    if wants_graphql && (mtype == "graphql_resolver" || mtype == "graphql_schema" || path_lower.contains("graph-ql") || path_lower.contains("graphql")) {
+                        keyword_bonus += 0.10;
+                    }
 
                     // Multi-term bonus: reward results matching many query terms
                     if matched_terms >= 3 {
                         keyword_bonus += 0.05;
+                    }
+
+                    // Deprioritize framework abstractions (interfaces, abstract
+                    // base classes) when the query asks for concrete features.
+                    // Users searching for "cart resolver" want Cart.php, not
+                    // ResolverInterface.php.
+                    if path_lower.contains("/framework/") {
+                        let class_lower = meta.class_name.as_deref().unwrap_or("").to_lowercase();
+                        if class_lower.ends_with("interface") || class_lower.starts_with("abstract") {
+                            keyword_bonus -= 0.12;
+                        }
                     }
 
                     // Cap keyword bonus to avoid overwhelming semantic score
