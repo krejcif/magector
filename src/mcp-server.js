@@ -16,7 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { execFileSync, spawn } from 'child_process';
 import { createInterface } from 'readline';
-import { existsSync, statSync, unlinkSync, copyFileSync, appendFileSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
+import { existsSync, statSync, unlinkSync, copyFileSync, renameSync, appendFileSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
 import { stat } from 'fs/promises';
 import { glob } from 'glob';
 import path from 'path';
@@ -217,8 +217,9 @@ function checkDbFormat() {
 }
 
 /**
- * Start a background re-index process. Logs to .magector/magector.log.
- * MCP tools return an informative error while this is running.
+ * Start a background re-index process that builds to a temporary path.
+ * The old DB remains in place so search tools keep working during rebuild.
+ * On completion, the new index is swapped in atomically (old → .bak, new → current).
  */
 function startBackgroundReindex() {
   if (reindexInProgress) return;
@@ -229,34 +230,25 @@ function startBackgroundReindex() {
     return;
   }
 
-  // Safety: back up existing DB before destructive re-index.
-  // A format-incompatible but intact DB is still recoverable by the
-  // matching binary version; deleting it forces a full rebuild (~1h).
-  const hadExistingDb = existsSync(config.dbPath);
-  if (hadExistingDb) {
-    try {
-      const fstat = statSync(config.dbPath);
-      const backupPath = config.dbPath + '.bak';
-      logToFile('WARN', `Existing DB (${(fstat.size / 1024).toFixed(0)} KB) — backing up to ${backupPath} before re-index.`);
-      copyFileSync(config.dbPath, backupPath);
-    } catch (e) {
-      logToFile('WARN', `Failed to back up DB: ${e.message}`);
-    }
-    try { unlinkSync(config.dbPath); } catch {}
+  const tempDbPath = config.dbPath + '.new';
+
+  // Clean up leftover temp DB from a previous failed reindex
+  if (existsSync(tempDbPath)) {
+    try { unlinkSync(tempDbPath); } catch {}
   }
 
   reindexInProgress = true;
 
-  logToFile('WARN', `Database format incompatible. Starting background re-index.`);
+  const hadExistingDb = existsSync(config.dbPath);
+  logToFile('WARN', `Starting background re-index to temp path. Old DB ${hadExistingDb ? 'preserved for queries' : 'not found'}.`);
   console.error(`Database format incompatible. Starting background re-index (log: ${LOG_PATH})`);
 
   const reindexArgs = [
     'index',
     '-m', config.magentoRoot,
-    '-d', config.dbPath,
+    '-d', tempDbPath,
     '-c', config.modelCache
   ];
-  // Pass thread limit if configured
   const threads = process.env.MAGECTOR_THREADS;
   if (threads) {
     reindexArgs.push('--threads', threads);
@@ -271,7 +263,6 @@ function startBackgroundReindex() {
     env: rustEnv,
   });
 
-  // Pipe reindex stdout/stderr to log file (strip ANSI codes)
   reindexProcess.stdout.on('data', (d) => {
     const text = d.toString().replace(/\x1b\[[0-9;]*m/g, '').trim();
     if (text) logToFile('INDEX', text);
@@ -285,12 +276,27 @@ function startBackgroundReindex() {
     reindexInProgress = false;
     reindexProcess = null;
     if (code === 0) {
+      // Atomic swap: old → .bak, new → current
+      try {
+        if (existsSync(config.dbPath)) {
+          const backupPath = config.dbPath + '.bak';
+          if (existsSync(backupPath)) { try { unlinkSync(backupPath); } catch {} }
+          renameSync(config.dbPath, backupPath);
+          logToFile('INFO', 'Old DB moved to .bak');
+        }
+        renameSync(tempDbPath, config.dbPath);
+        logToFile('INFO', 'New index swapped into place.');
+      } catch (e) {
+        logToFile('ERR', `Failed to swap index: ${e.message}`);
+      }
       logToFile('INFO', 'Background re-index completed. Restarting serve process.');
       console.error('Background re-index completed. Restarting serve process.');
       if (serveProcess) serveProcess.kill();
       searchCache.clear();
       startServeProcess();
     } else {
+      // Clean up failed temp DB
+      try { if (existsSync(tempDbPath)) unlinkSync(tempDbPath); } catch {}
       logToFile('ERR', `Background re-index failed (exit code ${code})`);
       console.error(`Background re-index failed (exit code ${code}). Check ${LOG_PATH}`);
     }
@@ -1391,12 +1397,352 @@ async function profilePerformance(subsystem, threshold = 0) {
   };
 }
 
+// ─── BM25 Text Scoring ──────────────────────────────────────────
+// Simple BM25 scoring to complement vector similarity on exact class/method names.
+
+function bm25Score(queryTerms, text, k1 = 1.2, b = 0.75) {
+  if (!text || !queryTerms.length) return 0;
+  const words = text.toLowerCase().split(/[\W_]+/).filter(Boolean);
+  const docLen = words.length;
+  const avgDocLen = 200;
+  let score = 0;
+  for (const term of queryTerms) {
+    const termLower = term.toLowerCase();
+    const tf = words.filter(w => w === termLower).length;
+    if (tf === 0) continue;
+    const numerator = tf * (k1 + 1);
+    const denominator = tf + k1 * (1 - b + b * (docLen / avgDocLen));
+    score += numerator / denominator;
+  }
+  return score;
+}
+
+/**
+ * Hybrid rerank: combine vector score with BM25 text score.
+ * @param {Array} results - normalized search results
+ * @param {string} query - original query string
+ * @param {number} bm25Weight - weight for BM25 component (default 0.3)
+ */
+function hybridRerank(results, query, bm25Weight = 0.3) {
+  if (!results.length || !query) return results;
+  const queryTerms = query.toLowerCase().split(/[\s_\\]+/).filter(t => t.length > 2);
+  if (!queryTerms.length) return results;
+
+  return results.map(r => {
+    const textScore = bm25Score(queryTerms, (r.searchText || '') + ' ' + (r.className || '') + ' ' + (r.path || ''));
+    // Normalize BM25 score relative to max possible
+    const bonus = Math.min(textScore * bm25Weight, 1.0);
+    return { ...r, score: (r.score || 0) + bonus, bm25: textScore };
+  }).sort((a, b) => b.score - a.score);
+}
+
+// ─── Query Expansion ────────────────────────────────────────────
+// Expand queries with Magento domain synonyms for better recall.
+
+const MAGENTO_SYNONYMS = {
+  plugin: ['interceptor', 'around method', 'before after'],
+  preference: ['di override', 'rewrite', 'di.xml for type'],
+  observer: ['event listener', 'event handler', 'events.xml'],
+  model: ['entity', 'resource model'],
+  block: ['view block', 'template block'],
+  controller: ['action class', 'execute method', 'route handler'],
+  cron: ['scheduled task', 'crontab.xml'],
+  api: ['rest endpoint', 'webapi', 'service contract'],
+  layout: ['xml layout', 'handle', 'container', 'reference block'],
+  checkout: ['cart', 'quote', 'totals collection'],
+  order: ['sales order', 'order placement', 'order submit'],
+  product: ['catalog product', 'product entity'],
+  customer: ['customer entity', 'customer account'],
+  indexer: ['reindex', 'flat table', 'price index'],
+  payment: ['payment method', 'payment gateway', 'payment information'],
+  shipping: ['carrier', 'shipping method', 'delivery'],
+  stock: ['inventory', 'salable quantity', 'source item'],
+};
+
+function expandQuery(query) {
+  const terms = query.toLowerCase().split(/\s+/);
+  const expanded = [query]; // keep original query as-is
+  for (const term of terms) {
+    const synonyms = MAGENTO_SYNONYMS[term];
+    if (synonyms) {
+      expanded.push(...synonyms);
+    }
+  }
+  return expanded.join(' ');
+}
+
+// ─── Module Filtering ───────────────────────────────────────────
+// Filter search results by vendor/module namespace pattern.
+
+function filterByModule(results, moduleFilter) {
+  if (!moduleFilter) return results;
+  const patterns = Array.isArray(moduleFilter) ? moduleFilter : [moduleFilter];
+  return results.filter(r => {
+    const mod = r.module || '';
+    const filePath = r.path || '';
+    return patterns.some(pat => {
+      if (pat.includes('*')) {
+        const regex = new RegExp('^' + pat.replace(/\*/g, '.*') + '$', 'i');
+        return regex.test(mod) || regex.test(filePath);
+      }
+      return mod.toLowerCase().includes(pat.toLowerCase()) ||
+             filePath.toLowerCase().includes(pat.toLowerCase());
+    });
+  });
+}
+
+// ─── Layout XML Search ──────────────────────────────────────────
+
+async function findLayout(query, handle) {
+  const root = config.magentoRoot;
+  const layoutFiles = await glob('**/view/**/layout/**/*.xml', { cwd: root, absolute: true, nodir: true });
+  const queryLower = (query || '').toLowerCase();
+  const handleLower = (handle || '').toLowerCase();
+
+  const results = [];
+
+  for (const file of layoutFiles) {
+    let content;
+    try { content = readFileSync(file, 'utf-8'); } catch { continue; }
+    const relativePath = file.replace(root + '/', '');
+    const fileName = path.basename(file, '.xml');
+
+    const handleMatch = handleLower && fileName.toLowerCase().includes(handleLower);
+    const contentMatch = queryLower && content.toLowerCase().includes(queryLower);
+
+    if (!handleMatch && !contentMatch) continue;
+
+    const blocks = [];
+    const blockRegex = /<block\s+[^>]*(?:class|name)="([^"]+)"[^>]*/g;
+    let m;
+    while ((m = blockRegex.exec(content)) !== null) blocks.push(m[1]);
+
+    const containers = [];
+    const containerRegex = /<(?:container|referenceContainer)\s+[^>]*name="([^"]+)"[^>]*/g;
+    while ((m = containerRegex.exec(content)) !== null) containers.push(m[1]);
+
+    const refBlocks = [];
+    const refBlockRegex = /<referenceBlock\s+[^>]*name="([^"]+)"[^>]*/g;
+    while ((m = refBlockRegex.exec(content)) !== null) refBlocks.push(m[1]);
+
+    results.push({
+      path: relativePath,
+      handle: fileName,
+      blocks: [...new Set(blocks)],
+      containers: [...new Set(containers)],
+      referenceBlocks: [...new Set(refBlocks)],
+      score: (handleMatch ? 1.0 : 0) + (contentMatch ? 0.5 : 0)
+    });
+  }
+
+  return results.sort((a, b) => b.score - a.score);
+}
+
+// ─── Impact Analysis ────────────────────────────────────────────
+
+async function analyzeImpact(className) {
+  const root = config.magentoRoot;
+  const shortName = className.split('\\').pop();
+
+  const references = {
+    className,
+    useStatements: [],
+    diXmlReferences: [],
+    instantiations: [],
+    typeHints: [],
+    total: 0
+  };
+
+  // Use vector search to find candidate files (much faster than globbing all PHP)
+  const rawSearch = await rustSearchAsync(`${shortName} ${className}`, 50).catch(() => []);
+  const raw = Array.isArray(rawSearch) ? rawSearch : [];
+  const relatedPaths = raw.map(r => normalizeResult(r)).filter(r => r.path);
+
+  // Check DI references via xml parsing
+  const diTrace = await traceDependency(className, 'both');
+  references.diXmlReferences = [
+    ...diTrace.preferences.map(p => ({ type: 'preference', file: p.file, detail: `${p.for} → ${p.type}` })),
+    ...diTrace.plugins.map(p => ({ type: 'plugin', file: p.file, detail: `${p.pluginName}: ${p.pluginClass}` })),
+    ...diTrace.virtualTypes.map(v => ({ type: 'virtualType', file: v.file, detail: `${v.name} extends ${v.type}` })),
+    ...diTrace.argumentOverrides.map(a => ({ type: 'argument', file: a.file, detail: `${a.target}.${a.argumentName}` }))
+  ];
+
+  // Check PHP files for direct references
+  for (const r of relatedPaths.slice(0, 40)) {
+    const absPath = path.join(root, r.path);
+    if (!existsSync(absPath) || !r.path.endsWith('.php')) continue;
+    let content;
+    try { content = readFileSync(absPath, 'utf-8'); } catch { continue; }
+
+    const hasUse = content.includes(`use ${className}`) || content.includes(`\\${className}`);
+    if (hasUse) {
+      references.useStatements.push({ file: r.path, className: r.className });
+    }
+    if (content.includes(`new ${shortName}(`) || content.includes(`new \\${className}(`)) {
+      references.instantiations.push({ file: r.path, className: r.className });
+    }
+    if (content.includes(`@var ${shortName}`) || content.includes(`@param ${shortName}`) ||
+        content.match(new RegExp(`:\\s*${shortName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`))) {
+      references.typeHints.push({ file: r.path, className: r.className });
+    }
+  }
+
+  references.total = references.useStatements.length + references.diXmlReferences.length +
+                     references.instantiations.length + references.typeHints.length;
+
+  return references;
+}
+
+// ─── Event Flow Tracing ─────────────────────────────────────────
+
+async function traceEventFlow(eventName) {
+  const root = config.magentoRoot;
+
+  const result = {
+    eventName,
+    dispatchers: [],
+    observers: [],
+    observerDetails: []
+  };
+
+  // 1. Parse all events.xml for observer declarations
+  const eventsFiles = await glob('**/etc/**/events.xml', { cwd: root, absolute: true, nodir: true });
+  const escapedEvent = eventName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  for (const file of eventsFiles) {
+    let content;
+    try { content = readFileSync(file, 'utf-8'); } catch { continue; }
+    const relativePath = file.replace(root + '/', '');
+
+    const eventBlockRegex = new RegExp(`<event\\s+name="${escapedEvent}"[^>]*>([\\s\\S]*?)<\\/event>`, 'g');
+    let eventMatch;
+    while ((eventMatch = eventBlockRegex.exec(content)) !== null) {
+      const block = eventMatch[1];
+      const obsRegex = /<observer\s+[^>]*name="([^"]+)"[^>]*instance="([^"]+)"[^>]*(?:method="([^"]+)")?[^>]*\/?>/g;
+      let obsMatch;
+      while ((obsMatch = obsRegex.exec(block)) !== null) {
+        result.observers.push({
+          name: obsMatch[1],
+          instance: obsMatch[2],
+          method: obsMatch[3] || 'execute',
+          file: relativePath
+        });
+      }
+    }
+  }
+
+  // 2. Find dispatch() calls via vector search
+  try {
+    const dispatchSearch = await rustSearchAsync(`dispatch ${eventName} eventManager`, 20);
+    const dispatchRaw = Array.isArray(dispatchSearch) ? dispatchSearch : [];
+    const dispatchers = dispatchRaw.map(normalizeResult).filter(r =>
+      r.searchText?.includes(eventName) || r.path?.endsWith('.php')
+    );
+    result.dispatchers = dispatchers.slice(0, 10).map(r => ({
+      path: r.path,
+      className: r.className,
+      snippet: (r.searchText || '').slice(0, 200)
+    }));
+  } catch { /* index may not be ready */ }
+
+  // 3. Resolve observer PHP classes
+  for (const obs of result.observers.slice(0, 10)) {
+    const shortName = obs.instance.split('\\').pop();
+    try {
+      const obsSearch = await rustSearchAsync(shortName, 5);
+      const obsRaw = Array.isArray(obsSearch) ? obsSearch : [];
+      const matches = obsRaw.map(normalizeResult).filter(r =>
+        r.className?.includes(shortName)
+      );
+      if (matches[0]) {
+        result.observerDetails.push({
+          name: obs.name,
+          instance: obs.instance,
+          path: matches[0].path,
+          methods: matches[0].methods || []
+        });
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  return result;
+}
+
+// ─── Test Finder ────────────────────────────────────────────────
+
+async function findTests(className, methodName) {
+  const root = config.magentoRoot;
+  const shortName = className.split('\\').pop();
+
+  const result = {
+    className,
+    tests: []
+  };
+
+  // Find test files by name pattern
+  const testPatterns = [
+    `**/*${shortName}Test.php`,
+    `**/*${shortName}*Test.php`,
+    `**/Test/**/*${shortName}*.php`,
+  ];
+
+  const testFiles = new Set();
+  for (const pattern of testPatterns) {
+    try {
+      const found = await glob(pattern, { cwd: root, absolute: true, nodir: true });
+      for (const f of found) testFiles.add(f);
+    } catch { /* glob failure non-fatal */ }
+  }
+
+  // Also search via vector search
+  try {
+    const query = methodName
+      ? `test ${shortName} ${methodName} PHPUnit`
+      : `test ${shortName} PHPUnit`;
+    const rawSearch = await rustSearchAsync(query, 20);
+    const rawArr = Array.isArray(rawSearch) ? rawSearch : [];
+    for (const r of rawArr.map(normalizeResult)) {
+      if (r.path?.toLowerCase().includes('test')) {
+        testFiles.add(path.join(root, r.path));
+      }
+    }
+  } catch { /* index may not be ready */ }
+
+  // Read each test file and extract info
+  for (const file of [...testFiles].slice(0, 20)) {
+    let content;
+    try { content = readFileSync(file, 'utf-8'); } catch { continue; }
+    const relativePath = file.replace(root + '/', '');
+
+    if (!content.includes(shortName)) continue;
+
+    const testMethods = [];
+    const methodRegex = /(?:public\s+)?function\s+(test\w+)\s*\(/g;
+    let m;
+    while ((m = methodRegex.exec(content)) !== null) testMethods.push(m[1]);
+
+    const coversAnnotation = content.includes('@covers') && content.includes(shortName);
+    const hasMock = content.includes('getMock') || content.includes('createMock') ||
+                    content.includes('MockObject');
+
+    result.tests.push({
+      path: relativePath,
+      testMethods,
+      coversAnnotation,
+      hasMock,
+      referencesClass: content.includes(shortName)
+    });
+  }
+
+  return result;
+}
+
 // ─── MCP Server ─────────────────────────────────────────────────
 
 const server = new Server(
   {
     name: 'magector',
-    version: '2.0.0'
+    version: '2.1.0'
   },
   {
     capabilities: {
@@ -1422,6 +1768,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'number',
             description: 'Maximum results to return (default: 10, max: 100)',
             default: 10
+          },
+          moduleFilter: {
+            type: 'string',
+            description: 'Filter results by vendor/module pattern. Supports wildcards. Examples: "Vendor_*" to show only custom modules, "Magento_Catalog" for specific module. Omit to search all modules.'
+          },
+          expand: {
+            type: 'boolean',
+            description: 'Enable query expansion with Magento domain synonyms for better recall (default: true)',
+            default: true
           },
         },
         required: ['query']
@@ -1813,6 +2168,69 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['subsystem']
       }
     },
+    {
+      name: 'magento_find_layout',
+      description: 'Find layout XML files — handles, blocks, containers, and referenceBlock/referenceContainer declarations. Parses view/*/layout/*.xml files across all modules. Use to understand page structure and block assignments.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Search term to find in layout XML content. Examples: "product.info", "checkout.cart", "minicart", "breadcrumbs", "page.main.title"'
+          },
+          handle: {
+            type: 'string',
+            description: 'Layout handle name (file name without .xml). Examples: "catalog_product_view", "checkout_index_index", "default", "customer_account"'
+          }
+        }
+      }
+    },
+    {
+      name: 'magento_impact_analysis',
+      description: 'Analyze the impact of changing a PHP class — finds all files that reference it via use statements, DI configuration, instantiation, and type hints. Combines DI XML tracing with PHP source analysis to map cross-module dependencies.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          className: {
+            type: 'string',
+            description: 'Full or partial PHP class/interface name. Examples: "ProductRepository", "CartManagementInterface", "StoreManagerInterface"'
+          }
+        },
+        required: ['className']
+      }
+    },
+    {
+      name: 'magento_find_event_flow',
+      description: 'Trace complete event flow chain: find where an event is dispatched, list all observers registered in events.xml, and resolve observer PHP classes. Shows the full dispatch → observer → handler chain for any Magento event.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          eventName: {
+            type: 'string',
+            description: 'Magento event name. Examples: "sales_order_place_after", "checkout_cart_add_product_complete", "catalog_product_save_after", "customer_login", "controller_action_predispatch"'
+          }
+        },
+        required: ['eventName']
+      }
+    },
+    {
+      name: 'magento_find_test',
+      description: 'Find PHPUnit test files for a given PHP class or method. Searches Test/ directories for test classes, @covers annotations, mock references, and class name matches. Helps identify test coverage for refactoring.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          className: {
+            type: 'string',
+            description: 'PHP class name to find tests for. Examples: "ProductRepository", "CartManagement", "OrderService"'
+          },
+          methodName: {
+            type: 'string',
+            description: 'Optional method name to narrow test search. Examples: "save", "getById", "execute"'
+          }
+        },
+        required: ['className']
+      }
+    },
   ]
 }));
 
@@ -1821,15 +2239,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const reqStart = Date.now();
   logToFile('REQ', `${name}(${JSON.stringify(args || {})})`);
 
-  // Block search tools while re-indexing is in progress
-  // Tools that work without the vector index should not be blocked during reindex
-  const indexFreeTools = ['magento_stats', 'magento_analyze_diff', 'magento_complexity', 'magento_trace_dependency', 'magento_error_parser'];
-  if (reindexInProgress && !indexFreeTools.includes(name)) {
-    logToFile('REQ', `${name} → blocked (re-indexing in progress)`);
+  // Block search tools only when re-indexing AND no usable old DB exists.
+  // If old DB is preserved, searches keep running against it during rebuild.
+  const indexFreeTools = ['magento_stats', 'magento_analyze_diff', 'magento_complexity',
+    'magento_trace_dependency', 'magento_error_parser', 'magento_find_layout',
+    'magento_impact_analysis', 'magento_find_event_flow', 'magento_find_test'];
+  const hasUsableDb = existsSync(config.dbPath) && (() => { try { return statSync(config.dbPath).size > 100; } catch { return false; } })();
+  if (reindexInProgress && !hasUsableDb && !indexFreeTools.includes(name)) {
+    logToFile('REQ', `${name} → blocked (re-indexing, no usable DB)`);
     return {
       content: [{
         type: 'text',
-        text: 'Re-indexing in progress. The database format was incompatible and is being rebuilt automatically. Check .magector/magector.log for progress. Search tools will be available once re-indexing completes.'
+        text: 'Re-indexing in progress and no previous index available. Check .magector/magector.log for progress. Search tools will be available once re-indexing completes.'
       }],
       isError: true,
     };
@@ -1843,15 +2264,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case 'magento_search': {
-        const raw = await rustSearchAsync(args.query, args.limit || 10);
+        const searchQuery = args.expand !== false ? expandQuery(args.query) : args.query;
+        const raw = await rustSearchAsync(searchQuery, Math.max(args.limit || 10, 30));
         const arr = Array.isArray(raw) ? raw : [];
-        const results = arr.map(normalizeResult);
+        let results = arr.map(normalizeResult);
+        // Hybrid BM25 rerank for better exact-match handling
+        results = hybridRerank(results, args.query);
+        // Apply module filter if specified
+        if (args.moduleFilter) {
+          results = filterByModule(results, args.moduleFilter);
+        }
         // SONA: record search with results for follow-up tracking
         sessionTracker.recordToolCall(name, args || {}, arr);
         return {
           content: [{
             type: 'text',
-            text: formatSearchResults(results)
+            text: formatSearchResults(results.slice(0, args.limit || 10))
           }]
         };
       }
@@ -2510,6 +2938,132 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text }] };
       }
 
+      case 'magento_find_layout': {
+        if (!args.query && !args.handle) {
+          return { content: [{ type: 'text', text: 'Provide at least one of: query or handle.' }], isError: true };
+        }
+        const layouts = await findLayout(args.query, args.handle);
+        if (layouts.length === 0) {
+          return { content: [{ type: 'text', text: 'No layout XML files found matching the query.' }] };
+        }
+        let text = `## Layout XML Results (${layouts.length} files)\n\n`;
+        for (const l of layouts.slice(0, 20)) {
+          text += `### ${l.handle} — \`${l.path}\`\n`;
+          if (l.blocks.length > 0) text += `  Blocks: ${l.blocks.slice(0, 10).map(b => '`' + b + '`').join(', ')}\n`;
+          if (l.containers.length > 0) text += `  Containers: ${l.containers.slice(0, 10).map(c => '`' + c + '`').join(', ')}\n`;
+          if (l.referenceBlocks.length > 0) text += `  Ref blocks: ${l.referenceBlocks.slice(0, 10).map(b => '`' + b + '`').join(', ')}\n`;
+          text += '\n';
+        }
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_impact_analysis': {
+        const impact = await analyzeImpact(args.className);
+
+        let text = `## Impact Analysis: ${impact.className}\n\n`;
+        text += `**Total references:** ${impact.total}\n\n`;
+
+        if (impact.useStatements.length > 0) {
+          text += `### Use Statements (${impact.useStatements.length})\n`;
+          for (const u of impact.useStatements) {
+            text += `- \`${u.file}\`${u.className ? ` (${u.className})` : ''}\n`;
+          }
+          text += '\n';
+        }
+
+        if (impact.diXmlReferences.length > 0) {
+          text += `### DI XML References (${impact.diXmlReferences.length})\n`;
+          for (const d of impact.diXmlReferences) {
+            text += `- [${d.type}] ${d.detail} (\`${d.file}\`)\n`;
+          }
+          text += '\n';
+        }
+
+        if (impact.instantiations.length > 0) {
+          text += `### Direct Instantiations (${impact.instantiations.length})\n`;
+          for (const i of impact.instantiations) {
+            text += `- \`${i.file}\`${i.className ? ` (${i.className})` : ''}\n`;
+          }
+          text += '\n';
+        }
+
+        if (impact.typeHints.length > 0) {
+          text += `### Type Hints / PHPDoc (${impact.typeHints.length})\n`;
+          for (const t of impact.typeHints) {
+            text += `- \`${t.file}\`${t.className ? ` (${t.className})` : ''}\n`;
+          }
+          text += '\n';
+        }
+
+        if (impact.total === 0) {
+          text += '_No references found. The class may be referenced under a different name or alias._\n';
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_find_event_flow': {
+        const flow = await traceEventFlow(args.eventName);
+
+        let text = `## Event Flow: ${flow.eventName}\n\n`;
+
+        if (flow.dispatchers.length > 0) {
+          text += `### Dispatchers (${flow.dispatchers.length})\n`;
+          for (const d of flow.dispatchers) {
+            text += `- \`${d.path}\`${d.className ? ` (${d.className})` : ''}\n`;
+            if (d.snippet) text += `  _${d.snippet.slice(0, 150)}_\n`;
+          }
+          text += '\n';
+        }
+
+        if (flow.observers.length > 0) {
+          text += `### Observers (${flow.observers.length})\n`;
+          for (const o of flow.observers) {
+            text += `- **${o.name}**: \`${o.instance}::${o.method}\` (${o.file})\n`;
+          }
+          text += '\n';
+        }
+
+        if (flow.observerDetails.length > 0) {
+          text += `### Observer Class Details\n`;
+          for (const od of flow.observerDetails) {
+            text += `- **${od.name}** → \`${od.path}\``;
+            if (od.methods.length > 0) text += ` [methods: ${od.methods.join(', ')}]`;
+            text += '\n';
+          }
+          text += '\n';
+        }
+
+        if (flow.observers.length === 0 && flow.dispatchers.length === 0) {
+          text += '_No observers or dispatchers found for this event._\n';
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_find_test': {
+        const testResult = await findTests(args.className, args.methodName);
+
+        let text = `## Tests for: ${testResult.className}\n\n`;
+
+        if (testResult.tests.length === 0) {
+          text += '_No test files found for this class._\n';
+        } else {
+          text += `Found ${testResult.tests.length} test file(s).\n\n`;
+          for (const t of testResult.tests) {
+            text += `### \`${t.path}\`\n`;
+            if (t.coversAnnotation) text += '  Has @covers annotation\n';
+            if (t.hasMock) text += '  Uses mocking\n';
+            if (t.testMethods.length > 0) {
+              text += `  Test methods: ${t.testMethods.slice(0, 15).join(', ')}\n`;
+            }
+            text += '\n';
+          }
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
+
       default:
         return {
           content: [{
@@ -2588,11 +3142,12 @@ async function main() {
     startBackgroundReindex();
   }
 
-  // Try to start persistent Rust serve process for fast queries
-  if (!reindexInProgress) {
+  // Start persistent Rust serve process for fast queries.
+  // During reindex, start if old DB exists so searches keep working.
+  const canStartServe = !reindexInProgress || (existsSync(config.dbPath) && (() => { try { return statSync(config.dbPath).size > 100; } catch { return false; } })());
+  if (canStartServe) {
     try {
       startServeProcess();
-      // Wait for the serve process to load ONNX model + HNSW index (up to 15s)
       if (serveReadyPromise) {
         const ready = await Promise.race([
           serveReadyPromise,

@@ -142,7 +142,7 @@ async function main() {
     const toolsResp = await client.send('tools/list', {});
     const tools = toolsResp.result?.tools || [];
     const toolNames = tools.map((t) => t.name);
-    log(tools.length === 24 ? 'PASS' : 'FAIL', `tools/list returns 24 tools`, `got ${tools.length}`);
+    log(tools.length === 28 ? 'PASS' : 'FAIL', `tools/list returns 28 tools`, `got ${tools.length}`);
 
     // Verify all expected tools present
     const expectedTools = [
@@ -155,6 +155,8 @@ async function main() {
       'magento_analyze_diff', 'magento_complexity', 'magento_describe',
       'magento_trace_flow', 'magento_trace_dependency', 'magento_error_parser',
       'magento_performance_profile',
+      'magento_find_layout', 'magento_impact_analysis',
+      'magento_find_event_flow', 'magento_find_test',
     ];
     for (const name of expectedTools) {
       log(toolNames.includes(name) ? 'PASS' : 'FAIL', `tool '${name}' listed`);
@@ -261,6 +263,54 @@ async function main() {
       );
     } catch (e) {
       log('FAIL', 'tools/call magento_error_parser', e.message);
+    }
+
+    // magento_find_layout works without index (parses layout XML directly)
+    try {
+      const layoutResult = await client.callTool('magento_find_layout', {
+        query: 'product'
+      });
+      const layoutText = layoutResult?.content?.[0]?.text || '';
+      const layoutOk = !layoutResult?.isError && (layoutText.includes('Layout XML') || layoutText.includes('No layout'));
+      log(layoutOk ? 'PASS' : 'FAIL', 'tools/call magento_find_layout', `${layoutText.length} chars`);
+    } catch (e) {
+      log('FAIL', 'tools/call magento_find_layout', e.message);
+    }
+
+    // magento_find_event_flow works without index for observer parsing
+    try {
+      const flowResult = await client.callTool('magento_find_event_flow', {
+        eventName: 'sales_order_place_after'
+      });
+      const flowText = flowResult?.content?.[0]?.text || '';
+      const flowOk = !flowResult?.isError && flowText.includes('Event Flow');
+      log(flowOk ? 'PASS' : 'FAIL', 'tools/call magento_find_event_flow', `${flowText.length} chars`);
+    } catch (e) {
+      log('FAIL', 'tools/call magento_find_event_flow', e.message);
+    }
+
+    // magento_find_test works without index (uses glob)
+    try {
+      const testResult = await client.callTool('magento_find_test', {
+        className: 'ProductRepository'
+      });
+      const testText = testResult?.content?.[0]?.text || '';
+      const testOk = !testResult?.isError && testText.includes('Tests for');
+      log(testOk ? 'PASS' : 'FAIL', 'tools/call magento_find_test', `${testText.length} chars`);
+    } catch (e) {
+      log('FAIL', 'tools/call magento_find_test', e.message);
+    }
+
+    // magento_impact_analysis uses vector search + DI tracing
+    try {
+      const impactResult = await client.callTool('magento_impact_analysis', {
+        className: 'ProductRepositoryInterface'
+      });
+      const impactText = impactResult?.content?.[0]?.text || '';
+      const impactOk = !impactResult?.isError && impactText.includes('Impact Analysis');
+      log(impactOk ? 'PASS' : 'FAIL', 'tools/call magento_impact_analysis', `${impactText.length} chars`);
+    } catch (e) {
+      log('FAIL', 'tools/call magento_impact_analysis', e.message);
     }
 
     if (HAS_INDEX && !SKIP_INDEX) {

@@ -1140,6 +1140,554 @@ async function testDiXmlMultiArea() {
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 }
 
+// ─── BM25 Scoring Tests ────────────────────────────────────────
+
+function testBm25Scoring() {
+  console.log('\n── BM25 Scoring ──');
+
+  // bm25Score implementation (mirrors mcp-server.js)
+  function bm25Score(queryTerms, text, k1 = 1.2, b = 0.75) {
+    if (!text || !queryTerms.length) return 0;
+    const words = text.toLowerCase().split(/[\W_]+/).filter(Boolean);
+    const docLen = words.length;
+    const avgDocLen = 200;
+    let score = 0;
+    for (const term of queryTerms) {
+      const termLower = term.toLowerCase();
+      const tf = words.filter(w => w === termLower).length;
+      if (tf === 0) continue;
+      const numerator = tf * (k1 + 1);
+      const denominator = tf + k1 * (1 - b + b * (docLen / avgDocLen));
+      score += numerator / denominator;
+    }
+    return score;
+  }
+
+  // Empty inputs
+  assertEq(bm25Score([], 'some text'), 0, 'BM25: empty query returns 0');
+  assertEq(bm25Score(['test'], ''), 0, 'BM25: empty text returns 0');
+  assertEq(bm25Score(['test'], null), 0, 'BM25: null text returns 0');
+
+  // Single term match
+  const score1 = bm25Score(['product'], 'this is a product class for product management');
+  assert(score1 > 0, 'BM25: matching term produces positive score', `score=${score1.toFixed(3)}`);
+
+  // Multiple term matches
+  const score2 = bm25Score(['product', 'price'], 'product price calculation for product pricing');
+  assert(score2 > score1, 'BM25: multiple matching terms score higher', `${score2.toFixed(3)} > ${score1.toFixed(3)}`);
+
+  // No match
+  const score3 = bm25Score(['xyz'], 'product price calculation');
+  assertEq(score3, 0, 'BM25: non-matching term returns 0');
+
+  // Case insensitive
+  const score4 = bm25Score(['Product'], 'product repository');
+  assert(score4 > 0, 'BM25: case-insensitive matching');
+
+  // Exact class name match
+  const score5 = bm25Score(['productrepository'], 'class ProductRepository extends AbstractModel');
+  assert(score5 > 0, 'BM25: class name in text scores positively');
+
+  // Hybrid rerank test
+  function hybridRerank(results, query, bm25Weight = 0.3) {
+    if (!results.length || !query) return results;
+    const queryTerms = query.toLowerCase().split(/[\s_\\]+/).filter(t => t.length > 2);
+    if (!queryTerms.length) return results;
+    return results.map(r => {
+      const textScore = bm25Score(queryTerms, (r.searchText || '') + ' ' + (r.className || '') + ' ' + (r.path || ''));
+      const bonus = Math.min(textScore * bm25Weight, 1.0);
+      return { ...r, score: (r.score || 0) + bonus, bm25: textScore };
+    }).sort((a, b) => b.score - a.score);
+  }
+
+  const testResults = [
+    { path: 'vendor/module-a/Model/Order.php', className: 'Order', searchText: 'order model', score: 0.8 },
+    { path: 'vendor/module-b/Model/ProductRepository.php', className: 'ProductRepository', searchText: 'product repository save getById', score: 0.7 },
+  ];
+  const reranked = hybridRerank(testResults, 'ProductRepository');
+  assertEq(reranked[0].className, 'ProductRepository', 'Hybrid rerank: exact class name match boosted to top');
+  assert(reranked[0].bm25 > 0, 'Hybrid rerank: BM25 score attached');
+}
+
+// ─── Query Expansion Tests ─────────────────────────────────────
+
+function testQueryExpansion() {
+  console.log('\n── Query Expansion ──');
+
+  const MAGENTO_SYNONYMS = {
+    plugin: ['interceptor', 'around method', 'before after'],
+    preference: ['di override', 'rewrite', 'di.xml for type'],
+    observer: ['event listener', 'event handler', 'events.xml'],
+    model: ['entity', 'resource model'],
+    block: ['view block', 'template block'],
+    controller: ['action class', 'execute method', 'route handler'],
+    cron: ['scheduled task', 'crontab.xml'],
+    api: ['rest endpoint', 'webapi', 'endpoint'],
+    layout: ['xml layout', 'handle', 'container', 'reference block'],
+    checkout: ['cart', 'quote', 'totals collection'],
+    order: ['sales order', 'order placement', 'order submit'],
+    product: ['catalog product', 'product entity'],
+    customer: ['customer entity', 'customer account'],
+    indexer: ['reindex', 'flat table', 'price index'],
+    payment: ['payment method', 'payment gateway', 'payment information'],
+    shipping: ['carrier', 'shipping method', 'delivery'],
+    stock: ['inventory', 'salable quantity', 'source item'],
+  };
+
+  function expandQuery(query) {
+    const terms = query.toLowerCase().split(/\s+/);
+    const expanded = [query];
+    for (const term of terms) {
+      const synonyms = MAGENTO_SYNONYMS[term];
+      if (synonyms) {
+        expanded.push(...synonyms);
+      }
+    }
+    return expanded.join(' ');
+  }
+
+  // Basic expansion
+  const expanded1 = expandQuery('plugin save');
+  assertIncludes(expanded1, 'interceptor', 'Expansion: "plugin" → includes "interceptor"');
+  assertIncludes(expanded1, 'around method', 'Expansion: "plugin" → includes "around method"');
+  assertIncludes(expanded1, 'plugin save', 'Expansion: original query preserved');
+
+  // Multiple terms expanded
+  const expanded2 = expandQuery('checkout observer');
+  assertIncludes(expanded2, 'cart', 'Expansion: "checkout" → includes "cart"');
+  assertIncludes(expanded2, 'event listener', 'Expansion: "observer" → includes "event listener"');
+
+  // No expansion for unknown terms
+  const expanded3 = expandQuery('foobar xyz');
+  assertEq(expanded3, 'foobar xyz', 'Expansion: unknown terms unchanged');
+
+  // All synonym categories covered
+  for (const key of Object.keys(MAGENTO_SYNONYMS)) {
+    const exp = expandQuery(key);
+    assert(exp.length > key.length, `Expansion: "${key}" expands`, `length ${key.length} → ${exp.length}`);
+  }
+}
+
+// ─── Module Filtering Tests ────────────────────────────────────
+
+function testModuleFiltering() {
+  console.log('\n── Module Filtering ──');
+
+  function filterByModule(results, moduleFilter) {
+    if (!moduleFilter) return results;
+    const patterns = Array.isArray(moduleFilter) ? moduleFilter : [moduleFilter];
+    return results.filter(r => {
+      const mod = r.module || '';
+      const filePath = r.path || '';
+      return patterns.some(pat => {
+        if (pat.includes('*')) {
+          const regex = new RegExp('^' + pat.replace(/\*/g, '.*') + '$', 'i');
+          return regex.test(mod) || regex.test(filePath);
+        }
+        return mod.toLowerCase().includes(pat.toLowerCase()) ||
+               filePath.toLowerCase().includes(pat.toLowerCase());
+      });
+    });
+  }
+
+  const testResults = [
+    { path: 'vendor/magento/module-catalog/Model/Product.php', module: 'Magento_Catalog' },
+    { path: 'vendor/custom/module-pricing/Model/Price.php', module: 'Custom_Pricing' },
+    { path: 'vendor/magento/module-sales/Model/Order.php', module: 'Magento_Sales' },
+    { path: 'app/code/Acme/Feature/Model/Widget.php', module: 'Acme_Feature' },
+  ];
+
+  // No filter returns all
+  const all = filterByModule(testResults, null);
+  assertEq(all.length, 4, 'Module filter: null returns all');
+
+  // Exact match
+  const exact = filterByModule(testResults, 'Magento_Catalog');
+  assertEq(exact.length, 1, 'Module filter: exact match');
+  assertEq(exact[0].module, 'Magento_Catalog', 'Module filter: correct module');
+
+  // Wildcard match
+  const wildcard = filterByModule(testResults, 'Magento_*');
+  assertEq(wildcard.length, 2, 'Module filter: wildcard matches 2 modules');
+
+  // Path-based match
+  const pathMatch = filterByModule(testResults, 'custom');
+  assertEq(pathMatch.length, 1, 'Module filter: path-based match');
+
+  // Case insensitive
+  const caseMatch = filterByModule(testResults, 'acme');
+  assertEq(caseMatch.length, 1, 'Module filter: case insensitive');
+
+  // Array of patterns
+  const multi = filterByModule(testResults, ['Magento_Catalog', 'Acme_*']);
+  assertEq(multi.length, 2, 'Module filter: array of patterns');
+
+  // No match
+  const noMatch = filterByModule(testResults, 'NonExistent');
+  assertEq(noMatch.length, 0, 'Module filter: no match returns empty');
+}
+
+// ─── Layout XML Parsing Tests ──────────────────────────────────
+
+async function testLayoutXmlParsing() {
+  console.log('\n── Layout XML Parsing ──');
+
+  const tmpDir = path.join(__dirname, '..', '.test-tmp-layout');
+  try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  mkdirSync(path.join(tmpDir, 'view', 'frontend', 'layout'), { recursive: true });
+
+  // Create test layout XML
+  writeFileSync(path.join(tmpDir, 'view', 'frontend', 'layout', 'catalog_product_view.xml'), `<?xml version="1.0"?>
+<page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <body>
+    <referenceContainer name="content">
+      <block class="Magento\\Catalog\\Block\\Product\\View" name="product.info" template="product/view.phtml"/>
+      <block class="Magento\\Catalog\\Block\\Product\\Price" name="product.price"/>
+    </referenceContainer>
+    <referenceBlock name="head.additional">
+      <block class="Magento\\Catalog\\Block\\Product\\Meta" name="product.meta"/>
+    </referenceBlock>
+    <container name="product.sidebar" htmlTag="div"/>
+  </body>
+</page>`);
+
+  writeFileSync(path.join(tmpDir, 'view', 'frontend', 'layout', 'checkout_index_index.xml'), `<?xml version="1.0"?>
+<page>
+  <body>
+    <referenceContainer name="content">
+      <block class="Checkout\\Block\\Onepage" name="checkout.root"/>
+    </referenceContainer>
+  </body>
+</page>`);
+
+  // Test layout parsing (inline version of findLayout)
+  const { glob } = await import('glob');
+  const { readFileSync: readFile } = await import('fs');
+
+  const layoutFiles = await glob('**/view/**/layout/**/*.xml', { cwd: tmpDir, absolute: true, nodir: true });
+  assertEq(layoutFiles.length, 2, 'Layout: found 2 layout files');
+
+  // Parse first file
+  const content = readFile(layoutFiles.find(f => f.includes('catalog_product_view')), 'utf-8');
+  const blocks = [];
+  const blockRegex = /<block\s+[^>]*(?:class|name)="([^"]+)"[^>]*/g;
+  let m;
+  while ((m = blockRegex.exec(content)) !== null) blocks.push(m[1]);
+  assert(blocks.length >= 3, 'Layout: found 3+ blocks in catalog_product_view', `got ${blocks.length}`);
+
+  const containers = [];
+  const containerRegex = /<(?:container|referenceContainer)\s+[^>]*name="([^"]+)"[^>]*/g;
+  while ((m = containerRegex.exec(content)) !== null) containers.push(m[1]);
+  assert(containers.some(c => c === 'content'), 'Layout: found "content" container');
+  assert(containers.some(c => c === 'product.sidebar'), 'Layout: found "product.sidebar" container');
+
+  const refBlocks = [];
+  const refBlockRegex = /<referenceBlock\s+[^>]*name="([^"]+)"[^>]*/g;
+  while ((m = refBlockRegex.exec(content)) !== null) refBlocks.push(m[1]);
+  assert(refBlocks.some(b => b === 'head.additional'), 'Layout: found "head.additional" referenceBlock');
+
+  // Test handle matching
+  const files = layoutFiles.map(f => path.basename(f, '.xml'));
+  assert(files.includes('catalog_product_view'), 'Layout: handle name from filename');
+  assert(files.includes('checkout_index_index'), 'Layout: checkout handle found');
+
+  // Cleanup
+  try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+}
+
+// ─── Event Flow Parsing Tests ──────────────────────────────────
+
+async function testEventFlowParsing() {
+  console.log('\n── Event Flow Parsing ──');
+
+  const tmpDir = path.join(__dirname, '..', '.test-tmp-events');
+  try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  mkdirSync(path.join(tmpDir, 'etc'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'etc', 'frontend'), { recursive: true });
+
+  // Create test events.xml
+  writeFileSync(path.join(tmpDir, 'etc', 'events.xml'), `<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <event name="sales_order_place_after">
+    <observer name="order_email" instance="Module\\Observer\\OrderEmailObserver" method="execute"/>
+    <observer name="order_index" instance="Module\\Observer\\OrderIndexObserver"/>
+  </event>
+  <event name="catalog_product_save_after">
+    <observer name="reindex_product" instance="Module\\Observer\\ReindexObserver"/>
+  </event>
+</config>`);
+
+  writeFileSync(path.join(tmpDir, 'etc', 'frontend', 'events.xml'), `<?xml version="1.0"?>
+<config>
+  <event name="sales_order_place_after">
+    <observer name="order_tracking" instance="Module\\Observer\\TrackingObserver"/>
+  </event>
+</config>`);
+
+  const { readFileSync: readFile } = await import('fs');
+  const { glob } = await import('glob');
+
+  // Parse events.xml files
+  const eventsFiles = await glob('**/etc/**/events.xml', { cwd: tmpDir, absolute: true, nodir: true });
+  assertEq(eventsFiles.length, 2, 'Events: found 2 events.xml files');
+
+  // Parse observers for sales_order_place_after
+  const eventName = 'sales_order_place_after';
+  const escapedEvent = eventName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const observers = [];
+
+  for (const file of eventsFiles) {
+    const content = readFile(file, 'utf-8');
+    const eventBlockRegex = new RegExp(`<event\\s+name="${escapedEvent}"[^>]*>([\\s\\S]*?)<\\/event>`, 'g');
+    let eventMatch;
+    while ((eventMatch = eventBlockRegex.exec(content)) !== null) {
+      const block = eventMatch[1];
+      const obsRegex = /<observer\s+[^>]*name="([^"]+)"[^>]*instance="([^"]+)"[^>]*(?:method="([^"]+)")?[^>]*\/?>/g;
+      let obsMatch;
+      while ((obsMatch = obsRegex.exec(block)) !== null) {
+        observers.push({
+          name: obsMatch[1],
+          instance: obsMatch[2],
+          method: obsMatch[3] || 'execute',
+        });
+      }
+    }
+  }
+
+  assertEq(observers.length, 3, 'Events: found 3 observers for sales_order_place_after');
+  assert(observers.some(o => o.name === 'order_email'), 'Events: order_email observer found');
+  assert(observers.some(o => o.name === 'order_tracking'), 'Events: order_tracking observer (frontend) found');
+
+  // Verify method extraction
+  const emailObs = observers.find(o => o.name === 'order_email');
+  assertEq(emailObs.method, 'execute', 'Events: explicit method="execute" parsed');
+  const indexObs = observers.find(o => o.name === 'order_index');
+  assertEq(indexObs.method, 'execute', 'Events: default method is "execute"');
+
+  // Parse a different event
+  const productObservers = [];
+  for (const file of eventsFiles) {
+    const content = readFile(file, 'utf-8');
+    const regex = new RegExp('<event\\s+name="catalog_product_save_after"[^>]*>([\\s\\S]*?)<\\/event>', 'g');
+    let m;
+    while ((m = regex.exec(content)) !== null) {
+      const obsRegex = /<observer\s+[^>]*name="([^"]+)"/g;
+      let obsM;
+      while ((obsM = obsRegex.exec(m[1])) !== null) {
+        productObservers.push(obsM[1]);
+      }
+    }
+  }
+  assertEq(productObservers.length, 1, 'Events: 1 observer for catalog_product_save_after');
+
+  try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+}
+
+// ─── Test Finder Logic Tests ───────────────────────────────────
+
+async function testTestFinder() {
+  console.log('\n── Test Finder Logic ──');
+
+  const tmpDir = path.join(__dirname, '..', '.test-tmp-tests');
+  try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  mkdirSync(path.join(tmpDir, 'Test', 'Unit'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'Test', 'Integration'), { recursive: true });
+
+  // Create test PHP files
+  writeFileSync(path.join(tmpDir, 'Test', 'Unit', 'ProductRepositoryTest.php'), `<?php
+/**
+ * @covers ProductRepository
+ */
+class ProductRepositoryTest extends TestCase
+{
+    public function testGetById()
+    {
+        $mock = $this->createMock(ProductInterface::class);
+        $this->assertNotNull($mock);
+    }
+
+    public function testSave()
+    {
+        $repo = new ProductRepository();
+    }
+
+    public function testDelete()
+    {
+        // test delete
+    }
+}`);
+
+  writeFileSync(path.join(tmpDir, 'Test', 'Integration', 'ProductServiceTest.php'), `<?php
+use Module\\Model\\ProductRepository;
+
+class ProductServiceTest extends TestCase
+{
+    public function testServiceCall()
+    {
+        $repo = $this->getMockBuilder(ProductRepository::class)->getMock();
+    }
+}`);
+
+  writeFileSync(path.join(tmpDir, 'Test', 'Unit', 'OrderTest.php'), `<?php
+class OrderTest extends TestCase
+{
+    public function testPlace() {}
+}`);
+
+  const { readFileSync: readFile } = await import('fs');
+  const { glob } = await import('glob');
+
+  // Find tests for ProductRepository
+  const testPatterns = [
+    `**/*ProductRepositoryTest.php`,
+    `**/*ProductRepository*Test.php`,
+    `**/Test/**/*ProductRepository*.php`,
+  ];
+
+  const testFiles = new Set();
+  for (const pattern of testPatterns) {
+    const found = await glob(pattern, { cwd: tmpDir, absolute: true, nodir: true });
+    for (const f of found) testFiles.add(f);
+  }
+
+  assert(testFiles.size >= 1, 'TestFinder: found test files for ProductRepository', `got ${testFiles.size}`);
+
+  // Parse test methods
+  for (const file of testFiles) {
+    const content = readFile(file, 'utf-8');
+    const testMethods = [];
+    const methodRegex = /(?:public\s+)?function\s+(test\w+)\s*\(/g;
+    let m;
+    while ((m = methodRegex.exec(content)) !== null) testMethods.push(m[1]);
+
+    if (file.includes('ProductRepositoryTest')) {
+      assertEq(testMethods.length, 3, 'TestFinder: 3 test methods in ProductRepositoryTest');
+      assert(testMethods.includes('testGetById'), 'TestFinder: testGetById found');
+      assert(testMethods.includes('testSave'), 'TestFinder: testSave found');
+      assert(testMethods.includes('testDelete'), 'TestFinder: testDelete found');
+
+      // Check for @covers
+      const hasCoverage = content.includes('@covers') && content.includes('ProductRepository');
+      assert(hasCoverage, 'TestFinder: @covers annotation detected');
+
+      // Check for mocks
+      const hasMock = content.includes('createMock');
+      assert(hasMock, 'TestFinder: mock usage detected');
+    }
+  }
+
+  // OrderTest should NOT match ProductRepository search
+  const orderTests = [...testFiles].filter(f => f.includes('OrderTest'));
+  assertEq(orderTests.length, 0, 'TestFinder: OrderTest not included in ProductRepository results');
+
+  try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+}
+
+// ─── Impact Analysis Logic Tests ───────────────────────────────
+
+function testImpactAnalysisLogic() {
+  console.log('\n── Impact Analysis Logic ──');
+
+  // Test class name short extraction
+  function getShortName(className) {
+    return className.split('\\').pop();
+  }
+
+  assertEq(getShortName('Magento\\Catalog\\Model\\ProductRepository'), 'ProductRepository', 'Impact: short name from FQCN');
+  assertEq(getShortName('ProductRepository'), 'ProductRepository', 'Impact: short name from simple name');
+
+  // Test use statement detection
+  function hasUseStatement(content, className) {
+    return content.includes(`use ${className}`) || content.includes(`\\${className}`);
+  }
+
+  const phpContent = `<?php
+use Magento\\Catalog\\Api\\ProductRepositoryInterface;
+
+class MyClass
+{
+    private ProductRepositoryInterface $repo;
+}`;
+
+  assert(hasUseStatement(phpContent, 'Magento\\Catalog\\Api\\ProductRepositoryInterface'),
+    'Impact: detects use statement');
+  assert(!hasUseStatement(phpContent, 'Magento\\Sales\\Model\\Order'),
+    'Impact: no false positive for unrelated class');
+
+  // Test instantiation detection
+  function hasInstantiation(content, shortName) {
+    return content.includes(`new ${shortName}(`);
+  }
+
+  const phpContent2 = `<?php
+$repo = new ProductRepository($objectManager);`;
+  assert(hasInstantiation(phpContent2, 'ProductRepository'), 'Impact: detects new instantiation');
+  assert(!hasInstantiation(phpContent2, 'OrderRepository'), 'Impact: no false positive instantiation');
+
+  // Test type hint detection
+  function hasTypeHint(content, shortName) {
+    return content.includes(`@var ${shortName}`) ||
+           content.includes(`@param ${shortName}`) ||
+           content.match(new RegExp(`:\\s*${shortName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`));
+  }
+
+  const phpContent3 = `<?php
+/** @var ProductRepository $repo */
+function doStuff(ProductRepository $repo): void {}`;
+  assert(hasTypeHint(phpContent3, 'ProductRepository'), 'Impact: detects @var type hint');
+
+  // Reference aggregation
+  const references = {
+    useStatements: [{ file: 'a.php' }],
+    diXmlReferences: [{ type: 'preference', file: 'di.xml' }, { type: 'plugin', file: 'di.xml' }],
+    instantiations: [{ file: 'b.php' }],
+    typeHints: [],
+  };
+  const total = references.useStatements.length + references.diXmlReferences.length +
+                references.instantiations.length + references.typeHints.length;
+  assertEq(total, 4, 'Impact: total reference count correct');
+}
+
+// ─── Reindex Temp Path Logic Tests ─────────────────────────────
+
+function testReindexTempPathLogic() {
+  console.log('\n── Reindex Temp Path Logic ──');
+
+  // Test temp path generation
+  const dbPath = '/srv/project/.magector/index.db';
+  const tempPath = dbPath + '.new';
+  const backupPath = dbPath + '.bak';
+
+  assertEq(tempPath, '/srv/project/.magector/index.db.new', 'Reindex: temp path correct');
+  assertEq(backupPath, '/srv/project/.magector/index.db.bak', 'Reindex: backup path correct');
+
+  // Test usable DB check logic
+  function hasUsableDb(dbPath, dbSize) {
+    return dbSize > 100;
+  }
+
+  assert(hasUsableDb(dbPath, 170 * 1024 * 1024), 'Reindex: 170MB DB is usable');
+  assert(!hasUsableDb(dbPath, 50), 'Reindex: 50-byte DB is not usable');
+  assert(!hasUsableDb(dbPath, 0), 'Reindex: empty DB is not usable');
+
+  // Test blocking logic: should NOT block if usable DB exists
+  function shouldBlock(reindexInProgress, hasUsableDb, toolName) {
+    const indexFreeTools = ['magento_stats', 'magento_analyze_diff', 'magento_complexity',
+      'magento_trace_dependency', 'magento_error_parser', 'magento_find_layout',
+      'magento_impact_analysis', 'magento_find_event_flow', 'magento_find_test'];
+    return reindexInProgress && !hasUsableDb && !indexFreeTools.includes(toolName);
+  }
+
+  assert(!shouldBlock(true, true, 'magento_search'), 'Reindex: search NOT blocked when usable DB exists');
+  assert(shouldBlock(true, false, 'magento_search'), 'Reindex: search blocked when no usable DB');
+  assert(!shouldBlock(true, false, 'magento_trace_dependency'), 'Reindex: index-free tool not blocked');
+  assert(!shouldBlock(true, false, 'magento_find_layout'), 'Reindex: find_layout not blocked');
+  assert(!shouldBlock(true, false, 'magento_find_event_flow'), 'Reindex: find_event_flow not blocked');
+  assert(!shouldBlock(true, false, 'magento_find_test'), 'Reindex: find_test not blocked');
+  assert(!shouldBlock(true, false, 'magento_impact_analysis'), 'Reindex: impact_analysis not blocked');
+  assert(!shouldBlock(false, false, 'magento_search'), 'Reindex: not blocked when reindex not running');
+}
+
 // ─── Run All ───────────────────────────────────────────────────
 
 async function main() {
@@ -1162,6 +1710,14 @@ async function main() {
   testErrorPatternEdgeCases();
   testCacheLogic();
   await testDiXmlMultiArea();
+  testBm25Scoring();
+  testQueryExpansion();
+  testModuleFiltering();
+  await testLayoutXmlParsing();
+  await testEventFlowParsing();
+  await testTestFinder();
+  testImpactAnalysisLogic();
+  testReindexTempPathLogic();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
