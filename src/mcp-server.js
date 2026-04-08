@@ -16,6 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { execFileSync, spawn } from 'child_process';
 import { createInterface } from 'readline';
+import { createServer as createNetServer, createConnection } from 'net';
 import { existsSync, statSync, unlinkSync, copyFileSync, renameSync, appendFileSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
 import { stat } from 'fs/promises';
 import { glob } from 'glob';
@@ -142,6 +143,8 @@ function extractJson(stdout) {
 
 const PID_PATH = path.join(config.magentoRoot, '.magector', 'serve.pid');
 const REINDEX_PID_PATH = path.join(config.magentoRoot, '.magector', 'reindex.pid');
+const SOCK_PATH = path.join(config.magentoRoot, '.magector', 'serve.sock');
+const FORMAT_CACHE_PATH = path.join(config.magentoRoot, '.magector', 'format-ok.json');
 
 /**
  * Write the serve process PID to disk so future instances can clean up orphans.
@@ -181,9 +184,28 @@ function getRunningReindexPid() {
 }
 
 /**
+ * Check if an existing serve process is alive and usable.
+ * Returns the PID if alive, null if stale/missing.
+ * Does NOT kill it — multiple MCP instances can share one serve process
+ * by sending queries to it via stdin (each instance starts its own).
+ */
+function getExistingServePid() {
+  try {
+    if (!existsSync(PID_PATH)) return null;
+    const pid = parseInt(readFileSync(PID_PATH, 'utf-8').trim(), 10);
+    if (!pid || isNaN(pid)) return null;
+    process.kill(pid, 0); // signal 0 = existence check
+    return pid;
+  } catch {
+    removePidFile();
+    return null;
+  }
+}
+
+/**
  * Kill any stale serve process from a previous MCP server instance.
- * This handles the common case where the MCP server was killed without
- * triggering its exit handler (SIGKILL, crash, IDE disconnect).
+ * Only called during cleanup (exit/SIGTERM), not during startup —
+ * multiple concurrent MCP instances each run their own serve process.
  */
 function killStaleServeProcess() {
   try {
@@ -191,11 +213,9 @@ function killStaleServeProcess() {
     const stalePid = parseInt(readFileSync(PID_PATH, 'utf-8').trim(), 10);
     if (!stalePid || isNaN(stalePid)) return;
 
-    // Check if the process is still alive
     try {
-      process.kill(stalePid, 0); // signal 0 = existence check
+      process.kill(stalePid, 0);
     } catch {
-      // Process doesn't exist, clean up stale PID file
       removePidFile();
       return;
     }
@@ -204,14 +224,11 @@ function killStaleServeProcess() {
     console.error(`Killing stale serve process (PID ${stalePid})`);
     try { process.kill(stalePid, 'SIGTERM'); } catch {}
 
-    // Give it a moment, then force kill if still alive
     setTimeout(() => {
       try {
         process.kill(stalePid, 0);
         process.kill(stalePid, 'SIGKILL');
-      } catch {
-        // Already dead, good
-      }
+      } catch {}
     }, 2000);
 
     removePidFile();
@@ -224,20 +241,33 @@ function killStaleServeProcess() {
 
 let reindexInProgress = false;
 let reindexProcess = null;
+let warmupInProgress = true; // true until checkDbFormat + serve process ready
 
 /**
  * Check if the database file is compatible with the current binary.
- * Returns true if OK, false if format mismatch (file has data but binary reads 0 vectors).
- * Async to avoid blocking the event loop — stats loads the HNSW graph which can
- * take 30-60s for large indexes (80k+ vectors).
+ * Uses a cached result file to avoid running stats (30-60s) on every startup.
+ * Cache key: binary path mtime + db file mtime + db size.
  */
 async function checkDbFormat() {
   if (!existsSync(config.dbPath)) return true;
 
   try {
     const fstat = statSync(config.dbPath);
-    if (fstat.size < 100) return true; // Tiny file = likely empty/new
+    if (fstat.size < 100) return true;
 
+    // Check cached result — avoids 40s stats command on every MCP startup
+    const binaryStat = statSync(config.rustBinary);
+    const cacheKey = `${binaryStat.mtimeMs}|${fstat.mtimeMs}|${fstat.size}`;
+    try {
+      const cached = JSON.parse(readFileSync(FORMAT_CACHE_PATH, 'utf-8'));
+      if (cached.key === cacheKey) {
+        logToFile('INFO', `Format check cached: ${cached.ok ? 'compatible' : 'incompatible'}`);
+        return cached.ok;
+      }
+    } catch { /* no cache or invalid */ }
+
+    // Cache miss — run stats (expensive: loads full HNSW graph)
+    logToFile('INFO', 'Format check: running stats (this takes 30-60s for large indexes)...');
     const result = await new Promise((resolve, reject) => {
       const proc = spawn(config.rustBinary, ['stats', '-d', config.dbPath],
         { stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
@@ -249,7 +279,11 @@ async function checkDbFormat() {
     });
 
     const vectors = parseInt(result.match(/Total vectors:\s*(\d+)/)?.[1] || '0');
-    return vectors > 0;
+    const ok = vectors > 0;
+
+    // Write cache
+    try { writeFileSync(FORMAT_CACHE_PATH, JSON.stringify({ key: cacheKey, ok })); } catch {}
+    return ok;
   } catch {
     return false;
   }
@@ -566,6 +600,111 @@ function startServeProcess() {
   }
 }
 
+// ─── Singleton Socket Proxy ──────────────────────────────────────
+// Only one serve process runs per project. Other MCP instances connect
+// to a Unix socket proxy instead of spawning their own serve process.
+
+let socketServer = null;
+let isSocketClient = false; // true if we're a secondary instance using the socket
+
+/**
+ * Start a Unix socket server that proxies queries to the local serve process.
+ * Other MCP instances connect here instead of starting their own serve.
+ */
+function startSocketProxy() {
+  try { if (existsSync(SOCK_PATH)) unlinkSync(SOCK_PATH); } catch {}
+  socketServer = createNetServer((conn) => {
+    const rl = createInterface({ input: conn });
+    rl.on('line', async (line) => {
+      try {
+        const req = JSON.parse(line);
+        const resp = await serveQuery(req.command, req.params || {}, req.timeout || 30000);
+        conn.write(JSON.stringify(resp) + '\n');
+      } catch (err) {
+        conn.write(JSON.stringify({ ok: false, error: err.message }) + '\n');
+      }
+    });
+    conn.on('error', () => {}); // ignore client disconnect
+  });
+  socketServer.on('error', (err) => {
+    logToFile('WARN', `Socket proxy error: ${err.message}`);
+  });
+  socketServer.listen(SOCK_PATH, () => {
+    logToFile('INFO', `Socket proxy listening on ${SOCK_PATH}`);
+  });
+}
+
+/**
+ * Try to connect to an existing socket proxy (another MCP instance owns the serve process).
+ * Returns true if connected successfully — serveQuery will route through the socket.
+ */
+function tryConnectSocket() {
+  return new Promise((resolve) => {
+    if (!existsSync(SOCK_PATH)) { resolve(false); return; }
+    const conn = createConnection(SOCK_PATH);
+    const timeout = setTimeout(() => { conn.destroy(); resolve(false); }, 3000);
+    conn.on('connect', () => {
+      clearTimeout(timeout);
+      // Connection works — set up socket-based serveQuery
+      const rl = createInterface({ input: conn });
+      let pendingResolve = null;
+
+      rl.on('line', (line) => {
+        try {
+          const resp = JSON.parse(line);
+          if (pendingResolve) { pendingResolve(resp); pendingResolve = null; }
+        } catch {}
+      });
+
+      conn.on('error', () => {
+        isSocketClient = false;
+        serveReady = false;
+        logToFile('WARN', 'Socket connection lost — falling back to cold-start');
+      });
+      conn.on('close', () => {
+        isSocketClient = false;
+        serveReady = false;
+      });
+
+      // Override serveQuery to route through socket
+      const socketQueryQueue = [];
+      let socketBusy = false;
+
+      async function processSocketQueue() {
+        if (socketBusy || socketQueryQueue.length === 0) return;
+        socketBusy = true;
+        const { command, params, timeoutMs, resolve: qResolve, reject: qReject } = socketQueryQueue.shift();
+        const timer = setTimeout(() => { pendingResolve = null; qReject(new Error('Socket query timeout')); socketBusy = false; processSocketQueue(); }, timeoutMs);
+        pendingResolve = (resp) => { clearTimeout(timer); qResolve(resp); socketBusy = false; processSocketQueue(); };
+        try {
+          conn.write(JSON.stringify({ command, params, timeout: timeoutMs }) + '\n');
+        } catch (err) {
+          clearTimeout(timer);
+          pendingResolve = null;
+          qReject(err);
+          socketBusy = false;
+          processSocketQueue();
+        }
+      }
+
+      // Replace the global serveQuery with socket-based version
+      globalServeQuery = (command, params, timeoutMs) => new Promise((res, rej) => {
+        socketQueryQueue.push({ command, params, timeoutMs, resolve: res, reject: rej });
+        processSocketQueue();
+      });
+
+      isSocketClient = true;
+      serveReady = true;
+      logToFile('INFO', 'Connected to existing serve process via socket proxy');
+      resolve(true);
+    });
+    conn.on('error', () => { clearTimeout(timeout); resolve(false); });
+  });
+}
+
+// Global reference to serveQuery implementation (local or socket)
+let globalServeQuery = null;
+
 function serveQuery(command, params = {}, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const id = serveNextId++;
@@ -597,10 +736,11 @@ async function rustSearchAsync(query, limit = 10) {
     await Promise.race([serveReadyPromise, new Promise(r => setTimeout(() => r(false), 10000))]);
   }
 
-  // Try persistent serve process first
-  if (serveProcess && serveReady) {
+  // Try socket proxy (secondary instance) or local serve process (primary)
+  const queryFn = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
+  if (queryFn) {
     try {
-      const resp = await serveQuery('search', { query, limit });
+      const resp = await queryFn('search', { query, limit });
       if (resp.ok && Array.isArray(resp.data)) {
         cacheSet(cacheKey, resp.data);
         return resp.data;
@@ -2333,11 +2473,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const reqStart = Date.now();
   logToFile('REQ', `${name}(${JSON.stringify(args || {})})`);
 
-  // Block search tools only when re-indexing AND no usable old DB exists.
-  // If old DB is preserved, searches keep running against it during rebuild.
+  // ── Warmup guard: index compatibility check or serve process still loading ──
   const indexFreeTools = ['magento_stats', 'magento_analyze_diff', 'magento_complexity',
     'magento_trace_dependency', 'magento_error_parser', 'magento_find_layout',
     'magento_impact_analysis', 'magento_find_event_flow', 'magento_find_test'];
+  if (warmupInProgress && !indexFreeTools.includes(name)) {
+    logToFile('REQ', `${name} → blocked (warmup: loading index)`);
+    return {
+      content: [{
+        type: 'text',
+        text: 'Magector is warming up — loading the search index into memory. This takes 30-60 seconds on first startup. Please retry your query in a moment.'
+      }],
+      isError: true,
+    };
+  }
+
+  // Block search tools only when re-indexing AND no usable old DB exists.
+  // If old DB is preserved, searches keep running against it during rebuild.
   const hasUsableDb = existsSync(config.dbPath) && (() => { try { return statSync(config.dbPath).size > 100; } catch { return false; } })();
   if (reindexInProgress && !hasUsableDb && !indexFreeTools.includes(name)) {
     logToFile('REQ', `${name} → blocked (re-indexing, no usable DB)`);
@@ -3217,56 +3369,68 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 });
 
 async function main() {
-  // Kill any orphaned serve process from a previous session
-  killStaleServeProcess();
+  // Don't kill existing serve processes — other MCP instances may be using them.
+  // Each instance starts its own serve process; cleanup happens on exit.
 
-  // Check database format compatibility before starting serve process.
-  // With incremental saves, a partial but valid index should be kept — don't
-  // force a full re-index just because the previous session didn't finish.
-  if (existsSync(config.dbPath)) {
-    if (!(await checkDbFormat())) {
-      logToFile('WARN', 'Database format incompatible — scheduling background re-index');
-      startBackgroundReindex();
-    } else {
-      logToFile('INFO', 'Existing database is compatible — reusing index');
-    }
-  } else if (config.magentoRoot && existsSync(config.magentoRoot)) {
-    // No DB file at all — need initial index
-    logToFile('INFO', 'No index database found — scheduling background index');
-    startBackgroundReindex();
-  }
-
-  // Start persistent Rust serve process for fast queries.
-  // During reindex, start if old DB exists so searches keep working.
-  const canStartServe = !reindexInProgress || (existsSync(config.dbPath) && (() => { try { return statSync(config.dbPath).size > 100; } catch { return false; } })());
-  if (canStartServe) {
-    try {
-      startServeProcess();
-      if (serveReadyPromise) {
-        const ready = await Promise.race([
-          serveReadyPromise,
-          new Promise(r => setTimeout(() => r(false), 15000))
-        ]);
-        if (ready) {
-          logToFile('INFO', 'Serve process ready (persistent mode)');
-          console.error('Serve process ready (persistent mode)');
-        } else {
-          logToFile('WARN', 'Serve process not ready in time, will use fallback');
-          console.error('Serve process not ready in time, will use fallback');
-        }
-      }
-    } catch {
-      // Non-fatal: falls back to execFileSync per query
-    }
-  }
-
-  // Load LLM descriptions (after serve process is ready for SQLite access)
-  await loadDescriptions();
-
+  // Connect MCP transport FIRST so tools can return "warming up" messages
+  // instead of the client hanging during index load.
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  logToFile('INFO', 'Magector MCP server started (Rust core backend)');
-  console.error('Magector MCP server started (Rust core backend)');
+  logToFile('INFO', 'Magector MCP server connected (warming up...)');
+  console.error('Magector MCP server connected (warming up...)');
+
+  // ── Singleton serve: try connecting to existing instance first ──
+  try {
+    // Try to connect to an existing serve process via Unix socket
+    const connected = await tryConnectSocket();
+    if (connected) {
+      logToFile('INFO', 'Joined existing serve process (singleton mode)');
+      console.error('Joined existing serve process (singleton mode)');
+    } else {
+      // We are the primary instance — check DB format and start serve
+      if (existsSync(config.dbPath)) {
+        if (!(await checkDbFormat())) {
+          logToFile('WARN', 'Database format incompatible — scheduling background re-index');
+          startBackgroundReindex();
+        } else {
+          logToFile('INFO', 'Existing database is compatible — reusing index');
+        }
+      } else if (config.magentoRoot && existsSync(config.magentoRoot)) {
+        logToFile('INFO', 'No index database found — scheduling background index');
+        startBackgroundReindex();
+      }
+
+      const canStartServe = !reindexInProgress || (existsSync(config.dbPath) && (() => { try { return statSync(config.dbPath).size > 100; } catch { return false; } })());
+      if (canStartServe) {
+        try {
+          startServeProcess();
+          if (serveReadyPromise) {
+            const ready = await Promise.race([
+              serveReadyPromise,
+              new Promise(r => setTimeout(() => r(false), 15000))
+            ]);
+            if (ready) {
+              logToFile('INFO', 'Serve process ready (primary instance)');
+              console.error('Serve process ready (primary instance)');
+              // Start socket proxy so other instances can connect
+              startSocketProxy();
+            } else {
+              logToFile('WARN', 'Serve process not ready in time, will use fallback');
+              console.error('Serve process not ready in time, will use fallback');
+            }
+          }
+        } catch {
+          // Non-fatal: falls back to execFileSync per query
+        }
+      }
+    }
+
+    await loadDescriptions();
+  } finally {
+    warmupInProgress = false;
+    logToFile('INFO', 'Warmup complete — all tools available');
+    console.error('Warmup complete — all tools available');
+  }
 }
 
 // Cleanup on exit — kill all child processes and remove PID file
@@ -3281,6 +3445,11 @@ function cleanup(reason) {
     logToFile('INFO', `Cleanup: killing reindex process (PID ${reindexProcess.pid})`);
     try { reindexProcess.kill(); } catch {}
     reindexProcess = null;
+  }
+  if (socketServer) {
+    try { socketServer.close(); } catch {}
+    try { if (existsSync(SOCK_PATH)) unlinkSync(SOCK_PATH); } catch {}
+    socketServer = null;
   }
   removePidFile();
   removeReindexPidFile();

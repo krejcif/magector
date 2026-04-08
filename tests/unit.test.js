@@ -1735,6 +1735,52 @@ function testRustSearchAsyncGuards() {
   assertEq(guardColdStart(null).length, 0, 'Cold-start guard: null → empty array');
 }
 
+// ─── Singleton Serve & Warmup Tests ────────────────────────────
+
+function testSingletonAndWarmup() {
+  console.log('\n── Singleton Serve & Warmup ──');
+
+  // Format cache logic
+  function checkFormatCache(cacheKey, cached) {
+    if (!cached) return null; // no cache
+    if (cached.key !== cacheKey) return null; // stale
+    return cached.ok;
+  }
+
+  assert(checkFormatCache('a|1|100', { key: 'a|1|100', ok: true }) === true, 'Format cache: hit returns ok=true');
+  assert(checkFormatCache('a|1|100', { key: 'a|1|100', ok: false }) === false, 'Format cache: hit returns ok=false');
+  assert(checkFormatCache('a|1|100', { key: 'b|2|200', ok: true }) === null, 'Format cache: stale key → miss');
+  assert(checkFormatCache('a|1|100', null) === null, 'Format cache: no cache → miss');
+
+  // Warmup message logic
+  function shouldBlockForWarmup(warmupInProgress, toolName) {
+    const indexFreeTools = ['magento_stats', 'magento_analyze_diff', 'magento_complexity',
+      'magento_trace_dependency', 'magento_error_parser', 'magento_find_layout',
+      'magento_impact_analysis', 'magento_find_event_flow', 'magento_find_test'];
+    return warmupInProgress && !indexFreeTools.includes(toolName);
+  }
+
+  assert(shouldBlockForWarmup(true, 'magento_search'), 'Warmup: blocks search during warmup');
+  assert(shouldBlockForWarmup(true, 'magento_find_plugin'), 'Warmup: blocks find_plugin during warmup');
+  assert(!shouldBlockForWarmup(true, 'magento_stats'), 'Warmup: allows stats during warmup');
+  assert(!shouldBlockForWarmup(true, 'magento_trace_dependency'), 'Warmup: allows trace_dependency during warmup');
+  assert(!shouldBlockForWarmup(false, 'magento_search'), 'Warmup: does not block after warmup');
+
+  // Singleton decision logic
+  function shouldStartServe(socketConnected, dbExists, formatOk) {
+    if (socketConnected) return 'skip-use-socket'; // secondary instance
+    if (!dbExists) return 'skip-no-db';
+    if (!formatOk) return 'reindex-then-serve';
+    return 'start-serve';
+  }
+
+  assertEq(shouldStartServe(true, true, true), 'skip-use-socket', 'Singleton: socket connected → use existing');
+  assertEq(shouldStartServe(true, false, false), 'skip-use-socket', 'Singleton: socket always wins');
+  assertEq(shouldStartServe(false, true, true), 'start-serve', 'Singleton: primary with good DB → start');
+  assertEq(shouldStartServe(false, true, false), 'reindex-then-serve', 'Singleton: bad format → reindex');
+  assertEq(shouldStartServe(false, false, false), 'skip-no-db', 'Singleton: no DB → skip');
+}
+
 // ─── Reindex Deduplication Tests ───────────────────────────────
 
 function testReindexDeduplication() {
@@ -1863,6 +1909,7 @@ async function main() {
   testReindexTempPathLogic();
   testRustSearchAsyncGuards();
   testReindexDeduplication();
+  testSingletonAndWarmup();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
