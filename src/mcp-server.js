@@ -714,15 +714,23 @@ function tryConnectSocket() {
         } catch {}
       });
 
-      conn.on('error', () => {
+      function handleSocketLoss(reason) {
+        if (!isSocketClient) return; // already handled
         isSocketClient = false;
         serveReady = false;
-        logToFile('WARN', 'Socket connection lost — falling back to cold-start');
-      });
-      conn.on('close', () => {
-        isSocketClient = false;
-        serveReady = false;
-      });
+        globalServeQuery = null;
+        logToFile('WARN', `Socket ${reason} — cleared globalServeQuery, will use cold-start fallback`);
+        // Try to reconnect after a delay (primary may have restarted)
+        setTimeout(async () => {
+          if (globalServeQuery) return; // already reconnected
+          const reconnected = await tryConnectSocket();
+          if (reconnected) {
+            logToFile('INFO', 'Reconnected to serve socket after loss');
+          }
+        }, 5000);
+      }
+      conn.on('error', () => handleSocketLoss('error'));
+      conn.on('close', () => handleSocketLoss('closed'));
 
       // Override serveQuery to route through socket
       const socketQueryQueue = [];
