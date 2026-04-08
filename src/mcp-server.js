@@ -228,22 +228,27 @@ let reindexProcess = null;
 /**
  * Check if the database file is compatible with the current binary.
  * Returns true if OK, false if format mismatch (file has data but binary reads 0 vectors).
+ * Async to avoid blocking the event loop — stats loads the HNSW graph which can
+ * take 30-60s for large indexes (80k+ vectors).
  */
-function checkDbFormat() {
+async function checkDbFormat() {
   if (!existsSync(config.dbPath)) return true;
 
   try {
-    // Check if file is non-trivial (has actual index data)
     const fstat = statSync(config.dbPath);
     if (fstat.size < 100) return true; // Tiny file = likely empty/new
 
-    // stats loads the HNSW graph which can take 30-60s for large indexes (80k+ vectors)
-    const result = execFileSync(config.rustBinary, [
-      'stats', '-d', config.dbPath
-    ], { encoding: 'utf-8', timeout: 120000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
+    const result = await new Promise((resolve, reject) => {
+      const proc = spawn(config.rustBinary, ['stats', '-d', config.dbPath],
+        { stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
+      let stdout = '';
+      proc.stdout.on('data', (d) => { stdout += d.toString(); });
+      proc.on('error', reject);
+      proc.on('exit', (code) => code === 0 ? resolve(stdout) : reject(new Error(`stats exit ${code}`)));
+      setTimeout(() => { try { proc.kill(); } catch {} reject(new Error('stats timeout')); }, 120000);
+    });
 
     const vectors = parseInt(result.match(/Total vectors:\s*(\d+)/)?.[1] || '0');
-    // File has real data but binary sees 0 vectors → format incompatible
     return vectors > 0;
   } catch {
     return false;
@@ -3219,7 +3224,7 @@ async function main() {
   // With incremental saves, a partial but valid index should be kept — don't
   // force a full re-index just because the previous session didn't finish.
   if (existsSync(config.dbPath)) {
-    if (!checkDbFormat()) {
+    if (!(await checkDbFormat())) {
       logToFile('WARN', 'Database format incompatible — scheduling background re-index');
       startBackgroundReindex();
     } else {
