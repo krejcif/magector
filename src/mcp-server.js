@@ -17,7 +17,7 @@ import {
 import { execFileSync, spawn } from 'child_process';
 import { createInterface } from 'readline';
 import { createServer as createNetServer, createConnection } from 'net';
-import { existsSync, statSync, unlinkSync, copyFileSync, renameSync, appendFileSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
+import { existsSync, statSync, unlinkSync, copyFileSync, renameSync, appendFileSync, writeFileSync, readFileSync, mkdirSync, openSync, closeSync, constants as fsConstants } from 'fs';
 import { stat } from 'fs/promises';
 import { glob } from 'glob';
 import path from 'path';
@@ -145,6 +145,49 @@ const PID_PATH = path.join(config.magentoRoot, '.magector', 'serve.pid');
 const REINDEX_PID_PATH = path.join(config.magentoRoot, '.magector', 'reindex.pid');
 const SOCK_PATH = path.join(config.magentoRoot, '.magector', 'serve.sock');
 const FORMAT_CACHE_PATH = path.join(config.magentoRoot, '.magector', 'format-ok.json');
+const PRIMARY_LOCK_PATH = path.join(config.magentoRoot, '.magector', 'primary.lock');
+
+/**
+ * Try to acquire the primary lock (O_EXCL = atomic create-or-fail).
+ * Returns true if we are the primary instance, false if another instance holds the lock.
+ */
+function tryAcquirePrimaryLock() {
+  try {
+    const fd = openSync(PRIMARY_LOCK_PATH, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL);
+    writeFileSync(fd, String(process.pid));
+    closeSync(fd);
+    return true;
+  } catch {
+    // Lock file exists — check if holder is alive
+    try {
+      const pid = parseInt(readFileSync(PRIMARY_LOCK_PATH, 'utf-8').trim(), 10);
+      if (pid && !isNaN(pid)) {
+        process.kill(pid, 0); // throws if dead
+        return false; // another instance is alive and primary
+      }
+    } catch { /* holder is dead, take over */ }
+    // Stale lock — reclaim
+    try { unlinkSync(PRIMARY_LOCK_PATH); } catch {}
+    try {
+      const fd = openSync(PRIMARY_LOCK_PATH, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL);
+      writeFileSync(fd, String(process.pid));
+      closeSync(fd);
+      return true;
+    } catch {
+      return false; // another instance beat us
+    }
+  }
+}
+
+function releasePrimaryLock() {
+  try {
+    // Only remove if we own it
+    const content = readFileSync(PRIMARY_LOCK_PATH, 'utf-8').trim();
+    if (content === String(process.pid)) {
+      unlinkSync(PRIMARY_LOCK_PATH);
+    }
+  } catch {}
+}
 
 /**
  * Write the serve process PID to disk so future instances can clean up orphans.
@@ -3379,15 +3422,22 @@ async function main() {
   logToFile('INFO', 'Magector MCP server connected (warming up...)');
   console.error('Magector MCP server connected (warming up...)');
 
-  // ── Singleton serve: try connecting to existing instance first ──
+  // ── Singleton serve: one serve process per project ──────────────
+  // 1. Try socket → secondary (instant, no CPU)
+  // 2. Try lock → primary (start serve + socket proxy)
+  // 3. Lock failed → wait for socket (another instance is starting)
   try {
-    // Try to connect to an existing serve process via Unix socket
+    let role = 'secondary';
+
     const connected = await tryConnectSocket();
     if (connected) {
-      logToFile('INFO', 'Joined existing serve process (singleton mode)');
-      console.error('Joined existing serve process (singleton mode)');
-    } else {
-      // We are the primary instance — check DB format and start serve
+      logToFile('INFO', 'Joined existing serve process via socket (secondary)');
+      console.error('Joined existing serve process (secondary)');
+    } else if (tryAcquirePrimaryLock()) {
+      role = 'primary';
+      logToFile('INFO', 'Acquired primary lock — this instance owns the serve process');
+
+      // Check DB format (uses cache → instant if already validated)
       if (existsSync(config.dbPath)) {
         if (!(await checkDbFormat())) {
           logToFile('WARN', 'Database format incompatible — scheduling background re-index');
@@ -3407,12 +3457,11 @@ async function main() {
           if (serveReadyPromise) {
             const ready = await Promise.race([
               serveReadyPromise,
-              new Promise(r => setTimeout(() => r(false), 15000))
+              new Promise(r => setTimeout(() => r(false), 60000))
             ]);
             if (ready) {
-              logToFile('INFO', 'Serve process ready (primary instance)');
-              console.error('Serve process ready (primary instance)');
-              // Start socket proxy so other instances can connect
+              logToFile('INFO', 'Serve process ready (primary)');
+              console.error('Serve process ready (primary)');
               startSocketProxy();
             } else {
               logToFile('WARN', 'Serve process not ready in time, will use fallback');
@@ -3422,6 +3471,21 @@ async function main() {
         } catch {
           // Non-fatal: falls back to execFileSync per query
         }
+      }
+    } else {
+      // Another instance is starting up — wait for its socket to appear
+      logToFile('INFO', 'Another instance is primary — waiting for socket...');
+      console.error('Waiting for primary instance to start serve process...');
+      for (let i = 0; i < 12; i++) { // wait up to 60s
+        await new Promise(r => setTimeout(r, 5000));
+        if (await tryConnectSocket()) {
+          logToFile('INFO', 'Connected to socket after waiting (secondary)');
+          console.error('Joined existing serve process (secondary)');
+          break;
+        }
+      }
+      if (!globalServeQuery) {
+        logToFile('WARN', 'Socket not available after waiting — using cold-start fallback');
       }
     }
 
@@ -3451,6 +3515,7 @@ function cleanup(reason) {
     try { if (existsSync(SOCK_PATH)) unlinkSync(SOCK_PATH); } catch {}
     socketServer = null;
   }
+  releasePrimaryLock();
   removePidFile();
   removeReindexPidFile();
 }
