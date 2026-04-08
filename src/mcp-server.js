@@ -237,9 +237,10 @@ function checkDbFormat() {
     const fstat = statSync(config.dbPath);
     if (fstat.size < 100) return true; // Tiny file = likely empty/new
 
+    // stats loads the HNSW graph which can take 30-60s for large indexes (80k+ vectors)
     const result = execFileSync(config.rustBinary, [
       'stats', '-d', config.dbPath
-    ], { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
+    ], { encoding: 'utf-8', timeout: 120000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
 
     const vectors = parseInt(result.match(/Total vectors:\s*(\d+)/)?.[1] || '0');
     // File has real data but binary sees 0 vectors → format incompatible
