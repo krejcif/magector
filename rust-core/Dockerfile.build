@@ -1,0 +1,28 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    curl build-essential pkg-config libssl-dev cmake git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /build
+
+# Copy source
+COPY Cargo.toml Cargo.lock ./
+COPY build.rs glibc_compat.c ./
+COPY src/ src/
+COPY models/ models/
+
+# Build release binary with compat stubs
+RUN cargo build --release 2>&1
+
+# Verify GLIBC requirements
+RUN echo "=== GLIBC requirements ===" && \
+    objdump -T target/release/magector-core 2>/dev/null | grep -oP 'GLIBC_\S+' | sort -V | uniq && \
+    echo "=== Size ===" && \
+    ls -lh target/release/magector-core
