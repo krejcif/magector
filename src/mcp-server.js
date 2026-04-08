@@ -264,11 +264,28 @@ function startBackgroundReindex() {
     console.error(`Reindex already running (PID ${existingPid}) — skipping`);
     reindexInProgress = true; // mark locally so tools know
     // Poll the external process and react when it finishes
+    const tempDbPath = config.dbPath + '.new';
     const pollInterval = setInterval(() => {
       if (!getRunningReindexPid()) {
         clearInterval(pollInterval);
         reindexInProgress = false;
-        logToFile('INFO', 'External reindex finished. Restarting serve process.');
+        // Swap the new DB into place if the external reindex produced one
+        if (existsSync(tempDbPath)) {
+          try {
+            if (existsSync(config.dbPath)) {
+              const backupPath = config.dbPath + '.bak';
+              if (existsSync(backupPath)) { try { unlinkSync(backupPath); } catch {} }
+              renameSync(config.dbPath, backupPath);
+              logToFile('INFO', 'Old DB moved to .bak');
+            }
+            renameSync(tempDbPath, config.dbPath);
+            logToFile('INFO', 'External reindex complete — new index swapped into place.');
+          } catch (e) {
+            logToFile('ERR', `Failed to swap index after external reindex: ${e.message}`);
+          }
+        } else {
+          logToFile('INFO', 'External reindex finished but no .new file found — skipping swap.');
+        }
         if (serveProcess) serveProcess.kill();
         searchCache.clear();
         startServeProcess();
