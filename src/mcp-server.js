@@ -121,8 +121,14 @@ function extractJson(stdout) {
   }
   // Fallback: try parsing the entire output (handles multi-line JSON)
   // Strip lines that look like tracing (start with ANSI escape or timestamp bracket)
+  // Also skip non-JSON prefix lines (e.g. "setting number of points 50000" from HNSW)
+  const logLineRe = /^\s*(\x1b\[|\[[\d\-T:.Z]+)/;
+  const jsonStartRe = /^\s*[\[{"\-0-9tfn]/;
+  let startIdx = lines.findIndex(l => l.trim() && !logLineRe.test(l) && jsonStartRe.test(l));
+  if (startIdx < 0) startIdx = 0;
   const cleaned = lines
-    .filter(l => !l.match(/^\s*(\x1b\[|\[[\d\-T:.Z]+)/) && l.trim())
+    .slice(startIdx)
+    .filter(l => !logLineRe.test(l) && l.trim())
     .join('\n')
     .trim();
   if (cleaned) {
@@ -500,7 +506,8 @@ async function rustSearchAsync(query, limit = 10) {
   const cacheKey = `${query}|${limit}`;
   if (searchCache.has(cacheKey)) {
     logToFile('CACHE', `HIT: "${query}" (limit=${limit})`);
-    return searchCache.get(cacheKey);
+    const cached = searchCache.get(cacheKey);
+    return Array.isArray(cached) ? cached : [];
   }
 
   // Wait for serve process if it's starting up but not yet ready
@@ -513,7 +520,7 @@ async function rustSearchAsync(query, limit = 10) {
   if (serveProcess && serveReady) {
     try {
       const resp = await serveQuery('search', { query, limit });
-      if (resp.ok && resp.data) {
+      if (resp.ok && Array.isArray(resp.data)) {
         cacheSet(cacheKey, resp.data);
         return resp.data;
       }
@@ -524,7 +531,13 @@ async function rustSearchAsync(query, limit = 10) {
 
   // Fallback: cold-start execFileSync
   logToFile('INFO', `Using execFileSync fallback for search: "${query}"`);
-  return rustSearchSync(query, limit);
+  try {
+    const result = rustSearchSync(query, limit);
+    return Array.isArray(result) ? result : [];
+  } catch (err) {
+    logToFile('WARN', `execFileSync fallback failed: ${err.message}`);
+    return [];
+  }
 }
 
 function rustSearchSync(query, limit = 10) {

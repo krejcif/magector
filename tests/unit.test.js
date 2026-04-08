@@ -456,7 +456,7 @@ async function testMagentoPatterns() {
 function testExtractJson() {
   console.log('\n── extractJson ──');
 
-  // Re-implement extractJson from mcp-server.js
+  // Re-implement extractJson from mcp-server.js (must stay in sync with src/mcp-server.js)
   function extractJson(stdout) {
     const lines = stdout.split('\n');
     for (let i = lines.length - 1; i >= 0; i--) {
@@ -464,8 +464,13 @@ function testExtractJson() {
       if (!line) continue;
       try { return JSON.parse(line); } catch { /* not JSON */ }
     }
+    const logLineRe = /^\s*(\x1b\[|\[[\d\-T:.Z]+)/;
+    const jsonStartRe = /^\s*[\[{"\-0-9tfn]/;
+    let startIdx = lines.findIndex(l => l.trim() && !logLineRe.test(l) && jsonStartRe.test(l));
+    if (startIdx < 0) startIdx = 0;
     const cleaned = lines
-      .filter(l => !l.match(/^\s*(\x1b\[|\[[\d\-T:.Z]+)/) && l.trim())
+      .slice(startIdx)
+      .filter(l => !logLineRe.test(l) && l.trim())
       .join('\n').trim();
     if (cleaned) return JSON.parse(cleaned);
     throw new SyntaxError('No valid JSON found in command output');
@@ -502,6 +507,31 @@ function testExtractJson() {
   threw = false;
   try { extractJson(''); } catch (e) { threw = true; }
   assert(threw, 'throws on empty string');
+
+  // ── Bug fix: HNSW "setting number of points" prefix ──────────────
+  // The binary emits " setting number of points 50000 " to stdout
+  // before the JSON array when running in cold-start (execFileSync) mode.
+  // The array is pretty-printed (no single line is valid JSON by itself),
+  // so extractJson must skip the non-JSON prefix and parse the whole structure.
+  const prettyItem = '{\n    "id": 1,\n    "score": 0.9,\n    "path": "vendor/foo/Bar.php"\n  }';
+  const hnswPrefix = ` setting number of points 50000 \n[\n  ${prettyItem}\n]`;
+  const r6 = extractJson(hnswPrefix);
+  assert(Array.isArray(r6), 'HNSW prefix: parses multi-line array after "setting number of points" line');
+  assertEq(r6.length, 1, 'HNSW prefix: correct array length');
+  assertEq(r6[0].id, 1, 'HNSW prefix: item id correct');
+
+  // Multiple non-JSON prefix lines before pretty-printed array
+  const prettyArr = '[\n  {\n    "id": 2,\n    "score": 0.5\n  }\n]';
+  const multiPrefix = `loading index\n setting number of points 50000 \n${prettyArr}`;
+  const r7 = extractJson(multiPrefix);
+  assert(Array.isArray(r7), 'Multiple non-JSON prefix lines: array parsed correctly');
+  assertEq(r7[0].id, 2, 'Multiple non-JSON prefix lines: correct item extracted');
+
+  // Prefix before JSON object (not array)
+  const prefixObj = ' setting number of points 50000 \n{\n  "ok": true,\n  "data": []\n}';
+  const r8 = extractJson(prefixObj);
+  assertEq(r8.ok, true, 'HNSW prefix before object: object parsed correctly');
+  assert(Array.isArray(r8.data), 'HNSW prefix before object: data is array');
 }
 
 // ─── normalizeResult Tests ─────────────────────────────────────
@@ -1648,6 +1678,63 @@ function doStuff(ProductRepository $repo): void {}`;
   assertEq(total, 4, 'Impact: total reference count correct');
 }
 
+// ─── rustSearchAsync Array Guard Tests ─────────────────────────
+
+function testRustSearchAsyncGuards() {
+  console.log('\n── rustSearchAsync Array Guards ──');
+
+  // Simulate the guard logic applied to cached values and resp.data
+  function guardCacheResult(cached) {
+    return Array.isArray(cached) ? cached : [];
+  }
+
+  function guardRespData(resp) {
+    if (resp.ok && Array.isArray(resp.data)) return resp.data;
+    return null; // signals: fall through to cold-start
+  }
+
+  function guardColdStart(result) {
+    if (!Array.isArray(result)) return [];
+    return result;
+  }
+
+  // Cache guard: valid array passes through
+  const arr = [{ id: 1 }, { id: 2 }];
+  assert(guardCacheResult(arr) === arr, 'Cache guard: valid array passes through');
+  assertEq(guardCacheResult(arr).length, 2, 'Cache guard: length preserved');
+
+  // Cache guard: non-array returns []
+  assertEq(guardCacheResult({}).length, 0, 'Cache guard: object → empty array');
+  assertEq(guardCacheResult(null).length, 0, 'Cache guard: null → empty array');
+  assertEq(guardCacheResult(undefined).length, 0, 'Cache guard: undefined → empty array');
+  assertEq(guardCacheResult('string').length, 0, 'Cache guard: string → empty array');
+
+  // resp.data guard: array passes
+  const validResp = { ok: true, data: [{ id: 1 }] };
+  assert(Array.isArray(guardRespData(validResp)), 'resp.data guard: array passes');
+  assertEq(guardRespData(validResp).length, 1, 'resp.data guard: length correct');
+
+  // resp.data guard: object data falls through (returns null = use cold-start)
+  const objResp = { ok: true, data: { results: [] } };
+  assert(guardRespData(objResp) === null, 'resp.data guard: object data → null (fall through)');
+
+  // resp.data guard: ok=false falls through
+  const failResp = { ok: false, data: [1, 2] };
+  assert(guardRespData(failResp) === null, 'resp.data guard: ok=false → null (fall through)');
+
+  // resp.data guard: empty array is valid
+  const emptyResp = { ok: true, data: [] };
+  assert(Array.isArray(guardRespData(emptyResp)), 'resp.data guard: empty array is valid (was falsy bug)');
+
+  // Cold-start guard: valid array passes
+  const coldArr = [{ id: 3 }];
+  assert(guardColdStart(coldArr) === coldArr, 'Cold-start guard: valid array passes');
+
+  // Cold-start guard: non-array → []
+  assertEq(guardColdStart({}).length, 0, 'Cold-start guard: object → empty array');
+  assertEq(guardColdStart(null).length, 0, 'Cold-start guard: null → empty array');
+}
+
 // ─── Reindex Temp Path Logic Tests ─────────────────────────────
 
 function testReindexTempPathLogic() {
@@ -1718,6 +1805,7 @@ async function main() {
   await testTestFinder();
   testImpactAnalysisLogic();
   testReindexTempPathLogic();
+  testRustSearchAsyncGuards();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
