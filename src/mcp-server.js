@@ -81,8 +81,8 @@ function logToFile(level, message) {
   }
 }
 
-// Initialize log file on startup
-try { writeFileSync(LOG_PATH, `[${new Date().toISOString()}] [INFO] Magector MCP server starting\n`); } catch {}
+// Initialize log on startup — append to preserve history across MCP restarts
+try { appendFileSync(LOG_PATH, `\n[${new Date().toISOString()}] [INFO] ════ Magector MCP server starting ════\n`); } catch {}
 
 // Log resolved configuration so the log file is self-contained for debugging
 logToFile('INFO', `Config: MAGENTO_ROOT=${config.magentoRoot}`);
@@ -320,12 +320,17 @@ function startBackgroundReindex() {
   // Write PID file so other MCP instances know a reindex is running
   writeReindexPidFile(reindexProcess.pid);
 
-  reindexProcess.stdout.on('data', (d) => {
-    const text = d.toString().replace(/\x1b\[[0-9;]*m/g, '').trim();
+  // Log stdout/stderr line-by-line using readline to avoid buffering issues.
+  // Without this, Rust tracing output accumulates in pipe buffers and progress
+  // entries arrive in large chunks instead of in real time.
+  const indexStdout = createInterface({ input: reindexProcess.stdout });
+  const indexStderr = createInterface({ input: reindexProcess.stderr });
+  indexStdout.on('line', (line) => {
+    const text = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
     if (text) logToFile('INDEX', text);
   });
-  reindexProcess.stderr.on('data', (d) => {
-    const text = d.toString().replace(/\x1b\[[0-9;]*m/g, '').trim();
+  indexStderr.on('line', (line) => {
+    const text = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
     if (text) logToFile('INDEX', text);
   });
 
