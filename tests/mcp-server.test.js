@@ -142,7 +142,7 @@ async function main() {
     const toolsResp = await client.send('tools/list', {});
     const tools = toolsResp.result?.tools || [];
     const toolNames = tools.map((t) => t.name);
-    log(tools.length === 21 ? 'PASS' : 'FAIL', `tools/list returns 21 tools`, `got ${tools.length}`);
+    log(tools.length === 24 ? 'PASS' : 'FAIL', `tools/list returns 24 tools`, `got ${tools.length}`);
 
     // Verify all expected tools present
     const expectedTools = [
@@ -153,7 +153,8 @@ async function main() {
       'magento_find_block', 'magento_find_cron', 'magento_find_graphql',
       'magento_find_db_schema', 'magento_module_structure',
       'magento_analyze_diff', 'magento_complexity', 'magento_describe',
-      'magento_trace_flow',
+      'magento_trace_flow', 'magento_trace_dependency', 'magento_error_parser',
+      'magento_performance_profile',
     ];
     for (const name of expectedTools) {
       log(toolNames.includes(name) ? 'PASS' : 'FAIL', `tool '${name}' listed`);
@@ -224,6 +225,56 @@ async function main() {
       } catch (e) {
         log('FAIL', `tools/call ${tc.name}`, e.message);
       }
+    }
+
+    // New v2.0 tools
+    console.log('\n── v2.0 Tool Calls ──');
+
+    // magento_trace_dependency works without index (parses di.xml directly)
+    try {
+      const depResult = await client.callTool('magento_trace_dependency', {
+        className: 'ProductRepositoryInterface',
+        direction: 'both'
+      });
+      const depText = depResult?.content?.[0]?.text || '';
+      const isError = depResult?.isError;
+      log(
+        !isError && depText.includes('DI Dependency Trace') ? 'PASS' : 'FAIL',
+        'tools/call magento_trace_dependency',
+        `${depText.length} chars`
+      );
+    } catch (e) {
+      log('FAIL', 'tools/call magento_trace_dependency', e.message);
+    }
+
+    // magento_error_parser works without index (pattern matching + optional search)
+    try {
+      const errResult = await client.callTool('magento_error_parser', {
+        error: 'Cannot instantiate interface Magento\\Catalog\\Api\\ProductRepositoryInterface'
+      });
+      const errText = errResult?.content?.[0]?.text || '';
+      const isError = errResult?.isError;
+      log(
+        !isError && errText.includes('Error Analysis') && errText.includes('missing_preference') ? 'PASS' : 'FAIL',
+        'tools/call magento_error_parser',
+        `type detected: ${errText.includes('missing_preference') ? 'yes' : 'no'}`
+      );
+    } catch (e) {
+      log('FAIL', 'tools/call magento_error_parser', e.message);
+    }
+
+    if (HAS_INDEX && !SKIP_INDEX) {
+      try {
+        const perfResult = await client.callTool('magento_performance_profile', {
+          subsystem: 'checkout_totals'
+        });
+        const perfText = perfResult?.content?.[0]?.text || '';
+        log(perfText.includes('Performance Profile') ? 'PASS' : 'FAIL', 'tools/call magento_performance_profile', `${perfText.length} chars`);
+      } catch (e) {
+        log('FAIL', 'tools/call magento_performance_profile', e.message);
+      }
+    } else {
+      log('SKIP', 'tools/call magento_performance_profile', 'no index');
     }
 
     // Analysis tools (JS-based, no Rust binary)

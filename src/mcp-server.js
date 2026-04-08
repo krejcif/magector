@@ -1005,12 +1005,398 @@ function formatSearchResults(results) {
   return JSON.stringify({ results: formatted, count: formatted.length });
 }
 
+// ─── DI Dependency Tracing ─────────────────────────────────────
+
+/**
+ * Parse all di.xml files to build a dependency graph for a given class/interface.
+ * Returns preferences, plugins, virtualTypes, and argument overrides.
+ */
+async function traceDependency(className, direction = 'both') {
+  const root = config.magentoRoot;
+  const diFiles = await glob('**/etc/**/di.xml', { cwd: root, absolute: true, nodir: true });
+  const classLower = className.toLowerCase();
+  const classShort = className.split('\\').pop().toLowerCase();
+
+  const result = {
+    className,
+    preferences: [],
+    plugins: [],
+    virtualTypes: [],
+    argumentOverrides: [],
+    totalDiFiles: diFiles.length
+  };
+
+  for (const diFile of diFiles) {
+    let content;
+    try {
+      content = readFileSync(diFile, 'utf-8');
+    } catch { continue; }
+
+    const relativePath = diFile.replace(root + '/', '');
+
+    if (direction === 'resolve' || direction === 'both') {
+      // Find preferences: <preference for="ClassName" type="Implementation"/>
+      const prefRegex = /<preference\s+for="([^"]+)"\s+type="([^"]+)"\s*\/?>/g;
+      let match;
+      while ((match = prefRegex.exec(content)) !== null) {
+        const forClass = match[1];
+        if (forClass.toLowerCase().includes(classLower) || forClass.toLowerCase().includes(classShort)) {
+          result.preferences.push({
+            for: forClass,
+            type: match[2],
+            file: relativePath
+          });
+        }
+      }
+
+      // Find virtualTypes: <virtualType name="..." type="ClassName"/>
+      const vtRegex = /<virtualType\s+name="([^"]+)"[^>]*type="([^"]+)"[^>]*\/?>/g;
+      while ((match = vtRegex.exec(content)) !== null) {
+        const vtType = match[2];
+        if (vtType.toLowerCase().includes(classLower) || vtType.toLowerCase().includes(classShort)) {
+          result.virtualTypes.push({
+            name: match[1],
+            type: vtType,
+            file: relativePath
+          });
+        }
+      }
+    }
+
+    if (direction === 'dependents' || direction === 'both') {
+      // Find plugins targeting this class: <type name="ClassName"><plugin ... type="PluginClass"/></type>
+      const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
+      let typeMatch;
+      while ((typeMatch = typeBlockRegex.exec(content)) !== null) {
+        const typeName = typeMatch[1];
+        const typeBlock = typeMatch[2];
+        if (typeName.toLowerCase().includes(classLower) || typeName.toLowerCase().includes(classShort)) {
+          const pluginRegex = /<plugin\s+name="([^"]+)"[^>]*type="([^"]+)"[^>]*\/?>/g;
+          let pMatch;
+          while ((pMatch = pluginRegex.exec(typeBlock)) !== null) {
+            result.plugins.push({
+              target: typeName,
+              pluginName: pMatch[1],
+              pluginClass: pMatch[2],
+              file: relativePath
+            });
+          }
+
+          // Find argument overrides
+          const argRegex = /<argument\s+name="([^"]+)"[^>]*xsi:type="([^"]+)"[^>]*>([^<]*)<\/argument>/g;
+          let aMatch;
+          while ((aMatch = argRegex.exec(typeBlock)) !== null) {
+            result.argumentOverrides.push({
+              target: typeName,
+              argumentName: aMatch[1],
+              argumentType: aMatch[2],
+              value: aMatch[3].trim().slice(0, 200),
+              file: relativePath
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+// ─── Error Message Parser ─────────────────────────────────────
+
+const ERROR_PATTERNS = [
+  {
+    pattern: /Cannot instantiate interface\s+([\w\\]+)/i,
+    type: 'missing_preference',
+    extract: (m) => ({ interface: m[1] }),
+    suggestion: (ctx) => `Interface ${ctx.interface} has no di.xml preference. Add <preference for="${ctx.interface}" type="ConcreteClass"/> in etc/di.xml`
+  },
+  {
+    pattern: /Class\s+([\w\\]+)\s+does not exist/i,
+    type: 'missing_class',
+    extract: (m) => ({ class: m[1] }),
+    suggestion: (ctx) => `Class ${ctx.class} not found. Check namespace, autoload (composer dump-autoload), and module registration.`
+  },
+  {
+    pattern: /Plugin class\s+([\w\\]+)\s+doesn't exist/i,
+    type: 'missing_plugin',
+    extract: (m) => ({ plugin: m[1] }),
+    suggestion: (ctx) => `Plugin class ${ctx.plugin} declared in di.xml but PHP file missing. Check namespace and file path.`
+  },
+  {
+    pattern: /Area code is not set/i,
+    type: 'area_code_not_set',
+    extract: () => ({}),
+    suggestion: () => 'Area code must be set before object manager usage. In CLI commands, use $state->setAreaCode(Area::AREA_GLOBAL) in execute().'
+  },
+  {
+    pattern: /Circular dependency:\s*([\w\\,\s]+)/i,
+    type: 'circular_dependency',
+    extract: (m) => ({ classes: m[1] }),
+    suggestion: (ctx) => `Circular DI dependency between: ${ctx.classes}. Break the cycle with Proxy class or Factory.`
+  },
+  {
+    pattern: /(\d+)\s+plugins\s+.*sortOrder.*conflict/i,
+    type: 'plugin_sort_conflict',
+    extract: (m) => ({ count: m[1] }),
+    suggestion: (ctx) => `${ctx.count} plugins have conflicting sortOrder values. Check di.xml for duplicate sortOrder on the same type.`
+  },
+  {
+    pattern: /Undefined index:\s+(\w+)\s+in\s+([\w\/\-.]+\.phtml)/i,
+    type: 'template_undefined_index',
+    extract: (m) => ({ index: m[1], template: m[2] }),
+    suggestion: (ctx) => `Template ${ctx.template} accesses undefined variable '${ctx.index}'. Check the Block class getData() or assign in layout XML.`
+  },
+  {
+    pattern: /SQLSTATE\[(\w+)\].*Table '[\w.]*\.(\w+)' doesn't exist/i,
+    type: 'missing_table',
+    extract: (m) => ({ sqlState: m[1], table: m[2] }),
+    suggestion: (ctx) => `Table '${ctx.table}' missing. Run setup:upgrade or check db_schema.xml. May need to regenerate declarative schema whitelist.`
+  },
+  {
+    pattern: /There are no commands defined in the "(\w+(?::\w+)*)" namespace/i,
+    type: 'missing_cli_command',
+    extract: (m) => ({ namespace: m[1] }),
+    suggestion: (ctx) => `CLI command namespace '${ctx.namespace}' not registered. Check module's etc/di.xml for Magento\\Framework\\Console\\CommandListInterface argument.`
+  },
+  {
+    pattern: /Invalid method\s+([\w\\]+)::(before|after|around)(\w+)/i,
+    type: 'invalid_plugin_method',
+    extract: (m) => ({ class: m[1], type: m[2], method: m[3] }),
+    suggestion: (ctx) => `Plugin method ${ctx.type}${ctx.method} in ${ctx.class} doesn't match any public method on the target class. Check method name spelling.`
+  }
+];
+
+/**
+ * Parse an error message and find relevant source files.
+ */
+async function parseError(errorText) {
+  const result = {
+    errorType: 'unknown',
+    parsed: {},
+    suggestion: null,
+    relatedFiles: [],
+    stackTrace: []
+  };
+
+  // Try to match against known patterns
+  for (const errPattern of ERROR_PATTERNS) {
+    const match = errorText.match(errPattern.pattern);
+    if (match) {
+      result.errorType = errPattern.type;
+      result.parsed = errPattern.extract(match);
+      result.suggestion = errPattern.suggestion(result.parsed);
+      break;
+    }
+  }
+
+  // Extract class names from error text for file search
+  const classNames = [...errorText.matchAll(/([\w\\]{2,}(?:\\[\w]+)+)/g)].map(m => m[1]);
+  const uniqueClasses = [...new Set(classNames)];
+
+  // Extract stack trace file paths
+  const stackFiles = [...errorText.matchAll(/#\d+\s+([\w\/\-.]+\.php)(?:\((\d+)\))?/g)];
+  result.stackTrace = stackFiles.map(m => ({
+    file: m[1],
+    line: m[2] ? parseInt(m[2]) : null
+  }));
+
+  // Search for related files using semantic search and class names
+  for (const cls of uniqueClasses.slice(0, 5)) {
+    const shortName = cls.split('\\').pop();
+    try {
+      const raw = await rustSearchAsync(shortName, 5);
+      const results = raw.map(normalizeResult).filter(r =>
+        r.className?.includes(shortName) || r.path?.toLowerCase().includes(shortName.toLowerCase())
+      );
+      for (const r of results.slice(0, 3)) {
+        if (!result.relatedFiles.some(f => f.path === r.path)) {
+          result.relatedFiles.push({ path: r.path, className: r.className, score: r.score });
+        }
+      }
+    } catch { /* search may fail if index not ready */ }
+  }
+
+  // For missing_preference errors, also trace DI
+  if (result.errorType === 'missing_preference' && result.parsed.interface) {
+    try {
+      const diTrace = await traceDependency(result.parsed.interface, 'resolve');
+      if (diTrace.preferences.length > 0) {
+        result.existingPreferences = diTrace.preferences;
+        result.suggestion += ` Found ${diTrace.preferences.length} existing preference(s) — check area-specific di.xml overrides.`;
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  return result;
+}
+
+// ─── Performance Profiling ─────────────────────────────────────
+
+const SUBSYSTEM_QUERIES = {
+  checkout_totals: {
+    searches: [
+      'quote totals collector plugin',
+      'TotalsCollector TotalsCollectorList',
+      'checkout totals calculation',
+      'quote address collect totals'
+    ],
+    pathFilters: ['/Model/Quote/', '/Plugin/', 'totals', 'collector'],
+    eventPatterns: ['sales_quote_collect_totals']
+  },
+  order_place: {
+    searches: [
+      'order place submit plugin',
+      'sales order place after observer',
+      'order management submit',
+      'payment place order'
+    ],
+    pathFilters: ['/Order/', '/Plugin/', '/Observer/', 'payment'],
+    eventPatterns: ['sales_order_place_after', 'checkout_submit_all_after']
+  },
+  product_save: {
+    searches: [
+      'product save plugin afterSave',
+      'catalog product save observer',
+      'product repository save',
+      'product save reindex'
+    ],
+    pathFilters: ['/Product/', '/Plugin/', '/Observer/', 'catalog'],
+    eventPatterns: ['catalog_product_save_after', 'catalog_product_save_before']
+  },
+  cart_add: {
+    searches: [
+      'add product to cart quote plugin',
+      'cart add product stock validation',
+      'quote addProduct beforeAddProduct',
+      'checkout cart add observer'
+    ],
+    pathFilters: ['/Cart/', '/Quote/', '/Plugin/', 'inventory', 'stock'],
+    eventPatterns: ['checkout_cart_add_product_complete', 'checkout_cart_product_add_after']
+  },
+  customer_login: {
+    searches: [
+      'customer login authenticate plugin',
+      'customer session login observer',
+      'customer account authenticate',
+      'customer login after event'
+    ],
+    pathFilters: ['/Customer/', '/Plugin/', '/Observer/', 'session', 'auth'],
+    eventPatterns: ['customer_login', 'customer_session_init']
+  },
+  catalog_reindex: {
+    searches: [
+      'catalog product indexer reindex',
+      'flat table indexer catalog',
+      'price indexer product',
+      'category product indexer'
+    ],
+    pathFilters: ['/Indexer/', '/Model/', 'catalog', 'price', 'flat'],
+    eventPatterns: ['catalog_product_reindex', 'catalogsearch_reset_search_result']
+  }
+};
+
+/**
+ * Profile a Magento subsystem for performance bottlenecks.
+ */
+async function profilePerformance(subsystem, threshold = 0) {
+  const configSub = SUBSYSTEM_QUERIES[subsystem];
+  if (!configSub) {
+    // Fallback: use subsystem name as search query
+    const fallbackSearches = [subsystem.replace(/_/g, ' ') + ' plugin', subsystem.replace(/_/g, ' ') + ' observer'];
+    const raw = [];
+    for (const q of fallbackSearches) {
+      try {
+        const r = await rustSearchAsync(q, 20);
+        raw.push(...r);
+      } catch { /* ignore */ }
+    }
+    const results = raw.map(normalizeResult);
+    const unique = [];
+    const seen = new Set();
+    for (const r of results) {
+      if (r.path && !seen.has(r.path)) {
+        seen.add(r.path);
+        unique.push(r);
+      }
+    }
+    return { subsystem, files: unique.slice(0, 20), plugins: [], observers: [], collectors: [] };
+  }
+
+  // Run all searches in parallel
+  const searchPromises = configSub.searches.map(q => rustSearchAsync(q, 20).catch(() => []));
+  const eventPromises = (configSub.eventPatterns || []).map(e =>
+    rustSearchAsync(`event ${e} observer`, 15).catch(() => [])
+  );
+  const allResults = await Promise.all([...searchPromises, ...eventPromises]);
+  const rawAll = allResults.flat();
+
+  // Normalize and deduplicate
+  const seen = new Set();
+  const allFiles = [];
+  for (const r of rawAll) {
+    const n = normalizeResult(r);
+    if (n.path && !seen.has(n.path)) {
+      seen.add(n.path);
+      allFiles.push(n);
+    }
+  }
+
+  // Categorize
+  const plugins = allFiles.filter(r => r.isPlugin || r.path?.includes('/Plugin/'));
+  const observers = allFiles.filter(r => r.isObserver || r.path?.includes('/Observer/') || r.path?.includes('events.xml'));
+  const collectors = allFiles.filter(r =>
+    configSub.pathFilters.some(f => r.path?.includes(f))
+  );
+
+  // Try to get complexity for PHP files
+  const phpFiles = allFiles.filter(r => r.path?.endsWith('.php')).slice(0, 30);
+  let complexityData = [];
+  if (phpFiles.length > 0) {
+    try {
+      const absPaths = phpFiles
+        .map(r => path.join(config.magentoRoot, r.path))
+        .filter(p => existsSync(p));
+      if (absPaths.length > 0) {
+        complexityData = await analyzeComplexity(absPaths);
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  // Merge complexity into results
+  const filesWithComplexity = allFiles.map(r => {
+    const absPath = path.join(config.magentoRoot, r.path || '');
+    const cx = complexityData.find(c => c.file === absPath);
+    return {
+      ...r,
+      complexity: cx?.cyclomaticComplexity || 0,
+      complexityRating: cx?.rating || 'unknown',
+      functions: cx?.functions || 0,
+      lines: cx?.lines || 0
+    };
+  });
+
+  // Sort by complexity descending, filter by threshold
+  const sorted = filesWithComplexity
+    .filter(r => r.complexity >= threshold)
+    .sort((a, b) => b.complexity - a.complexity);
+
+  return {
+    subsystem,
+    totalFiles: allFiles.length,
+    files: sorted.slice(0, 30),
+    plugins: plugins.slice(0, 15),
+    observers: observers.slice(0, 15),
+    collectors: collectors.slice(0, 15)
+  };
+}
+
 // ─── MCP Server ─────────────────────────────────────────────────
 
 const server = new Server(
   {
     name: 'magector',
-    version: '1.0.0'
+    version: '2.0.0'
   },
   {
     capabilities: {
@@ -1374,6 +1760,59 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['entryPoint']
       }
     },
+    {
+      name: 'magento_trace_dependency',
+      description: 'Trace dependency injection graph for a PHP class or interface. Parses di.xml files across all modules to find: preferences (interface→implementation), plugins (interceptors), virtualTypes, and constructor argument overrides. Use this to understand how Magento resolves a class at runtime — especially useful for "Cannot instantiate interface" errors.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          className: {
+            type: 'string',
+            description: 'Full or partial PHP class/interface name to trace. Examples: "ProductRepositoryInterface", "CartManagementInterface", "LoggerInterface", "StoreManagerInterface"'
+          },
+          direction: {
+            type: 'string',
+            enum: ['resolve', 'dependents', 'both'],
+            description: '"resolve" finds what implements/replaces this class (preferences, virtualTypes). "dependents" finds what depends on this class (plugins, type arguments). "both" does both. Default: both.',
+            default: 'both'
+          }
+        },
+        required: ['className']
+      }
+    },
+    {
+      name: 'magento_error_parser',
+      description: 'Parse a Magento error message or stack trace and map it to relevant source files and root causes. Understands common Magento error patterns: DI instantiation failures, missing class/interface, plugin sort conflicts, area code not set, undefined index in templates, and more. Provides actionable file paths and fix suggestions.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          error: {
+            type: 'string',
+            description: 'Full error message, exception message, or stack trace from Magento. Can include PHP fatal errors, uncaught exceptions, or log entries.'
+          }
+        },
+        required: ['error']
+      }
+    },
+    {
+      name: 'magento_performance_profile',
+      description: 'Profile a Magento subsystem for performance bottlenecks. Scans for all plugins, observers, and collectors registered on a critical path (e.g., checkout totals, order placement, product save). Returns files sorted by complexity score to identify likely performance hotspots.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          subsystem: {
+            type: 'string',
+            description: 'Magento subsystem to profile. Examples: "checkout_totals", "order_place", "product_save", "cart_add", "customer_login", "catalog_reindex"'
+          },
+          threshold: {
+            type: 'number',
+            description: 'Minimum complexity score to include in results (default: 0). Set higher (e.g., 5) to focus on complex files only.',
+            default: 0
+          }
+        },
+        required: ['subsystem']
+      }
+    },
   ]
 }));
 
@@ -1383,7 +1822,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   logToFile('REQ', `${name}(${JSON.stringify(args || {})})`);
 
   // Block search tools while re-indexing is in progress
-  if (reindexInProgress && name !== 'magento_stats' && name !== 'magento_analyze_diff' && name !== 'magento_complexity') {
+  // Tools that work without the vector index should not be blocked during reindex
+  const indexFreeTools = ['magento_stats', 'magento_analyze_diff', 'magento_complexity', 'magento_trace_dependency', 'magento_error_parser'];
+  if (reindexInProgress && !indexFreeTools.includes(name)) {
     logToFile('REQ', `${name} → blocked (re-indexing in progress)`);
     return {
       content: [{
@@ -1938,7 +2379,136 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case 'magento_trace_dependency': {
+        const diResult = await traceDependency(args.className, args.direction || 'both');
 
+        let text = `## DI Dependency Trace: ${args.className}\n\n`;
+        text += `Scanned ${diResult.totalDiFiles} di.xml files.\n\n`;
+
+        if (diResult.preferences.length > 0) {
+          text += `### Preferences (${diResult.preferences.length})\n`;
+          for (const p of diResult.preferences) {
+            text += `- \`${p.for}\` → \`${p.type}\` (${p.file})\n`;
+          }
+          text += '\n';
+        }
+
+        if (diResult.plugins.length > 0) {
+          text += `### Plugins (${diResult.plugins.length})\n`;
+          for (const p of diResult.plugins) {
+            text += `- \`${p.pluginName}\`: \`${p.pluginClass}\` on \`${p.target}\` (${p.file})\n`;
+          }
+          text += '\n';
+        }
+
+        if (diResult.virtualTypes.length > 0) {
+          text += `### Virtual Types (${diResult.virtualTypes.length})\n`;
+          for (const v of diResult.virtualTypes) {
+            text += `- \`${v.name}\` extends \`${v.type}\` (${v.file})\n`;
+          }
+          text += '\n';
+        }
+
+        if (diResult.argumentOverrides.length > 0) {
+          text += `### Argument Overrides (${diResult.argumentOverrides.length})\n`;
+          for (const a of diResult.argumentOverrides) {
+            text += `- \`${a.target}\`.${a.argumentName} (${a.argumentType}) = ${a.value} (${a.file})\n`;
+          }
+          text += '\n';
+        }
+
+        if (diResult.preferences.length === 0 && diResult.plugins.length === 0 &&
+            diResult.virtualTypes.length === 0 && diResult.argumentOverrides.length === 0) {
+          text += '_No DI configuration found for this class. It may use default Magento auto-resolution or be configured under a different name._\n';
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_error_parser': {
+        const errorResult = await parseError(args.error);
+
+        let text = `## Error Analysis\n\n`;
+        text += `**Type:** ${errorResult.errorType}\n`;
+        if (errorResult.suggestion) {
+          text += `**Suggestion:** ${errorResult.suggestion}\n`;
+        }
+        text += '\n';
+
+        if (Object.keys(errorResult.parsed).length > 0) {
+          text += `### Parsed Details\n`;
+          for (const [key, value] of Object.entries(errorResult.parsed)) {
+            text += `- **${key}:** \`${value}\`\n`;
+          }
+          text += '\n';
+        }
+
+        if (errorResult.existingPreferences?.length > 0) {
+          text += `### Existing Preferences\n`;
+          for (const p of errorResult.existingPreferences) {
+            text += `- \`${p.for}\` → \`${p.type}\` (${p.file})\n`;
+          }
+          text += '\n';
+        }
+
+        if (errorResult.relatedFiles.length > 0) {
+          text += `### Related Files\n`;
+          for (const f of errorResult.relatedFiles) {
+            text += `- \`${f.path}\`${f.className ? ` (${f.className})` : ''}\n`;
+          }
+          text += '\n';
+        }
+
+        if (errorResult.stackTrace.length > 0) {
+          text += `### Stack Trace Files\n`;
+          for (const s of errorResult.stackTrace) {
+            text += `- ${s.file}${s.line ? `:${s.line}` : ''}\n`;
+          }
+          text += '\n';
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_performance_profile': {
+        const profileResult = await profilePerformance(args.subsystem, args.threshold || 0);
+
+        let text = `## Performance Profile: ${profileResult.subsystem}\n\n`;
+        text += `Found ${profileResult.totalFiles || profileResult.files?.length || 0} related files.\n\n`;
+
+        const knownSubsystems = Object.keys(SUBSYSTEM_QUERIES);
+        if (!SUBSYSTEM_QUERIES[args.subsystem]) {
+          text += `_Custom subsystem — used generic search. Known subsystems: ${knownSubsystems.join(', ')}_\n\n`;
+        }
+
+        if (profileResult.plugins?.length > 0) {
+          text += `### Plugins (${profileResult.plugins.length})\n`;
+          for (const p of profileResult.plugins) {
+            text += `- \`${p.path}\`${p.className ? ` (${p.className})` : ''}\n`;
+          }
+          text += '\n';
+        }
+
+        if (profileResult.observers?.length > 0) {
+          text += `### Observers (${profileResult.observers.length})\n`;
+          for (const o of profileResult.observers) {
+            text += `- \`${o.path}\`${o.className ? ` (${o.className})` : ''}\n`;
+          }
+          text += '\n';
+        }
+
+        if (profileResult.files?.length > 0) {
+          text += `### Files by Complexity\n`;
+          text += '| File | Complexity | Rating | Functions | Lines |\n';
+          text += '|------|-----------|--------|-----------|-------|\n';
+          for (const f of profileResult.files.filter(f => f.complexity > 0).slice(0, 20)) {
+            text += `| ${f.path} | ${f.complexity} | ${f.complexityRating} | ${f.functions} | ${f.lines} |\n`;
+          }
+          text += '\n';
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
 
       default:
         return {
