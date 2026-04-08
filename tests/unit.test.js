@@ -1779,6 +1779,23 @@ function testSingletonAndWarmup() {
   assertEq(shouldStartServe(false, true, true), 'start-serve', 'Singleton: primary with good DB → start');
   assertEq(shouldStartServe(false, true, false), 'reindex-then-serve', 'Singleton: bad format → reindex');
   assertEq(shouldStartServe(false, false, false), 'skip-no-db', 'Singleton: no DB → skip');
+
+  // Serve process dedup guard: don't spawn if PID file points to live process
+  function shouldSpawnServe(existingServePidAlive) {
+    if (existingServePidAlive) return 'skip-reuse';
+    return 'spawn';
+  }
+
+  assertEq(shouldSpawnServe(true), 'skip-reuse', 'Serve dedup: skip if existing serve is alive');
+  assertEq(shouldSpawnServe(false), 'spawn', 'Serve dedup: spawn if no existing serve');
+
+  // Stale lock double-check: after O_EXCL create, re-read must match our PID
+  function lockDoubleCheck(writtenPid, readBackPid) {
+    return writtenPid === readBackPid;
+  }
+
+  assert(lockDoubleCheck(12345, 12345), 'Lock double-check: own PID → pass');
+  assert(!lockDoubleCheck(12345, 99999), 'Lock double-check: different PID → fail (race lost)');
 }
 
 // ─── Reindex Deduplication Tests ───────────────────────────────

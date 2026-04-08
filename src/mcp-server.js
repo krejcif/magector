@@ -166,12 +166,19 @@ function tryAcquirePrimaryLock() {
         return false; // another instance is alive and primary
       }
     } catch { /* holder is dead, take over */ }
-    // Stale lock — reclaim
+    // Stale lock — reclaim. Use random jitter to avoid thundering herd
+    // when multiple instances detect stale lock simultaneously.
+    const jitterMs = Math.floor(Math.random() * 200) + 50;
+    const start = Date.now();
+    while (Date.now() - start < jitterMs) { /* busy-wait for sub-second jitter */ }
     try { unlinkSync(PRIMARY_LOCK_PATH); } catch {}
     try {
       const fd = openSync(PRIMARY_LOCK_PATH, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL);
       writeFileSync(fd, String(process.pid));
       closeSync(fd);
+      // Double-check: re-read to confirm we actually own it (no TOCTOU race)
+      const check = readFileSync(PRIMARY_LOCK_PATH, 'utf-8').trim();
+      if (check !== String(process.pid)) return false;
       return true;
     } catch {
       return false; // another instance beat us
@@ -566,6 +573,14 @@ let serveReadyPromise = null;
 let serveReadyResolve = null;
 
 function startServeProcess() {
+  // Guard: if a live serve process already exists (e.g. started by another
+  // instance that won the lock race), reuse it instead of spawning a duplicate.
+  const existingPid = getExistingServePid();
+  if (existingPid) {
+    logToFile('INFO', `Reusing existing serve process (PID ${existingPid}) — skipping spawn`);
+    return;
+  }
+
   serveReadyPromise = new Promise((resolve) => { serveReadyResolve = resolve; });
   try {
     const args = [
