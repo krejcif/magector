@@ -2848,7 +2848,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
               { type: 'string' },
               { type: 'array', items: { type: 'string' } }
             ],
-            description: 'Filter results by vendor/module pattern(s). Accepts a single string or array of strings. Supports wildcards and vendor prefix matching. Uses "/" or "_" interchangeably as separator. Examples: "Vendor_*", ["drmax_paymentrestrictions", "drmax_module-free-shipping"], "Magento_Catalog".'
+            description: 'Filter results by vendor/module pattern(s). Accepts a single string or array of strings. Supports wildcards and vendor prefix matching. Uses "/" or "_" interchangeably as separator. Examples: "Vendor_*", ["Acme_PaymentGateway", "Acme_FreeShipping"], "Magento_Catalog".'
           },
           expand: {
             type: 'boolean',
@@ -3330,7 +3330,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           methodName: {
             type: 'string',
-            description: 'Method name to find callers for. Examples: "execute", "save", "collectTotals", "copySalesRuleIdsFromParentToDrmaxQuote"'
+            description: 'Method name to find callers for. Examples: "execute", "save", "collectTotals", "copySalesRuleIdsFromParentToChildQuote"'
           },
           className: {
             type: 'string',
@@ -3362,7 +3362,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           className: {
             type: 'string',
-            description: 'Full PHP class name (FQCN) to start tracing from. Examples: "DrmaxMarketplace\\OrderSplit\\Model\\CreateOrder\\CreateChildOrder", "Magento\\Quote\\Model\\QuoteManagement"'
+            description: 'Full PHP class name (FQCN) to start tracing from. Examples: "Vendor\\OrderSplit\\Model\\CreateOrder\\CreateChildOrder", "Magento\\Quote\\Model\\QuoteManagement"'
           },
           methodName: {
             type: 'string',
@@ -3379,13 +3379,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_trace_data_flow',
-      description: 'Trace how a data attribute flows through the Magento codebase: find all PHP files that set (via magic setter, setData, addData) and get (via magic getter, getData) a specific attribute key. Shows which classes write vs read the attribute, in which methods, and whether XML configs reference it. Use this to understand data dependencies — e.g., who sets drmax_discounted_price_incl_tax on Quote\\Address and who reads it.',
+      description: 'Trace how a data attribute flows through the Magento codebase: find all PHP files that set (via magic setter, setData, addData) and get (via magic getter, getData) a specific attribute key. Shows which classes write vs read the attribute, in which methods, and whether XML configs reference it. Use this to understand data dependencies — e.g., who sets custom_discounted_price_incl_tax on Quote\\Address and who reads it.',
       inputSchema: {
         type: 'object',
         properties: {
           attributeKey: {
             type: 'string',
-            description: 'The snake_case data attribute key to trace. Examples: "drmax_discounted_price_incl_tax", "base_grand_total", "drmax_free_shipping_price", "subtotal_with_discount"'
+            description: 'The snake_case data attribute key to trace. Examples: "custom_discounted_price_incl_tax", "base_grand_total", "custom_free_shipping_price", "subtotal_with_discount"'
           },
           modelClass: {
             type: 'string',
@@ -3403,7 +3403,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           eventName: {
             type: 'string',
-            description: 'Magento event name to find dispatchers for. Examples: "sales_order_place_after", "drmax_discount_rule_validation_before", "checkout_cart_add_product_complete"'
+            description: 'Magento event name to find dispatchers for. Examples: "sales_order_place_after", "custom_discount_rule_validation_before", "checkout_cart_add_product_complete"'
           }
         },
         required: ['eventName']

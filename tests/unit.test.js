@@ -2318,10 +2318,10 @@ async function testTraceDataFlow() {
     `<?php
 namespace Acme\\Foo\\Model\\Quote\\Address\\Total;
 class DiscountCollector {
-    public const CODE = 'drmax_discounted_price_incl_tax';
+    public const CODE = 'custom_discounted_price_incl_tax';
     public function collect($quote, $shippingAssignment, $total) {
-        $total->setDrmaxDiscountedPriceInclTax(100.50);
-        $total->setBaseDrmaxDiscountedPriceInclTax(100.50);
+        $total->setCustomDiscountedPriceInclTax(100.50);
+        $total->setBaseCustomDiscountedPriceInclTax(100.50);
     }
 }
 `);
@@ -2333,7 +2333,7 @@ namespace Acme\\Foo\\Plugin;
 class TotalsPlugin {
     public function afterCollect($subject, $result, $quote) {
         foreach ($quote->getAllAddresses() as $address) {
-            $value = $address->getDrmaxDiscountedPriceInclTax();
+            $value = $address->getCustomDiscountedPriceInclTax();
         }
         return $result;
     }
@@ -2347,7 +2347,7 @@ namespace Acme\\Foo\\Model;
 class Observer {
     public function execute($observer) {
         $address = $observer->getData('address');
-        $address->setData('drmax_discounted_price_incl_tax', 42.0);
+        $address->setData('custom_discounted_price_incl_tax', 42.0);
     }
 }
 `);
@@ -2358,7 +2358,7 @@ class Observer {
 <config>
   <section name="quote">
     <group name="totals">
-      <item name="drmax_discounted_price_incl_tax" instance="Acme\\Foo\\Model\\Quote\\Address\\Total\\DiscountCollector" sort_order="450"/>
+      <item name="custom_discounted_price_incl_tax" instance="Acme\\Foo\\Model\\Quote\\Address\\Total\\DiscountCollector" sort_order="450"/>
     </group>
   </section>
 </config>`);
@@ -2366,14 +2366,14 @@ class Observer {
   const { glob: globFn } = await import('glob');
   const { readFileSync: readFn } = await import('fs');
   const root = tmpDir;
-  const attributeKey = 'drmax_discounted_price_incl_tax';
+  const attributeKey = 'custom_discounted_price_incl_tax';
   const pascal = attributeKey.split('_').map(p => p.charAt(0).toUpperCase() + p.slice(1)).join('');
   const setterMethod = `set${pascal}`;
   const getterMethod = `get${pascal}`;
 
   // Test PascalCase conversion
-  assertEq(setterMethod, 'setDrmaxDiscountedPriceInclTax', 'traceDataFlow: PascalCase setter');
-  assertEq(getterMethod, 'getDrmaxDiscountedPriceInclTax', 'traceDataFlow: PascalCase getter');
+  assertEq(setterMethod, 'setCustomDiscountedPriceInclTax', 'traceDataFlow: PascalCase setter');
+  assertEq(getterMethod, 'getCustomDiscountedPriceInclTax', 'traceDataFlow: PascalCase getter');
 
   // Test setter detection
   const phpFiles = await globFn('**/*.php', { cwd: root, absolute: true, nodir: true });
@@ -2552,26 +2552,26 @@ function testModuleFilterArray() {
   }
 
   const results = [
-    { module: 'drmax_paymentrestrictions', path: 'vendor/drmax/paymentrestrictions/Model/Foo.php' },
-    { module: 'drmax_module-free-shipping', path: 'vendor/drmax/module-free-shipping/Model/Bar.php' },
+    { module: 'acme_paymentgateway', path: 'vendor/acme/paymentgateway/Model/Foo.php' },
+    { module: 'acme_module-free-shipping', path: 'vendor/acme/module-free-shipping/Model/Bar.php' },
     { module: 'magento_module-sales-rule', path: 'vendor/magento/module-sales-rule/Model/Baz.php' },
-    { module: 'drmax_module-quote', path: 'vendor/drmax/module-quote/Plugin/Qux.php' },
+    { module: 'acme_module-quote', path: 'vendor/acme/module-quote/Plugin/Qux.php' },
   ];
 
   // Single string filter
-  const single = filterByModule(results, 'drmax_paymentrestrictions');
+  const single = filterByModule(results, 'acme_paymentgateway');
   assertEq(single.length, 1, 'moduleFilter: single string matches 1 result');
 
   // Array filter with multiple modules
-  const multi = filterByModule(results, ['drmax_paymentrestrictions', 'drmax_module-free-shipping']);
+  const multi = filterByModule(results, ['acme_paymentgateway', 'acme_module-free-shipping']);
   assertEq(multi.length, 2, 'moduleFilter: array matches 2 results');
 
   // Wildcard with array
-  const wildcard = filterByModule(results, ['drmax_*']);
-  assertEq(wildcard.length, 3, 'moduleFilter: wildcard drmax_* matches 3 drmax modules');
+  const wildcard = filterByModule(results, ['acme_*']);
+  assertEq(wildcard.length, 3, 'moduleFilter: wildcard acme_* matches 3 acme modules');
 
   // Mixed array: wildcard + specific
-  const mixed = filterByModule(results, ['magento_module-sales-rule', 'drmax_module-quote']);
+  const mixed = filterByModule(results, ['magento_module-sales-rule', 'acme_module-quote']);
   assertEq(mixed.length, 2, 'moduleFilter: mixed exact array matches 2 results');
 
   // Empty array returns nothing (no patterns to match)

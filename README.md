@@ -2,7 +2,7 @@
 
 **Technology-aware MCP server for Magento 2 and Adobe Commerce with intelligent indexing and search.**
 
-Magector is a Model Context Protocol (MCP) server that deeply understands Magento 2 and Adobe Commerce. It builds a semantic vector index of your entire codebase — 18,000+ files across hundreds of modules — and exposes 28 tools that let AI assistants search, navigate, and understand the code with domain-specific intelligence. Instead of grepping for keywords, your AI asks *"how are checkout totals calculated?"* and gets ranked, relevant results in under 50ms, enriched with Magento pattern detection (plugins, observers, controllers, DI preferences, layout XML, and 20+ more).
+Magector is a Model Context Protocol (MCP) server that deeply understands Magento 2 and Adobe Commerce. It builds a semantic vector index of your entire codebase — 18,000+ files across hundreds of modules — and exposes 34 tools that let AI assistants search, navigate, and understand the code with domain-specific intelligence. Instead of grepping for keywords, your AI asks *"how are checkout totals calculated?"* and gets ranked, relevant results in under 50ms, enriched with Magento pattern detection (plugins, observers, controllers, DI preferences, layout XML, and 20+ more).
 
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
 [![Node.js](https://img.shields.io/badge/node-18+-green.svg)](https://nodejs.org)
@@ -58,7 +58,7 @@ The result: your AI assistant calls one MCP tool and gets ranked, pattern-enrich
 - **Complexity analysis** -- cyclomatic complexity, function count, and hotspot detection across modules
 - **Fast** -- 10-45ms queries via persistent serve process, batched ONNX embedding with adaptive thread scaling
 - **LLM description enrichment** -- generate natural-language descriptions of di.xml files using Claude, stored in SQLite, and prepend them to embedding text so descriptions influence vector search ranking (not just post-retrieval display)
-- **MCP server** -- 28 tools integrating with Claude Code, Cursor, and any MCP-compatible AI tool
+- **MCP server** -- 34 tools integrating with Claude Code, Cursor, and any MCP-compatible AI tool
 - **Clean architecture** -- Rust core handles all indexing/search, Node.js MCP server delegates to it
 
 ---
@@ -70,7 +70,7 @@ flowchart LR
   subgraph node ["Node.js Layer"]
     direction TB
     G["CLI<br/>init · index · search · describe"]
-    E["MCP Server<br/>28 tools · LRU cache"]
+    E["MCP Server<br/>34 tools · LRU cache"]
     F["Persistent Serve Process"]
     G --> F
     E --> F
@@ -369,7 +369,7 @@ npx magector index --force
 
 ## MCP Server Tools
 
-The MCP server exposes 28 tools for AI-assisted Magento 2 and Adobe Commerce development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
+The MCP server exposes 34 tools for AI-assisted Magento 2 and Adobe Commerce development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
 
 ### Output Format
 
@@ -432,7 +432,10 @@ All search tools return structured JSON:
 | `magento_trace_flow` | Trace execution flow from an entry point (route, API, GraphQL, event, cron) -- maps controller → plugins → observers → templates in one call |
 | `magento_trace_dependency` | Trace DI graph for a class/interface -- preferences, plugins, virtualTypes, argument overrides (parses all di.xml, no index needed) |
 | `magento_find_event_flow` | Trace complete event chain: dispatchers → observers → handler PHP classes (parses events.xml + vector search) |
+| `magento_find_event_dispatchers` | Find all PHP locations where a specific event is dispatched -- exact grep matching with method context and surrounding code **(v2.3)** |
 | `magento_find_layout` | Find layout XML files by handle or content -- lists blocks, containers, and referenceBlock declarations |
+| `magento_trace_data_flow` | Trace how a data attribute flows: find all setters (magic setter, setData, addData) and getters (magic getter, getData) across PHP and XML **(v2.3)** |
+| `magento_trace_call_chain` | Trace internal method call chain: follows `$this->method()`, `$this->dep->method()`, and `dispatch()` calls to build an execution tree **(v2.2)** |
 
 Auto-detects entry type from pattern (`/V1/...` → API, `snake_case` → event, `camelCase` → GraphQL, `path/segments` → route), or override with `entryType`. Use `depth: "shallow"` (entry + config + plugins) or `depth: "deep"` (adds observers, layout, templates, DI preferences).
 
@@ -442,6 +445,9 @@ Auto-detects entry type from pattern (`/V1/...` → API, `snake_case` → event,
 |------|-------------|
 | `magento_impact_analysis` | Analyze impact of changing a class -- finds use statements, DI references, direct instantiations, and type hints across the codebase |
 | `magento_find_test` | Find PHPUnit tests for a given class/method -- searches Test/ directories for coverage, mocks, and assertions |
+| `magento_find_implementors` | Find all classes implementing a given PHP interface -- scans `implements` keywords and di.xml `<preference>` declarations **(v2.2)** |
+| `magento_find_callers` | Find all call sites of a method across PHP and XML files -- `->method()` and `::method()` calls **(v2.2)** |
+| `magento_find_di_wiring` | Complete DI picture for a class: preferences, plugins, constructor args, virtual types, and argument overrides from di.xml **(v2.2)** |
 
 ### Diagnostics
 
@@ -470,8 +476,21 @@ Auto-detects entry type from pattern (`/V1/...` → API, `snake_case` → event,
 
 - **Hybrid BM25+vector search** -- combines text frequency scoring with semantic vector similarity for better exact class name matches
 - **Query expansion** -- automatically expands queries with Magento domain synonyms (plugin → interceptor, checkout → cart/quote/totals, etc.)
-- **Module filtering** -- `moduleFilter` parameter on `magento_search` to limit results by vendor/module pattern (supports wildcards, e.g., `"Vendor_*"`)
+- **Module filtering** -- `moduleFilter` parameter on `magento_search` to limit results by vendor/module pattern. Accepts a single string or array of strings. Supports wildcards, e.g., `"Vendor_*"` or `["Acme_PaymentGateway", "Acme_FreeShipping"]`
 - **Non-blocking reindex** -- old index stays usable during background rebuild; new index is built to a temp path and swapped in atomically on completion
+
+### Deep Code Analysis (v2.2)
+
+- **`magento_find_implementors`** -- find all classes implementing a PHP interface (PHP `implements` + di.xml `<preference>`)
+- **`magento_find_callers`** -- find all call sites of a method across PHP and XML files
+- **`magento_find_di_wiring`** -- complete DI picture: preferences, plugins, constructor args, virtual types, argument overrides
+- **`magento_trace_call_chain`** -- trace internal method execution chain: `$this->method()`, `$this->dep->method()`, and `dispatch()` calls with event→observer resolution
+
+### Data Flow & Event Tracing (v2.3)
+
+- **`magento_trace_data_flow`** -- trace all setters and getters for a data attribute (magic methods, setData/getData, addData, constants, XML references). Answers "who writes/reads `custom_discounted_price_incl_tax` on `Quote\Address`?"
+- **`magento_find_event_dispatchers`** -- grep-based exact search for all PHP locations dispatching a specific event, with method context and surrounding code. Complements `magento_find_event_flow` with higher precision.
+- **`magento_find_plugin` area context** -- enriched output shows DI area (frontend/adminhtml/global/graphql) and explicit di.xml plugin registrations when `targetClass` is provided
 
 ### Tool Cross-References
 
@@ -549,6 +568,12 @@ magento_trace_flow({ entryPoint: "checkout/cart/add", depth: "deep" })
 magento_trace_flow({ entryPoint: "/V1/products" })
 magento_trace_flow({ entryPoint: "placeOrder", entryType: "graphql" })
 magento_trace_flow({ entryPoint: "sales_order_place_after" })
+magento_trace_data_flow({ attributeKey: "custom_discounted_price_incl_tax", modelClass: "Quote\\Address" })
+magento_find_event_dispatchers({ eventName: "custom_discount_rule_validation_before" })
+magento_find_implementors({ interfaceName: "ProductRepositoryInterface" })
+magento_find_callers({ methodName: "collectTotals", className: "TotalsCollector" })
+magento_find_di_wiring({ className: "CartManagementInterface" })
+magento_trace_call_chain({ className: "Magento\\Quote\\Model\\QuoteManagement", methodName: "submit" })
 ```
 
 ---
@@ -629,7 +654,7 @@ cd rust-core && cargo run --release -- validate -m ./magento2 --skip-index
 magector/
 ├── src/                          # Node.js source
 │   ├── cli.js                    # CLI entry point (npx magector <command>)
-│   ├── mcp-server.js             # MCP server (20 tools, structured JSON output)
+│   ├── mcp-server.js             # MCP server (34 tools, structured JSON output)
 │   ├── binary.js                 # Platform binary resolver
 │   ├── model.js                  # ONNX model resolver/downloader
 │   ├── init.js                   # Full init command (index + IDE config)
