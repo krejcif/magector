@@ -32,6 +32,8 @@ import {
 } from 'ruvector/dist/analysis/complexity.js';
 import { resolveBinary } from './binary.js';
 import { resolveModels } from './model.js';
+import { createRequire } from 'module';
+const __pkg = createRequire(import.meta.url)('../package.json');
 
 const config = {
   dbPath: process.env.MAGECTOR_DB || './.magector/index.db',
@@ -2816,7 +2818,7 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
 const server = new Server(
   {
     name: 'magector',
-    version: '2.1.1'
+    version: __pkg.version
   },
   {
     capabilities: {
@@ -3086,13 +3088,44 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_find_db_schema',
-      description: 'Find database table definitions, columns, indexes, and constraints declared in db_schema.xml (Magento declarative schema). See also: magento_find_class (model/resource model for the table).',
+      description: 'Find database table definitions, columns, indexes, and constraints declared in db_schema.xml (Magento declarative schema) AND legacy Setup scripts (InstallSchema, UpgradeSchema). Covers both modern declarative schema and legacy $setup->newTable() / addColumn() table definitions. See also: magento_find_trigger (DB triggers), magento_find_table_usage (cross-module table references).',
       inputSchema: {
         type: 'object',
         properties: {
           tableName: {
             type: 'string',
             description: 'Database table name or pattern. Examples: "catalog_product_entity", "sales_order", "customer_entity", "quote", "cms_page", "inventory_source"'
+          }
+        },
+        required: ['tableName']
+      }
+    },
+    {
+      name: 'magento_find_trigger',
+      description: 'Find MySQL database trigger definitions in Magento Setup scripts. Detects triggers created via TriggerFactory (setName, setTable, setEvent, setTime, addStatement, createTrigger). Returns trigger name, target table, event type (INSERT/UPDATE/DELETE), timing (BEFORE/AFTER), and SQL statements. Use when investigating DB-level automation, trigger chains, or performance issues caused by cascading triggers.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          triggerName: {
+            type: 'string',
+            description: 'Optional trigger name or pattern to search for. If omitted, finds all triggers in the codebase.'
+          },
+          tableName: {
+            type: 'string',
+            description: 'Optional table name to find triggers targeting this table.'
+          }
+        }
+      }
+    },
+    {
+      name: 'magento_find_table_usage',
+      description: 'Find all code that references a database table — across db_schema.xml, Setup scripts (InstallSchema/UpgradeSchema), raw SQL (Zend_Db_Expr, $connection->query), getTable() calls, and resource model definitions. Builds a cross-module dependency map showing who reads/writes/creates a given table. Essential for impact analysis of schema changes.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tableName: {
+            type: 'string',
+            description: 'Database table name to find all references for. Examples: "salesrule_ordered", "catalog_product_entity", "quote_item"'
           }
         },
         required: ['tableName']
@@ -3807,17 +3840,160 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'magento_find_db_schema': {
-        const query = `db_schema.xml table ${args.tableName} column declarative schema`;
-        const raw = await rustSearchAsync(query, 40);
-        let results = raw.map(normalizeResult).filter(r =>
+        // Search both declarative schema (db_schema.xml) and legacy Setup scripts
+        const declQuery = `db_schema.xml table ${args.tableName} column declarative schema`;
+        const legacyQuery = `create_table ${args.tableName} legacy_schema table_created ${args.tableName} setup install schema newTable addColumn`;
+        const [declRaw, legacyRaw] = await Promise.all([
+          rustSearchAsync(declQuery, 40),
+          rustSearchAsync(legacyQuery, 30)
+        ]);
+
+        let declResults = declRaw.map(normalizeResult).filter(r =>
           r.path?.includes('db_schema.xml')
         );
-        results = rerank(results, { fileType: 'xml', pathContains: ['db_schema.xml'] });
+        declResults = rerank(declResults, { fileType: 'xml', pathContains: ['db_schema.xml'] });
+
+        let legacyResults = legacyRaw.map(normalizeResult).filter(r => {
+          const p = r.path || '';
+          return (p.includes('/Setup/') || p.includes('InstallSchema') ||
+                  p.includes('UpgradeSchema') || p.includes('/Patch/')) &&
+                 (r.snippet?.toLowerCase().includes(args.tableName.toLowerCase()) ||
+                  r.searchText?.toLowerCase().includes(args.tableName.toLowerCase()));
+        });
+
+        // Deduplicate by path
+        const seen = new Set(declResults.map(r => r.path));
+        for (const r of legacyResults) {
+          if (!seen.has(r.path)) {
+            seen.add(r.path);
+            declResults.push(r);
+          }
+        }
+
+        // Add section headers
+        let output = '';
+        const xmlResults = declResults.filter(r => r.path?.includes('db_schema.xml'));
+        const setupResults = declResults.filter(r => !r.path?.includes('db_schema.xml'));
+
+        if (xmlResults.length > 0) {
+          output += formatSearchResults(xmlResults.slice(0, 10));
+        }
+        if (setupResults.length > 0) {
+          output += `\n\n### Legacy Setup Scripts (InstallSchema/UpgradeSchema)\n`;
+          output += formatSearchResults(setupResults.slice(0, 10));
+        }
 
         return {
           content: [{
             type: 'text',
-            text: formatSearchResults(results.slice(0, 15))
+            text: output || formatSearchResults([])
+          }]
+        };
+      }
+
+      case 'magento_find_trigger': {
+        // Search for DB trigger definitions in Setup scripts
+        const triggerTerm = args.triggerName || args.tableName || '';
+        const query = `db_trigger create_trigger sql_trigger TriggerFactory createTrigger setName setEvent ${triggerTerm} setup database_trigger trigger`;
+        const raw = await rustSearchAsync(query, 50);
+        let results = raw.map(normalizeResult).filter(r => {
+          const p = r.path || '';
+          const s = (r.searchText || '') + ' ' + (r.snippet || '');
+          // Must be a Setup file that contains trigger-related terms
+          return (p.includes('/Setup/') || p.includes('InstallSchema') ||
+                  p.includes('UpgradeSchema') || p.includes('/Patch/')) &&
+                 (s.toLowerCase().includes('trigger') || s.includes('db_trigger') || s.includes('create_trigger'));
+        });
+
+        // If searching for specific trigger/table, filter further
+        if (triggerTerm) {
+          const term = triggerTerm.toLowerCase();
+          const filtered = results.filter(r => {
+            const s = ((r.searchText || '') + ' ' + (r.snippet || '')).toLowerCase();
+            return s.includes(term);
+          });
+          if (filtered.length > 0) results = filtered;
+        }
+
+        results = rerank(results, { pathContains: ['/Setup/', 'UpgradeSchema', 'InstallSchema'] });
+
+        return {
+          content: [{
+            type: 'text',
+            text: results.length > 0
+              ? `### DB Trigger Definitions\n\n` + formatSearchResults(results.slice(0, 15)) +
+                `\n\n**Tip:** Read the matched Setup files to see trigger names, target tables, events (INSERT/UPDATE/DELETE), timing (BEFORE/AFTER), and SQL statements.`
+              : `No database triggers found${triggerTerm ? ` matching "${triggerTerm}"` : ''}. Triggers are defined in Setup scripts using TriggerFactory.`
+          }]
+        };
+      }
+
+      case 'magento_find_table_usage': {
+        const table = args.tableName;
+        // Multi-query strategy: search declarative schema, setup scripts, and inline SQL references
+        const queries = [
+          `table ${table} db_schema.xml declarative schema column`,
+          `sql_table ${table} table_reference ${table} Zend_Db_Expr getTable`,
+          `create_table ${table} legacy_schema setup trigger ${table}`,
+          `${table.replace(/_/g, ' ')} resource model collection`,
+        ];
+
+        const rawResults = await Promise.all(queries.map(q => rustSearchAsync(q, 25)));
+        const allResults = rawResults.flat().map(normalizeResult);
+
+        // Deduplicate by path
+        const pathMap = new Map();
+        for (const r of allResults) {
+          if (!r.path) continue;
+          const s = ((r.searchText || '') + ' ' + (r.snippet || '')).toLowerCase();
+          if (s.includes(table.toLowerCase()) || r.path.includes('db_schema.xml')) {
+            if (!pathMap.has(r.path) || (r.score || 0) > (pathMap.get(r.path).score || 0)) {
+              pathMap.set(r.path, r);
+            }
+          }
+        }
+        const unique = Array.from(pathMap.values());
+
+        // Categorize results
+        const categories = {
+          'Declarative Schema (db_schema.xml)': unique.filter(r => r.path?.includes('db_schema.xml')),
+          'Setup Scripts (InstallSchema/UpgradeSchema/Patch)': unique.filter(r => {
+            const p = r.path || '';
+            return !p.includes('db_schema.xml') &&
+              (p.includes('/Setup/') || p.includes('InstallSchema') ||
+               p.includes('UpgradeSchema') || p.includes('/Patch/'));
+          }),
+          'PHP Code (raw SQL, getTable, Zend_Db_Expr)': unique.filter(r => {
+            const p = r.path || '';
+            return p.endsWith('.php') && !p.includes('db_schema.xml') &&
+              !p.includes('/Setup/') && !p.includes('InstallSchema') &&
+              !p.includes('UpgradeSchema') && !p.includes('/Patch/');
+          }),
+          'XML Config': unique.filter(r => {
+            const p = r.path || '';
+            return p.endsWith('.xml') && !p.includes('db_schema.xml');
+          }),
+        };
+
+        let output = `### Table Usage: \`${table}\`\n\n`;
+        output += `Found ${unique.length} file(s) referencing this table.\n\n`;
+
+        for (const [category, items] of Object.entries(categories)) {
+          if (items.length > 0) {
+            output += `#### ${category} (${items.length})\n`;
+            output += formatSearchResults(items.slice(0, 8));
+            output += '\n';
+          }
+        }
+
+        if (unique.length === 0) {
+          output += `No references found for table "${table}". Try a broader search with magento_search.`;
+        }
+
+        return {
+          content: [{
+            type: 'text',
+            text: output
           }]
         };
       }

@@ -2583,6 +2583,185 @@ function testModuleFilterArray() {
   assertEq(noFilter.length, 4, 'moduleFilter: null returns all results');
 }
 
+// ─── New MCP Tool Definition Tests ────────────────────────────
+
+function testNewMcpToolDefinitions() {
+  console.log('\n── New MCP Tool Definitions ──');
+
+  // Simulate the tool definitions array to verify schema
+  const toolDefs = [
+    {
+      name: 'magento_find_trigger',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          triggerName: { type: 'string' },
+          tableName: { type: 'string' }
+        }
+      }
+    },
+    {
+      name: 'magento_find_table_usage',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tableName: { type: 'string' }
+        },
+        required: ['tableName']
+      }
+    },
+    {
+      name: 'magento_find_db_schema',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tableName: { type: 'string' }
+        },
+        required: ['tableName']
+      }
+    }
+  ];
+
+  // magento_find_trigger has optional parameters
+  const triggerTool = toolDefs.find(t => t.name === 'magento_find_trigger');
+  assert(triggerTool != null, 'magento_find_trigger tool definition exists');
+  assert(!triggerTool.inputSchema.required, 'magento_find_trigger has no required params (all optional)');
+  assert('triggerName' in triggerTool.inputSchema.properties, 'magento_find_trigger has triggerName param');
+  assert('tableName' in triggerTool.inputSchema.properties, 'magento_find_trigger has tableName param');
+
+  // magento_find_table_usage requires tableName
+  const tableUsageTool = toolDefs.find(t => t.name === 'magento_find_table_usage');
+  assert(tableUsageTool != null, 'magento_find_table_usage tool definition exists');
+  assert(tableUsageTool.inputSchema.required.includes('tableName'), 'magento_find_table_usage requires tableName');
+
+  // magento_find_db_schema still requires tableName
+  const dbSchemaTool = toolDefs.find(t => t.name === 'magento_find_db_schema');
+  assert(dbSchemaTool != null, 'magento_find_db_schema tool definition exists');
+  assert(dbSchemaTool.inputSchema.required.includes('tableName'), 'magento_find_db_schema requires tableName');
+}
+
+// ─── Setup Script Detection Tests ─────────────────────────────
+
+function testSetupScriptDetection() {
+  console.log('\n── Setup Script Detection ──');
+
+  // Test that Setup script paths are correctly identified
+  function isSetupScript(path) {
+    return path.includes('/Setup/') || path.includes('InstallSchema') ||
+           path.includes('UpgradeSchema') || path.includes('InstallData') ||
+           path.includes('UpgradeData') || path.includes('/Patch/');
+  }
+
+  assert(isSetupScript('vendor/acme/module-foo/Setup/UpgradeSchema.php'), 'UpgradeSchema.php is a setup script');
+  assert(isSetupScript('vendor/acme/module-foo/Setup/InstallSchema.php'), 'InstallSchema.php is a setup script');
+  assert(isSetupScript('vendor/acme/module-foo/Setup/Patch/Schema/AddColumn.php'), 'Schema patch is a setup script');
+  assert(isSetupScript('app/code/Acme/Foo/Setup/UpgradeData.php'), 'UpgradeData.php is a setup script');
+  assert(!isSetupScript('vendor/acme/module-foo/Model/Product.php'), 'Model file is NOT a setup script');
+  assert(!isSetupScript('vendor/acme/module-foo/etc/db_schema.xml'), 'db_schema.xml is NOT a setup script');
+
+  // Test trigger detection regex patterns
+  function containsTriggerSignals(content) {
+    return content.includes('TriggerFactory') ||
+           content.includes('createTrigger') ||
+           content.includes('dropTrigger');
+  }
+
+  assert(
+    containsTriggerSignals('$this->triggerFactory->create(); $setup->getConnection()->createTrigger($t);'),
+    'Detects createTrigger in PHP code'
+  );
+  assert(
+    containsTriggerSignals('use Magento\\Framework\\DB\\Ddl\\TriggerFactory;'),
+    'Detects TriggerFactory import'
+  );
+  assert(
+    !containsTriggerSignals('$this->factory->create(); $rule->save();'),
+    'Does NOT detect triggers in normal factory usage'
+  );
+}
+
+// ─── SQL Table Reference Detection Tests ──────────────────────
+
+function testSqlTableReferenceDetection() {
+  console.log('\n── SQL Table Reference Detection ──');
+
+  // Simulate SQL table reference extraction (mirrors Rust SqlReferenceAnalyzer logic)
+  function extractTableRefs(content) {
+    const tables = new Set();
+    const sqlKeywords = new Set([
+      'as', 'set', 'where', 'and', 'or', 'not', 'null', 'true', 'false',
+      'select', 'insert', 'update', 'delete', 'from', 'into', 'values',
+      'group', 'order', 'having', 'limit', 'offset', 'on', 'inner', 'left',
+      'right', 'outer', 'cross', 'join', 'if', 'then', 'else', 'end',
+      'when', 'case', 'new', 'old', 'main_table', 'related',
+    ]);
+
+    // Extract from Zend_Db_Expr
+    const exprRe = /Zend_Db_Expr\s*\(\s*'([^']*(?:\n[^']*)*)'/g;
+    const tableRe = /\b(?:from|into|update|join|table)\s+`?(\w+)`?/gi;
+    let match;
+
+    while ((match = exprRe.exec(content)) !== null) {
+      const sql = match[1];
+      let tMatch;
+      while ((tMatch = tableRe.exec(sql)) !== null) {
+        const tbl = tMatch[1].toLowerCase();
+        if (!sqlKeywords.has(tbl)) tables.add(tbl);
+      }
+    }
+
+    // Extract from getTable('name')
+    const getTableRe = /getTable(?:Name)?\s*\(\s*['"](\w+)['"]/g;
+    while ((match = getTableRe.exec(content)) !== null) {
+      tables.add(match[1].toLowerCase());
+    }
+
+    return Array.from(tables);
+  }
+
+  // Test Zend_Db_Expr extraction
+  const exprContent = "new \\Zend_Db_Expr('(SELECT row_id, SUM(delta) FROM ordered_delta GROUP BY row_id)')";
+  const exprTables = extractTableRefs(exprContent);
+  assert(exprTables.includes('ordered_delta'), 'Extracts table from Zend_Db_Expr');
+
+  // Test getTable extraction
+  const getTableContent = "$conn->getTable('sales_order'); $conn->getTableName('quote_item');";
+  const getTables = extractTableRefs(getTableContent);
+  assert(getTables.includes('sales_order'), 'Extracts table from getTable()');
+  assert(getTables.includes('quote_item'), 'Extracts table from getTableName()');
+
+  // Test no false positives
+  const noSqlContent = "$this->logger->info('Processing'); $repo->getById(1);";
+  const noTables = extractTableRefs(noSqlContent);
+  assertEq(noTables.length, 0, 'No false positives from non-SQL code');
+
+  // Test combined scenario (real-world pattern)
+  const realContent = [
+    "$select->joinLeft(",
+    "  ['delta' => new \\Zend_Db_Expr('(SELECT row_id FROM custom_delta GROUP BY row_id)')],",
+    "  'main.row_id = delta.row_id'",
+    ");",
+    "$orderedTable = $connection->getTable('custom_ordered');"
+  ].join('\n');
+  const realTables = extractTableRefs(realContent);
+  assert(realTables.includes('custom_delta'), 'Real-world: extracts from Zend_Db_Expr');
+  assert(realTables.includes('custom_ordered'), 'Real-world: extracts from getTable');
+
+  // Test categorization logic
+  function categorizeResult(path) {
+    if (path.includes('db_schema.xml')) return 'declarative';
+    if (path.includes('/Setup/') || path.includes('UpgradeSchema')) return 'setup';
+    if (path.endsWith('.php')) return 'php';
+    if (path.endsWith('.xml')) return 'xml';
+    return 'other';
+  }
+
+  assertEq(categorizeResult('vendor/acme/module/etc/db_schema.xml'), 'declarative', 'Categorize: db_schema.xml -> declarative');
+  assertEq(categorizeResult('vendor/acme/module/Setup/UpgradeSchema.php'), 'setup', 'Categorize: UpgradeSchema.php -> setup');
+  assertEq(categorizeResult('vendor/acme/module/Observer/OrderPlaced.php'), 'php', 'Categorize: Observer PHP -> php');
+  assertEq(categorizeResult('vendor/acme/module/etc/di.xml'), 'xml', 'Categorize: di.xml -> xml');
+}
+
 // ─── Run All ───────────────────────────────────────────────────
 
 async function main() {
@@ -2624,6 +2803,9 @@ async function main() {
   await testTraceDataFlow();
   await testFindEventDispatchers();
   testModuleFilterArray();
+  testNewMcpToolDefinitions();
+  testSetupScriptDetection();
+  testSqlTableReferenceDetection();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);

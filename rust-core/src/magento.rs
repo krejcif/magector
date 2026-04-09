@@ -495,6 +495,248 @@ pub fn split_camel_case(s: &str) -> String {
     result
 }
 
+/// Metadata extracted from PHP Setup scripts (InstallSchema, UpgradeSchema, data patches)
+#[derive(Debug, Clone, Default)]
+pub struct SetupMetadata {
+    /// Tables created via $setup->newTable() or $connection->newTable()
+    pub tables_created: Vec<String>,
+    /// Columns added via addColumn() with their target table
+    pub columns_added: Vec<(String, String)>,
+    /// DB triggers created via TriggerFactory / createTrigger
+    pub triggers: Vec<TriggerInfo>,
+    /// Tables referenced via $setup->getTable() or raw SQL
+    pub table_references: Vec<String>,
+}
+
+/// Information about a database trigger found in Setup scripts
+#[derive(Debug, Clone)]
+pub struct TriggerInfo {
+    pub name: String,
+    pub table: String,
+    pub event: String,
+    pub timing: String,
+    pub statement: String,
+}
+
+/// Analyzer for PHP Setup scripts - detects table creation, triggers, and raw SQL
+pub struct SetupAnalyzer {
+    get_table_re: Regex,
+    trigger_name_re: Regex,
+    trigger_table_re: Regex,
+    trigger_event_re: Regex,
+    trigger_time_re: Regex,
+    drop_trigger_re: Regex,
+}
+
+impl SetupAnalyzer {
+    pub fn new() -> Self {
+        Self {
+            get_table_re: Regex::new(r#"getTable\s*\(\s*['"](\w+)['"]"#).unwrap(),
+            trigger_name_re: Regex::new(r#"setName\s*\(\s*['"]([^'"]+)['"]"#).unwrap(),
+            trigger_table_re: Regex::new(r#"setTable\s*\(\s*\$(\w+)"#).unwrap(),
+            trigger_event_re: Regex::new(r#"setEvent\s*\([^)]*EVENT_(\w+)"#).unwrap(),
+            trigger_time_re: Regex::new(r#"setTime\s*\([^)]*TIME_(\w+)"#).unwrap(),
+            drop_trigger_re: Regex::new(r#"dropTrigger\s*\(\s*['"]([^'"]+)['"]"#).unwrap(),
+        }
+    }
+
+    pub fn analyze(&self, content: &str) -> SetupMetadata {
+        let mut meta = SetupMetadata::default();
+
+        // Detect table references via getTable()
+        for caps in self.get_table_re.captures_iter(content) {
+            let table = caps[1].to_string();
+            if !meta.table_references.contains(&table) {
+                meta.table_references.push(table);
+            }
+        }
+
+        // Detect tables created via newTable()
+        // Look for patterns like: ->newTable($setup->getTable('tablename')) or ->newTable('tablename')
+        let new_table_re = Regex::new(r#"newTable\s*\(\s*(?:\$\w+->getTable\s*\(\s*)?['"](\w+)['"]"#).unwrap();
+        for caps in new_table_re.captures_iter(content) {
+            let table = caps[1].to_string();
+            if !meta.tables_created.contains(&table) {
+                meta.tables_created.push(table.clone());
+            }
+            if !meta.table_references.contains(&table) {
+                meta.table_references.push(table);
+            }
+        }
+
+        // Detect triggers by finding TriggerFactory usage blocks
+        if content.contains("TriggerFactory") || content.contains("createTrigger") {
+            // Parse trigger blocks: each trigger is setName/setTable/setEvent/setTime/addStatement/createTrigger
+            let lines: Vec<&str> = content.lines().collect();
+            let mut current_trigger: Option<TriggerInfo> = None;
+
+            for line in &lines {
+                // New trigger starts with triggerFactory->create() or similar
+                if line.contains("triggerFactory->create()") || line.contains("TriggerFactory") && line.contains("create()") {
+                    if let Some(trigger) = current_trigger.take() {
+                        if !trigger.name.is_empty() {
+                            meta.triggers.push(trigger);
+                        }
+                    }
+                    current_trigger = Some(TriggerInfo {
+                        name: String::new(),
+                        table: String::new(),
+                        event: String::new(),
+                        timing: String::new(),
+                        statement: String::new(),
+                    });
+                }
+
+                if let Some(ref mut trigger) = current_trigger {
+                    if let Some(caps) = self.trigger_name_re.captures(line) {
+                        trigger.name = caps[1].to_string();
+                    }
+                    if let Some(caps) = self.trigger_event_re.captures(line) {
+                        trigger.event = caps[1].to_lowercase();
+                    }
+                    if let Some(caps) = self.trigger_time_re.captures(line) {
+                        trigger.timing = caps[1].to_lowercase();
+                    }
+                    // Table reference for trigger
+                    if line.contains("setTable") {
+                        // Try to resolve variable name to table
+                        if let Some(caps) = self.trigger_table_re.captures(line) {
+                            trigger.table = caps[1].to_string();
+                        }
+                    }
+                    if line.contains("createTrigger") {
+                        let t = current_trigger.take().unwrap();
+                        if !t.name.is_empty() {
+                            meta.triggers.push(t);
+                        }
+                    }
+                }
+            }
+            // Flush last trigger if not yet pushed
+            if let Some(trigger) = current_trigger.take() {
+                if !trigger.name.is_empty() {
+                    meta.triggers.push(trigger);
+                }
+            }
+
+            // Also extract SQL from addStatement calls (multiline)
+            let stmt_re = Regex::new(r"(?s)addStatement\s*\(\s*'(.*?)'").unwrap();
+            for caps in stmt_re.captures_iter(content) {
+                let sql = caps[1].to_string();
+                // Extract table names from SQL statements
+                let sql_table_re = Regex::new(r"(?i)\b(?:from|into|update|join|table)\s+`?(\w+)`?").unwrap();
+                for tcaps in sql_table_re.captures_iter(&sql) {
+                    let tbl = tcaps[1].to_string();
+                    if tbl != "as" && tbl != "set" && tbl != "where" && !meta.table_references.contains(&tbl) {
+                        meta.table_references.push(tbl);
+                    }
+                }
+            }
+
+            // Also parse drop triggers
+            for caps in self.drop_trigger_re.captures_iter(content) {
+                let name = caps[1].to_string();
+                // Check if already tracked
+                if !meta.triggers.iter().any(|t| t.name == name) {
+                    meta.triggers.push(TriggerInfo {
+                        name,
+                        table: String::new(),
+                        event: "dropped".to_string(),
+                        timing: String::new(),
+                        statement: String::new(),
+                    });
+                }
+            }
+        }
+
+        meta
+    }
+}
+
+impl Default for SetupAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Analyzer for inline SQL references in any PHP file
+pub struct SqlReferenceAnalyzer {
+    zend_expr_re: Regex,
+    raw_query_re: Regex,
+    table_name_re: Regex,
+    get_table_re: Regex,
+}
+
+impl SqlReferenceAnalyzer {
+    pub fn new() -> Self {
+        Self {
+            zend_expr_re: Regex::new(r"(?s)Zend_Db_Expr\s*\(\s*'(.*?)'").unwrap(),
+            raw_query_re: Regex::new(r#"(?s)->query\s*\(\s*['"](.+?)['"]"#).unwrap(),
+            table_name_re: Regex::new(r"(?i)\b(?:from|into|update|join|table)\s+`?(\w+)`?").unwrap(),
+            get_table_re: Regex::new(r#"getTable(?:Name)?\s*\(\s*['"](\w+)['"]"#).unwrap(),
+        }
+    }
+
+    /// Extract all database table names referenced in PHP code via raw SQL
+    pub fn extract_table_references(&self, content: &str) -> Vec<String> {
+        let mut tables = Vec::new();
+        let sql_keywords: &[&str] = &[
+            "as", "set", "where", "and", "or", "not", "null", "true", "false",
+            "select", "insert", "update", "delete", "from", "into", "values",
+            "group", "order", "having", "limit", "offset", "on", "inner", "left",
+            "right", "outer", "cross", "join", "if", "then", "else", "end",
+            "when", "case", "new", "old", "main_table", "related",
+        ];
+
+        // Extract from Zend_Db_Expr
+        for caps in self.zend_expr_re.captures_iter(content) {
+            let sql = &caps[1];
+            for tcaps in self.table_name_re.captures_iter(sql) {
+                let tbl = tcaps[1].to_lowercase();
+                if !sql_keywords.contains(&tbl.as_str()) && !tables.contains(&tbl) {
+                    tables.push(tbl);
+                }
+            }
+        }
+
+        // Extract from raw query() calls
+        for caps in self.raw_query_re.captures_iter(content) {
+            let sql = &caps[1];
+            for tcaps in self.table_name_re.captures_iter(sql) {
+                let tbl = tcaps[1].to_lowercase();
+                if !sql_keywords.contains(&tbl.as_str()) && !tables.contains(&tbl) {
+                    tables.push(tbl);
+                }
+            }
+        }
+
+        // Extract from getTable('name') / getTableName('name')
+        for caps in self.get_table_re.captures_iter(content) {
+            let tbl = caps[1].to_lowercase();
+            if !tables.contains(&tbl) {
+                tables.push(tbl);
+            }
+        }
+
+        // Also look for ->getTableName('tablename') in connection calls
+        let conn_table_re = Regex::new(r#"getConnection\(\).*?getTable(?:Name)?\s*\(\s*['"](\w+)['"]"#).unwrap();
+        for caps in conn_table_re.captures_iter(content) {
+            let tbl = caps[1].to_lowercase();
+            if !tables.contains(&tbl) {
+                tables.push(tbl);
+            }
+        }
+
+        tables
+    }
+}
+
+impl Default for SqlReferenceAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,5 +798,144 @@ mod tests {
     fn test_split_camel_case() {
         assert_eq!(split_camel_case("ProductRepository"), "product repository");
         assert_eq!(split_camel_case("getById"), "get by id");
+    }
+
+    #[test]
+    fn test_setup_analyzer_table_creation() {
+        let analyzer = SetupAnalyzer::new();
+        let content = r#"
+        $table = $setup->getConnection()->newTable(
+            $setup->getTable('custom_order_tracking')
+        )->addColumn('entity_id', Table::TYPE_INTEGER, null, ['identity' => true]);
+        $setup->getConnection()->createTable($table);
+        "#;
+        let meta = analyzer.analyze(content);
+        assert!(meta.tables_created.contains(&"custom_order_tracking".to_string()));
+        assert!(meta.table_references.contains(&"custom_order_tracking".to_string()));
+    }
+
+    #[test]
+    fn test_setup_analyzer_get_table_references() {
+        let analyzer = SetupAnalyzer::new();
+        let content = r#"
+        $salesruleTable = $setup->getTable('salesrule');
+        $orderedTable = $setup->getTable('salesrule_ordered');
+        $connection->addColumn($salesruleTable, 'custom_field', ['type' => Table::TYPE_INTEGER]);
+        "#;
+        let meta = analyzer.analyze(content);
+        assert!(meta.table_references.contains(&"salesrule".to_string()));
+        assert!(meta.table_references.contains(&"salesrule_ordered".to_string()));
+    }
+
+    #[test]
+    fn test_setup_analyzer_trigger_detection() {
+        let analyzer = SetupAnalyzer::new();
+        let content = r#"
+        use Magento\Framework\DB\Ddl\TriggerFactory;
+
+        $insert = $this->triggerFactory->create();
+        $insert->setName('order_usage_insert');
+        $insert->setTime(\Magento\Framework\DB\Ddl\Trigger::TIME_AFTER);
+        $insert->setTable($orderedTable);
+        $insert->setEvent(\Magento\Framework\DB\Ddl\Trigger::EVENT_INSERT);
+        $insert->addStatement('update salesrule as main SET usage = 0 where main.row_id = new.row_id');
+        $setup->getConnection()->dropTrigger($insert->getName());
+        $setup->getConnection()->createTrigger($insert);
+        "#;
+        let meta = analyzer.analyze(content);
+        assert!(!meta.triggers.is_empty(), "Should detect at least one trigger");
+        let trigger = &meta.triggers[0];
+        assert_eq!(trigger.name, "order_usage_insert");
+        assert_eq!(trigger.event, "insert");
+        assert_eq!(trigger.timing, "after");
+    }
+
+    #[test]
+    fn test_setup_analyzer_multiple_triggers() {
+        let analyzer = SetupAnalyzer::new();
+        let content = r#"
+        use Magento\Framework\DB\Ddl\TriggerFactory;
+
+        $t1 = $this->triggerFactory->create();
+        $t1->setName('trigger_insert');
+        $t1->setTime(\Magento\Framework\DB\Ddl\Trigger::TIME_AFTER);
+        $t1->setEvent(\Magento\Framework\DB\Ddl\Trigger::EVENT_INSERT);
+        $setup->getConnection()->createTrigger($t1);
+
+        $t2 = $this->triggerFactory->create();
+        $t2->setName('trigger_update');
+        $t2->setTime(\Magento\Framework\DB\Ddl\Trigger::TIME_BEFORE);
+        $t2->setEvent(\Magento\Framework\DB\Ddl\Trigger::EVENT_UPDATE);
+        $setup->getConnection()->createTrigger($t2);
+        "#;
+        let meta = analyzer.analyze(content);
+        assert_eq!(meta.triggers.len(), 2);
+        assert_eq!(meta.triggers[0].name, "trigger_insert");
+        assert_eq!(meta.triggers[1].name, "trigger_update");
+        assert_eq!(meta.triggers[1].timing, "before");
+    }
+
+    #[test]
+    fn test_setup_analyzer_sql_table_extraction() {
+        let analyzer = SetupAnalyzer::new();
+        let content = r#"
+        use Magento\Framework\DB\Ddl\TriggerFactory;
+        $t = $this->triggerFactory->create();
+        $t->setName('delta_trigger');
+        $t->addStatement('insert into ordered_delta(row_id,delta) values (new.row_id,new.usage)');
+        $setup->getConnection()->createTrigger($t);
+        "#;
+        let meta = analyzer.analyze(content);
+        assert!(meta.table_references.contains(&"ordered_delta".to_string()),
+            "Should extract table from SQL in addStatement");
+    }
+
+    #[test]
+    fn test_sql_reference_analyzer_zend_db_expr() {
+        let analyzer = SqlReferenceAnalyzer::new();
+        let content = r#"
+        $select->joinLeft(
+            ['delta_table' => new \Zend_Db_Expr('(SELECT row_id,sum(delta) AS delta FROM salesrule_ordered_delta GROUP BY salesrule_ordered_delta.row_id)')],
+            'main_table.row_id = delta_table.row_id',
+            ['delta']
+        );
+        "#;
+        let tables = analyzer.extract_table_references(content);
+        assert!(tables.contains(&"salesrule_ordered_delta".to_string()),
+            "Should extract table from Zend_Db_Expr, got: {:?}", tables);
+    }
+
+    #[test]
+    fn test_sql_reference_analyzer_raw_query() {
+        let analyzer = SqlReferenceAnalyzer::new();
+        let content = r#"
+        $connection->query('delete from salesrule_ordered_delta');
+        "#;
+        let tables = analyzer.extract_table_references(content);
+        assert!(tables.contains(&"salesrule_ordered_delta".to_string()),
+            "Should extract table from raw query, got: {:?}", tables);
+    }
+
+    #[test]
+    fn test_sql_reference_analyzer_get_table() {
+        let analyzer = SqlReferenceAnalyzer::new();
+        let content = r#"
+        $srOrderedTable = $connection->getTableName('salesrule_ordered');
+        $salesOrderTable = $connection->getTable('sales_order');
+        "#;
+        let tables = analyzer.extract_table_references(content);
+        assert!(tables.contains(&"salesrule_ordered".to_string()));
+        assert!(tables.contains(&"sales_order".to_string()));
+    }
+
+    #[test]
+    fn test_sql_reference_analyzer_no_false_positives() {
+        let analyzer = SqlReferenceAnalyzer::new();
+        let content = r#"
+        $this->logger->info('Processing order');
+        $result = $this->repository->getById($id);
+        "#;
+        let tables = analyzer.extract_table_references(content);
+        assert!(tables.is_empty(), "Should not extract tables from non-SQL code, got: {:?}", tables);
     }
 }

@@ -13,7 +13,7 @@ use crate::ast::{PhpAstAnalyzer, JsAstAnalyzer, PhpAstMetadata, JsAstMetadata};
 use crate::embedder::Embedder;
 use crate::magento::{
     detect_area, detect_file_type, extract_module_info, split_camel_case,
-    XmlAnalyzer,
+    XmlAnalyzer, SetupAnalyzer, SqlReferenceAnalyzer,
 };
 use crate::vectordb::{IndexMetadata, VectorDB};
 
@@ -782,14 +782,58 @@ impl Indexer {
             _ => (None, None, None),
         };
 
+        // Analyze Setup scripts and inline SQL in PHP files
+        let mut extra_search_terms = String::new();
+        if ext == "php" {
+            // Run SQL reference analyzer on all PHP files
+            let sql_analyzer = SqlReferenceAnalyzer::new();
+            let sql_tables = sql_analyzer.extract_table_references(&content);
+            for table in &sql_tables {
+                extra_search_terms.push_str(&format!(" sql_table {} table {} database {}", table, table, table.replace('_', " ")));
+            }
+
+            // Run Setup analyzer on Setup files
+            let is_setup_file = relative_path.contains("/Setup/")
+                || relative_path.contains("InstallSchema")
+                || relative_path.contains("UpgradeSchema")
+                || relative_path.contains("InstallData")
+                || relative_path.contains("UpgradeData")
+                || relative_path.contains("/Patch/");
+            if is_setup_file {
+                let setup_analyzer = SetupAnalyzer::new();
+                let setup_meta = setup_analyzer.analyze(&content);
+
+                for table in &setup_meta.tables_created {
+                    extra_search_terms.push_str(&format!(
+                        " create_table {} table_created {} legacy_schema {} declarative {}",
+                        table, table, table, table.replace('_', " ")
+                    ));
+                }
+                for trigger in &setup_meta.triggers {
+                    extra_search_terms.push_str(&format!(
+                        " db_trigger {} trigger {} create_trigger {} {} {} database_trigger sql_trigger",
+                        trigger.name, trigger.name, trigger.name, trigger.event, trigger.timing
+                    ));
+                }
+                for table in &setup_meta.table_references {
+                    if !setup_meta.tables_created.contains(table) {
+                        extra_search_terms.push_str(&format!(" table_reference {} {}", table, table.replace('_', " ")));
+                    }
+                }
+            }
+        }
+
         // Generate search text
-        let search_text = Self::generate_search_text_from_ast(
+        let mut search_text = Self::generate_search_text_from_ast(
             &content,
             &relative_path,
             php_ast.as_ref(),
             js_ast.as_ref(),
             xml_meta.as_ref(),
         );
+        if !extra_search_terms.is_empty() {
+            search_text.push_str(&extra_search_terms);
+        }
 
         // Create embedding text (description injected later in index/index_files)
         let embed_text = Self::create_embedding_text(
