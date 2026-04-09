@@ -2176,6 +2176,7 @@ async function analyzeImpact(className) {
     diXmlReferences: [],
     instantiations: [],
     typeHints: [],
+    runtimeCallers: [],
     total: 0
   };
 
@@ -2194,6 +2195,7 @@ async function analyzeImpact(className) {
   ];
 
   // Check PHP files for direct references
+  const escapedShort = shortName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   for (const r of relatedPaths.slice(0, 40)) {
     const absPath = path.join(root, r.path);
     if (!existsSync(absPath) || !r.path.endsWith('.php')) continue;
@@ -2208,13 +2210,38 @@ async function analyzeImpact(className) {
       references.instantiations.push({ file: r.path, className: r.className });
     }
     if (content.includes(`@var ${shortName}`) || content.includes(`@param ${shortName}`) ||
-        content.match(new RegExp(`:\\s*${shortName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`))) {
+        content.match(new RegExp(`:\\s*${escapedShort}\\b`))) {
       references.typeHints.push({ file: r.path, className: r.className });
+    }
+
+    // Runtime callers: find $this->property->method() where property is typed as this class
+    if (hasUse) {
+      const ctorMatch = content.match(/function\s+__construct\s*\(([\s\S]*?)\)\s*[{:]/);
+      if (ctorMatch) {
+        // Find constructor params typed as the target class
+        const paramRegex = new RegExp(`(?:${escapedShort}|${className.replace(/\\/g, '\\\\')})\\s+\\$(\\w+)`, 'g');
+        let pm;
+        while ((pm = paramRegex.exec(ctorMatch[1])) !== null) {
+          const propName = pm[1];
+          // Find all calls to this property in the file
+          const callRegex = new RegExp(`\\$this->${propName}->(\\w+)\\s*\\(`, 'g');
+          let cm;
+          while ((cm = callRegex.exec(content)) !== null) {
+            references.runtimeCallers.push({
+              file: r.path,
+              callerClass: r.className,
+              property: propName,
+              calledMethod: cm[1]
+            });
+          }
+        }
+      }
     }
   }
 
   references.total = references.useStatements.length + references.diXmlReferences.length +
-                     references.instantiations.length + references.typeHints.length;
+                     references.instantiations.length + references.typeHints.length +
+                     references.runtimeCallers.length;
 
   return references;
 }
@@ -2904,6 +2931,25 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
   };
 
   const classFileMap = new Map();
+  const parentClassCache = new Map();
+
+  // Resolve parent class from extends declaration in PHP file content
+  function resolveParentFromContent(content) {
+    const extendsMatch = content.match(/class\s+\w+\s+extends\s+([\w\\]+)/);
+    if (!extendsMatch) return null;
+    const parent = extendsMatch[1];
+    // If it's a short name, resolve using use statements
+    if (!parent.includes('\\')) {
+      const useMatch = content.match(new RegExp(`use\\s+([\\w\\\\]+\\\\${parent})\\s*;`));
+      if (useMatch) return useMatch[1];
+      // Check namespace-relative
+      const nsMatch = content.match(/namespace\s+([\w\\]+)/);
+      if (nsMatch) return `${nsMatch[1]}\\${parent}`;
+      return parent;
+    }
+    // Leading backslash = fully qualified
+    return parent.replace(/^\\/, '');
+  }
 
   async function resolveClassFile(className) {
     const shortName = className.split('\\').pop();
@@ -3009,14 +3055,46 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
     const relativePath = filePath.replace(root + '/', '');
 
     // Extract method body (brace counting)
+    const escapedMethod = methodName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const methodRegex = new RegExp(
-      `function\\s+${methodName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\([^)]*\\)[^{]*\\{`
+      `function\\s+${escapedMethod}\\s*\\([^)]*\\)[^{]*\\{`
     );
-    const methodStart = content.search(methodRegex);
+    let methodStart = content.search(methodRegex);
+
+    // If method not found in this class, walk up the inheritance chain
+    let resolvedClass = className;
+    let resolvedContent = content;
+    let resolvedFilePath = filePath;
     if (methodStart === -1) {
-      result.chain.push({ depth, class: className, method: methodName, file: relativePath, status: 'method_not_found' });
-      return;
+      let currentContent = content;
+      let found = false;
+      const visited = new Set([className]);
+      for (let i = 0; i < 10; i++) { // max 10 parent levels
+        const parentFqcn = resolveParentFromContent(currentContent);
+        if (!parentFqcn || visited.has(parentFqcn)) break;
+        visited.add(parentFqcn);
+        const parentFile = await resolveClassFile(parentFqcn);
+        if (!parentFile) break;
+        let parentContent;
+        try { parentContent = readFileSync(parentFile, 'utf-8'); } catch { break; }
+        const parentMethodStart = parentContent.search(methodRegex);
+        if (parentMethodStart !== -1) {
+          resolvedClass = parentFqcn;
+          resolvedContent = parentContent;
+          resolvedFilePath = parentFile;
+          methodStart = parentMethodStart;
+          found = true;
+          break;
+        }
+        currentContent = parentContent;
+      }
+      if (!found) {
+        result.chain.push({ depth, class: className, method: methodName, file: relativePath, status: 'method_not_found' });
+        return;
+      }
     }
+    content = resolvedContent;
+    const resolvedRelPath = resolvedFilePath.replace(root + '/', '');
 
     let braceCount = 0;
     let bodyStart = content.indexOf('{', methodStart);
@@ -3028,8 +3106,11 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
     }
     const methodBody = content.slice(bodyStart, bodyEnd + 1);
 
+    // Show where method was actually found if inherited
+    const inheritedFrom = (resolvedClass !== className) ? resolvedClass : null;
     const chainEntry = {
       depth, class: className, method: methodName, file: relativePath,
+      ...(inheritedFrom ? { inheritedFrom, resolvedFile: resolvedRelPath } : {}),
       calls: [], dispatches: []
     };
 
@@ -3049,13 +3130,20 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
     while ((dc = depCallRegex.exec(methodBody)) !== null) {
       const property = dc[1];
       const calledMethod = dc[2];
-      // Resolve property type from constructor
-      const ctorMatch = content.match(/function\s+__construct\s*\(([\s\S]*?)\)\s*[{:]/);
+      // Resolve property type from constructor — check the original class first, then the resolved (parent) class
       let resolvedType = null;
-      if (ctorMatch) {
-        const paramRegex = new RegExp(`([\\w\\\\]+)\\s+\\$${property}\\b`);
-        const pm = ctorMatch[1].match(paramRegex);
-        if (pm) resolvedType = pm[1];
+      let originalContent = content;
+      if (resolvedClass !== className) {
+        try { originalContent = readFileSync(filePath, 'utf-8'); } catch { originalContent = content; }
+      }
+      const contentSources = (resolvedClass !== className) ? [originalContent, content] : [content];
+      for (const src of contentSources) {
+        const ctorMatch = src.match(/function\s+__construct\s*\(([\s\S]*?)\)\s*[{:]/);
+        if (ctorMatch) {
+          const paramRegex = new RegExp(`([\\w\\\\]+)\\s+\\$${property}\\b`);
+          const pm = ctorMatch[1].match(paramRegex);
+          if (pm) { resolvedType = pm[1]; break; }
+        }
       }
       chainEntry.calls.push({ type: 'dependency', property, method: calledMethod, typeHint: resolvedType || null });
     }
@@ -3143,6 +3231,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'boolean',
             description: 'Enable query expansion with Magento domain synonyms for better recall (default: true)',
             default: true
+          },
+          precise: {
+            type: 'boolean',
+            description: 'Precise mode for debugging: disables query expansion AND applies strict post-filtering — only returns results where the file content contains at least one query keyword. Use for specific debugging queries like "gift card subtotal infinite loop". Default: false.',
+            default: false
           },
         },
         required: ['query']
@@ -3759,6 +3852,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['eventName']
       }
     },
+    {
+      name: 'magento_batch',
+      description: 'Execute multiple Magector tool calls in a single request to reduce MCP round-trip overhead. Each query runs in parallel and returns combined results. Use this when you need 2+ independent lookups (e.g., find a class AND its plugins AND its observers in one call instead of three).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          queries: {
+            type: 'array',
+            description: 'Array of tool calls to execute. Each entry has a "tool" name and "args" object.',
+            items: {
+              type: 'object',
+              properties: {
+                tool: { type: 'string', description: 'Magector tool name (e.g., "magento_find_class", "magento_find_plugin")' },
+                args: { type: 'object', description: 'Arguments for the tool call' }
+              },
+              required: ['tool', 'args']
+            },
+            maxItems: 10
+          }
+        },
+        required: ['queries']
+      }
+    },
   ]
 }));
 
@@ -3805,12 +3921,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case 'magento_search': {
-        const searchQuery = args.expand !== false ? expandQuery(args.query) : args.query;
-        const raw = await rustSearchAsync(searchQuery, Math.max(args.limit || 10, 30));
+        const precise = args.precise === true;
+        const searchQuery = (args.expand !== false && !precise) ? expandQuery(args.query) : args.query;
+        const raw = await rustSearchAsync(searchQuery, Math.max(args.limit || 10, precise ? 60 : 30));
         const arr = Array.isArray(raw) ? raw : [];
         let results = arr.map(normalizeResult);
         // Hybrid BM25 rerank for better exact-match handling
         results = hybridRerank(results, args.query);
+        // Precise mode: strict post-filter — result must contain at least one significant query keyword
+        if (precise) {
+          const queryTerms = args.query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+          results = results.filter(r => {
+            const haystack = [r.searchText, r.className, r.methodName, r.path, ...(r.methods || [])]
+              .filter(Boolean).join(' ').toLowerCase();
+            return queryTerms.some(term => haystack.includes(term));
+          });
+        }
         // Apply module filter if specified
         if (args.moduleFilter) {
           results = filterByModule(results, args.moduleFilter);
@@ -4850,6 +4976,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           text += '\n';
         }
 
+        if (impact.runtimeCallers.length > 0) {
+          text += `### Runtime Callers (${impact.runtimeCallers.length})\n`;
+          text += '_Classes that inject this class and call its methods at runtime:_\n';
+          // Group by caller class for readability
+          const grouped = new Map();
+          for (const c of impact.runtimeCallers) {
+            const key = c.callerClass || c.file;
+            if (!grouped.has(key)) grouped.set(key, { file: c.file, methods: new Set() });
+            grouped.get(key).methods.add(`$this->${c.property}->${c.calledMethod}()`);
+          }
+          for (const [cls, info] of grouped) {
+            text += `- **\`${cls}\`** (\`${info.file}\`)\n`;
+            for (const m of info.methods) {
+              text += `  - \`${m}\`\n`;
+            }
+          }
+          text += '\n';
+        }
+
         if (impact.total === 0) {
           text += '_No references found. The class may be referenced under a different name or alias._\n';
         }
@@ -5057,6 +5202,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const status = entry.status ? ` [${entry.status}]` : '';
             text += `${indent}- **${entry.class}::${entry.method}**${status}`;
             if (entry.file) text += ` (${entry.file})`;
+            if (entry.inheritedFrom) text += `\n${indent}  _inherited from_ \`${entry.inheritedFrom}\` (${entry.resolvedFile})`;
             text += '\n';
 
             if (entry.calls) {
@@ -5167,6 +5313,100 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
 
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_batch': {
+        const queries = args.queries || [];
+        if (queries.length === 0) {
+          return { content: [{ type: 'text', text: 'No queries provided.' }] };
+        }
+        if (queries.length > 10) {
+          return { content: [{ type: 'text', text: 'Maximum 10 queries per batch.' }], isError: true };
+        }
+        // Run batch queries in parallel using existing standalone functions
+        const batchResults = await Promise.all(queries.map(async (q, idx) => {
+          try {
+            const a = q.args || {};
+            let text = '';
+            switch (q.tool) {
+              case 'magento_find_class': {
+                const ns = a.namespace || '';
+                const qr = `${a.className} ${ns}`.trim();
+                const raw = await rustSearchAsync(qr, 30);
+                const cl = a.className.toLowerCase();
+                const res = raw.map(normalizeResult).filter(r =>
+                  r.className?.toLowerCase().includes(cl) || r.path?.toLowerCase().includes(cl.replace(/\\/g, '/'))
+                );
+                text = formatSearchResults(res.slice(0, 5));
+                break;
+              }
+              case 'magento_find_plugin': {
+                const qr = `plugin interceptor ${a.targetClass || ''} ${a.targetMethod || ''}`.trim();
+                const raw = await rustSearchAsync(qr, 30);
+                const res = raw.map(normalizeResult).filter(r =>
+                  r.magentoType === 'plugin' || r.path?.toLowerCase().includes('plugin')
+                );
+                text = formatSearchResults(res.slice(0, 10));
+                break;
+              }
+              case 'magento_find_observer': {
+                const flow = await traceEventFlow(a.eventName);
+                text = `Observers: ${flow.observers.length}\n`;
+                for (const o of flow.observers.slice(0, 10)) {
+                  text += `- ${o.name}: ${o.instance}::${o.method} (${o.file})\n`;
+                }
+                break;
+              }
+              case 'magento_trace_dependency': {
+                const dep = await traceDependency(a.className, a.direction || 'both');
+                text = `Preferences: ${dep.preferences.length}, Plugins: ${dep.plugins.length}, VirtualTypes: ${dep.virtualTypes.length}, Args: ${dep.argumentOverrides.length}\n`;
+                for (const p of dep.plugins.slice(0, 5)) text += `- plugin: ${p.pluginName} → ${p.pluginClass}\n`;
+                for (const p of dep.preferences.slice(0, 5)) text += `- pref: ${p.for} → ${p.type}\n`;
+                break;
+              }
+              case 'magento_impact_analysis': {
+                const imp = await analyzeImpact(a.className);
+                text = `Total: ${imp.total} (use: ${imp.useStatements.length}, di: ${imp.diXmlReferences.length}, new: ${imp.instantiations.length}, type: ${imp.typeHints.length}, runtime: ${imp.runtimeCallers.length})\n`;
+                for (const c of imp.runtimeCallers.slice(0, 5)) text += `- ${c.callerClass}: $this->${c.property}->${c.calledMethod}()\n`;
+                break;
+              }
+              case 'magento_search': {
+                const precise = a.precise === true;
+                const sq = (a.expand !== false && !precise) ? expandQuery(a.query) : a.query;
+                const raw = await rustSearchAsync(sq, 30);
+                let res = raw.map(normalizeResult);
+                res = hybridRerank(res, a.query);
+                text = formatSearchResults(res.slice(0, a.limit || 5));
+                break;
+              }
+              case 'magento_find_callers': {
+                const callers = await findCallers(a.methodName, a.className);
+                text = `Callers: ${callers.callers?.length || 0}\n`;
+                for (const c of (callers.callers || []).slice(0, 10)) {
+                  text += `- ${c.class}::${c.method} (${c.path}:${c.line})\n`;
+                }
+                break;
+              }
+              case 'magento_find_event_flow': {
+                const flow = await traceEventFlow(a.eventName);
+                text = `Dispatchers: ${flow.dispatchers.length}, Observers: ${flow.observers.length}\n`;
+                for (const o of flow.observers.slice(0, 10)) text += `- ${o.name}: ${o.instance} (${o.file})\n`;
+                break;
+              }
+              default:
+                text = `Unsupported batch tool: ${q.tool}`;
+            }
+            return { idx, tool: q.tool, text };
+          } catch (err) {
+            return { idx, tool: q.tool, text: `Error: ${err.message}` };
+          }
+        }));
+
+        let text = `## Batch Results (${batchResults.length} queries)\n\n`;
+        for (const br of batchResults) {
+          text += `---\n### [${br.idx + 1}] ${br.tool}\n\n${br.text}\n\n`;
+        }
         return { content: [{ type: 'text', text }] };
       }
 

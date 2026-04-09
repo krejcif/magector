@@ -2302,6 +2302,127 @@ class OrderProcessor {
   try { rmSync(tmpDir, { recursive: true }); } catch {}
 }
 
+// ─── Trace Call Chain Inheritance Tests ────────────────────────
+
+async function testTraceCallChainInheritance() {
+  console.log('\n── Trace Call Chain Inheritance ──');
+
+  const tmpDir = path.join(__dirname, '__fixtures_trace_inherit');
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/Model/Rule/Condition'), { recursive: true });
+
+  // Parent abstract class with the validate method
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/Model/Rule/AbstractCondition.php'),
+    `<?php
+namespace Acme\\Foo\\Model\\Rule;
+abstract class AbstractCondition {
+    public function validate($model) {
+        $this->prepareData($model);
+        return $this->checkCondition($model);
+    }
+    abstract protected function prepareData($model);
+    abstract protected function checkCondition($model);
+}
+`);
+
+  // Child class that does NOT override validate - method is inherited
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/Model/Rule/Condition/Subtotal.php'),
+    `<?php
+namespace Acme\\Foo\\Model\\Rule\\Condition;
+use Acme\\Foo\\Model\\Rule\\AbstractCondition;
+class Subtotal extends AbstractCondition {
+    private $totalsCollector;
+    public function __construct(
+        \\Acme\\Foo\\Model\\TotalsCollectorInterface $totalsCollector
+    ) {
+        $this->totalsCollector = $totalsCollector;
+    }
+    protected function prepareData($model) {
+        $this->totalsCollector->collect($model);
+    }
+    protected function checkCondition($model) {
+        return $model->getSubtotal() > 0;
+    }
+}
+`);
+
+  const { readFileSync: readFn } = await import('fs');
+
+  // Inline version of resolveParentFromContent for unit testing
+  function resolveParentFromContent(content) {
+    const extendsMatch = content.match(/class\s+\w+\s+extends\s+([\w\\\\]+)/);
+    if (!extendsMatch) return null;
+    const parent = extendsMatch[1];
+    if (!parent.includes('\\')) {
+      const useMatch = content.match(new RegExp('use\\s+([\\w\\\\]+\\\\' + parent + ')\\s*;'));
+      if (useMatch) return useMatch[1];
+      const nsMatch = content.match(/namespace\s+([\w\\\\]+)/);
+      if (nsMatch) return nsMatch[1] + '\\' + parent;
+      return parent;
+    }
+    return parent.replace(/^\\/, '');
+  }
+
+  // Test 1: Child class resolves parent via use statement
+  const childContent = readFn(path.join(tmpDir, 'vendor/acme/module-foo/Model/Rule/Condition/Subtotal.php'), 'utf-8');
+  const parentFqcn = resolveParentFromContent(childContent);
+  assertEq(parentFqcn, 'Acme\\Foo\\Model\\Rule\\AbstractCondition',
+    'traceCallChainInherit: resolves parent FQCN from use statement');
+
+  // Test 2: Abstract parent class has no parent
+  const parentContent = readFn(path.join(tmpDir, 'vendor/acme/module-foo/Model/Rule/AbstractCondition.php'), 'utf-8');
+  const grandparent = resolveParentFromContent(parentContent);
+  assertEq(grandparent, null,
+    'traceCallChainInherit: abstract class with no extends returns null');
+
+  // Test 3: validate method not found in child, found in parent
+  const methodRegex = /function\s+validate\s*\([^)]*\)[^{]*\{/;
+  const childMethodStart = childContent.search(methodRegex);
+  assertEq(childMethodStart, -1,
+    'traceCallChainInherit: validate not found in child class');
+
+  const parentMethodStart = parentContent.search(methodRegex);
+  assert(parentMethodStart > -1,
+    'traceCallChainInherit: validate found in parent class');
+
+  // Test 4: Method body extraction from parent works
+  let braceCount = 0;
+  let bodyStart = parentContent.indexOf('{', parentMethodStart);
+  let bodyEnd = bodyStart;
+  for (let i = bodyStart; i < parentContent.length; i++) {
+    if (parentContent[i] === '{') braceCount++;
+    if (parentContent[i] === '}') braceCount--;
+    if (braceCount === 0) { bodyEnd = i; break; }
+  }
+  const methodBody = parentContent.slice(bodyStart, bodyEnd + 1);
+  assert(methodBody.includes('prepareData'), 'traceCallChainInherit: parent method body contains prepareData call');
+  assert(methodBody.includes('checkCondition'), 'traceCallChainInherit: parent method body contains checkCondition call');
+
+  // Test 5: Self-calls in inherited method are detected
+  const selfCallRegex = /\$this->(\w+)\s*\(/g;
+  const selfCalls = [];
+  let sc;
+  while ((sc = selfCallRegex.exec(methodBody)) !== null) {
+    if (sc[1] !== 'validate' && sc[1] !== '__construct') selfCalls.push(sc[1]);
+  }
+  assert(selfCalls.includes('prepareData'), 'traceCallChainInherit: detects prepareData in inherited method');
+  assert(selfCalls.includes('checkCondition'), 'traceCallChainInherit: detects checkCondition in inherited method');
+
+  // Test 6: Fully qualified parent name resolution
+  const fqContent = '<?php\nnamespace Acme\\Bar;\nclass Child extends \\Acme\\Foo\\Model\\Rule\\AbstractCondition {\n}';
+  const fqParent = resolveParentFromContent(fqContent);
+  assertEq(fqParent, 'Acme\\Foo\\Model\\Rule\\AbstractCondition',
+    'traceCallChainInherit: resolves fully qualified parent name');
+
+  // Test 7: Namespace-relative parent resolution (no use statement)
+  const nsRelContent = '<?php\nnamespace Acme\\Foo\\Model\\Rule\\Condition;\nclass Custom extends ParentClass {\n}';
+  const nsRelParent = resolveParentFromContent(nsRelContent);
+  assertEq(nsRelParent, 'Acme\\Foo\\Model\\Rule\\Condition\\ParentClass',
+    'traceCallChainInherit: resolves namespace-relative parent');
+
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+}
+
 // ─── Trace Data Flow Tests ─────────────────────────────────────
 
 async function testTraceDataFlow() {
@@ -3030,6 +3151,123 @@ function testFindClassFile() {
 
 // ─── Run All ───────────────────────────────────────────────────
 
+// ─── Precise Search Filter Tests ──────────────────────────────
+
+function testPreciseSearchFilter() {
+  console.log('\n── Precise Search Filter ──');
+
+  // Simulate the precise filter logic from magento_search
+  function preciseFilter(results, query) {
+    const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+    return results.filter(r => {
+      const haystack = [r.searchText, r.className, r.methodName, r.path, ...(r.methods || [])]
+        .filter(Boolean).join(' ').toLowerCase();
+      return queryTerms.some(term => haystack.includes(term));
+    });
+  }
+
+  const mockResults = [
+    { className: 'Subtotal', searchText: 'gift card subtotal condition validate', path: 'Model/Condition/Subtotal.php', methods: ['validate'] },
+    { className: 'TotalsCollector', searchText: 'totals collector collect quote', path: 'Model/Quote/TotalsCollector.php', methods: ['collect'] },
+    { className: 'ProductRepository', searchText: 'product repository save catalog', path: 'Model/ProductRepository.php', methods: ['save'] },
+    { className: 'CartManagement', searchText: 'cart management place order checkout', path: 'Model/CartManagement.php', methods: ['placeOrder'] },
+  ];
+
+  // Query: "gift card subtotal" — should only match Subtotal
+  const result1 = preciseFilter(mockResults, 'gift card subtotal');
+  assertEq(result1.length, 1, 'preciseFilter: "gift card subtotal" matches only 1 result');
+  assertEq(result1[0].className, 'Subtotal', 'preciseFilter: matches Subtotal class');
+
+  // Query: "collect totals" — should match TotalsCollector
+  const result2 = preciseFilter(mockResults, 'collect totals');
+  assertEq(result2.length, 1, 'preciseFilter: "collect totals" matches TotalsCollector');
+
+  // Query: "validate condition" — should match Subtotal (has both in searchText)
+  const result3 = preciseFilter(mockResults, 'validate condition');
+  assert(result3.some(r => r.className === 'Subtotal'), 'preciseFilter: "validate condition" includes Subtotal');
+
+  // Short terms (<=2 chars) are excluded from filtering
+  const result4 = preciseFilter(mockResults, 'a b c');
+  assertEq(result4.length, 0, 'preciseFilter: all short terms results in no filter match');
+
+  // Empty results stay empty
+  const result5 = preciseFilter([], 'anything');
+  assertEq(result5.length, 0, 'preciseFilter: empty input returns empty');
+}
+
+// ─── Runtime Caller Detection Tests ──────────────────────────
+
+function testRuntimeCallerDetection() {
+  console.log('\n── Runtime Caller Detection ──');
+
+  // Simulate the runtime caller detection logic from analyzeImpact
+  function detectRuntimeCallers(content, shortName, className) {
+    const callers = [];
+    const escapedShort = shortName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const hasUse = content.includes('use ' + className) || content.includes('\\' + className);
+    if (!hasUse) return callers;
+
+    const ctorMatch = content.match(/function\s+__construct\s*\(([\s\S]*?)\)\s*[{:]/);
+    if (!ctorMatch) return callers;
+
+    const paramRegex = new RegExp('(?:' + escapedShort + '|' + className.replace(/\\/g, '\\\\') + ')\\s+\\$(\\w+)', 'g');
+    let pm;
+    while ((pm = paramRegex.exec(ctorMatch[1])) !== null) {
+      const propName = pm[1];
+      const callRegex = new RegExp('\\$this->' + propName + '->(\\w+)\\s*\\(', 'g');
+      let cm;
+      while ((cm = callRegex.exec(content)) !== null) {
+        callers.push({ property: propName, calledMethod: cm[1] });
+      }
+    }
+    return callers;
+  }
+
+  // Test 1: Detects runtime callers from constructor injection
+  const phpContent = `<?php
+namespace Acme\\Foo\\Model;
+use Acme\\Foo\\Api\\TotalsCollectorInterface;
+class Discount {
+    private $totalsCollector;
+    public function __construct(
+        TotalsCollectorInterface $totalsCollector
+    ) {
+        $this->totalsCollector = $totalsCollector;
+    }
+    public function calculate() {
+        $result = $this->totalsCollector->collect($this->quote);
+        $this->totalsCollector->reset();
+    }
+}`;
+
+  const callers1 = detectRuntimeCallers(phpContent, 'TotalsCollectorInterface', 'Acme\\Foo\\Api\\TotalsCollectorInterface');
+  assertEq(callers1.length, 2, 'runtimeCallers: detects 2 method calls on injected dependency');
+  assert(callers1.some(c => c.calledMethod === 'collect'), 'runtimeCallers: detects collect() call');
+  assert(callers1.some(c => c.calledMethod === 'reset'), 'runtimeCallers: detects reset() call');
+  assertEq(callers1[0].property, 'totalsCollector', 'runtimeCallers: correct property name');
+
+  // Test 2: No callers when class not imported
+  const phpNoUse = `<?php
+namespace Acme\\Bar;
+class Other {
+    public function __construct(SomeOtherClass $dep) {
+        $this->dep = $dep;
+    }
+    public function run() { $this->dep->execute(); }
+}`;
+  const callers2 = detectRuntimeCallers(phpNoUse, 'TotalsCollectorInterface', 'Acme\\Foo\\Api\\TotalsCollectorInterface');
+  assertEq(callers2.length, 0, 'runtimeCallers: no callers when class not imported');
+
+  // Test 3: No callers when no constructor
+  const phpNoCtor = `<?php
+use Acme\\Foo\\Api\\TotalsCollectorInterface;
+class Simple {
+    public function run() { return true; }
+}`;
+  const callers3 = detectRuntimeCallers(phpNoCtor, 'TotalsCollectorInterface', 'Acme\\Foo\\Api\\TotalsCollectorInterface');
+  assertEq(callers3.length, 0, 'runtimeCallers: no callers when no constructor');
+}
+
 async function main() {
   console.log('╔═══════════════════════════════════════════════════════════╗');
   console.log('║            MAGECTOR UNIT TESTS                          ║');
@@ -3066,6 +3304,7 @@ async function main() {
   await testFindCallers();
   await testFindDiWiring();
   await testTraceCallChain();
+  await testTraceCallChainInheritance();
   await testTraceDataFlow();
   await testFindEventDispatchers();
   testModuleFilterArray();
@@ -3076,6 +3315,8 @@ async function main() {
   await testParseFieldsetXml();
   testReadMethodSnippet();
   testFindClassFile();
+  testPreciseSearchFilter();
+  testRuntimeCallerDetection();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);

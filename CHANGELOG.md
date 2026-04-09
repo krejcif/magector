@@ -4,6 +4,16 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.5.1] - 2026-04-09
+
+### Added
+- **`magento_search` precise mode** — new `precise: true` parameter disables query expansion and applies strict post-filtering: only returns results where the file content contains at least one significant query keyword. Reduces noise for debugging-specific queries like "gift card subtotal infinite loop".
+- **`magento_impact_analysis` runtime callers** — new "Runtime Callers" section in impact analysis output. Detects classes that inject the target class via constructor and call its methods at runtime (e.g., `$this->totalsCollector->collect()`). Groups callers by class for readability. Reveals the runtime call chain that was previously invisible.
+- **`magento_batch` tool** — execute multiple Magector tool calls in a single MCP request to reduce round-trip overhead. Runs queries in parallel and returns combined results. Supports: `magento_find_class`, `magento_find_plugin`, `magento_find_observer`, `magento_trace_dependency`, `magento_impact_analysis`, `magento_search`, `magento_find_callers`, `magento_find_event_flow`. Up to 10 queries per batch.
+
+### Fixed
+- **`magento_trace_call_chain` now follows inherited methods** — previously returned `method_not_found` when a method was defined in a parent/abstract class (e.g., `validate()` inherited from `AbstractCondition`). The tool now walks up the PHP inheritance chain (up to 10 levels), resolving parent classes via `extends` declarations and `use` statements. When a method is found in an ancestor, the output shows `inherited from ParentClass` with the resolved file path. Constructor type hints are resolved from both the original child class and the parent class for accurate dependency tracking.
+
 ## [2.5.0] - 2026-04-09
 
 ### Added
