@@ -4,6 +4,7 @@
 //! updates the HNSW index without requiring a restart.
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -13,7 +14,7 @@ use walkdir::WalkDir;
 use crate::indexer::{Indexer, INCLUDE_EXTENSIONS, MAX_FILE_SIZE};
 
 /// Tracked state for a single file
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileRecord {
     pub mtime: SystemTime,
     pub size: u64,
@@ -21,7 +22,7 @@ pub struct FileRecord {
 }
 
 /// Manifest of all indexed files and their metadata
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct FileManifest {
     pub files: HashMap<String, FileRecord>,
 }
@@ -49,6 +50,29 @@ impl FileManifest {
         Self {
             files: HashMap::new(),
         }
+    }
+
+    /// Load manifest from a sidecar file next to the index DB.
+    /// Returns None if the file doesn't exist or can't be parsed.
+    pub fn load(path: &Path) -> Option<Self> {
+        let data = std::fs::read(path).ok()?;
+        bincode::deserialize(&data).ok()
+    }
+
+    /// Save manifest to a sidecar file next to the index DB.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let data = bincode::serialize(self)?;
+        // Atomic write: write to temp, then rename
+        let tmp = path.with_extension("manifest.tmp");
+        std::fs::write(&tmp, &data)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    /// Derive the manifest sidecar path from the index DB path.
+    /// e.g. `.magector/index.db` → `.magector/index.manifest`
+    pub fn sidecar_path(db_path: &Path) -> PathBuf {
+        db_path.with_extension("manifest")
     }
 
     /// Build initial manifest from the current index metadata.
@@ -432,5 +456,53 @@ mod tests {
         assert_eq!(changes.deleted[0], "gone.php");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_manifest_save_load_roundtrip() {
+        let dir = make_temp_dir();
+        let manifest_path = dir.join("test.manifest");
+
+        let mut manifest = FileManifest::new();
+        manifest.files.insert(
+            "app/code/Vendor/Module/Model/Foo.php".to_string(),
+            FileRecord {
+                mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(1700000000),
+                size: 4096,
+                vector_ids: vec![10, 11, 12],
+            },
+        );
+        manifest.files.insert(
+            "vendor/magento/module-catalog/etc/di.xml".to_string(),
+            FileRecord {
+                mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(1600000000),
+                size: 2048,
+                vector_ids: vec![20],
+            },
+        );
+
+        // Save
+        manifest.save(&manifest_path).unwrap();
+        assert!(manifest_path.exists());
+
+        // Load
+        let loaded = FileManifest::load(&manifest_path).unwrap();
+        assert_eq!(loaded.files.len(), 2);
+
+        let foo = loaded.files.get("app/code/Vendor/Module/Model/Foo.php").unwrap();
+        assert_eq!(foo.size, 4096);
+        assert_eq!(foo.vector_ids, vec![10, 11, 12]);
+
+        let di = loaded.files.get("vendor/magento/module-catalog/etc/di.xml").unwrap();
+        assert_eq!(di.size, 2048);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_sidecar_path() {
+        let db_path = PathBuf::from("/data/.magector/index.db");
+        let sidecar = FileManifest::sidecar_path(&db_path);
+        assert_eq!(sidecar, PathBuf::from("/data/.magector/index.manifest"));
     }
 }

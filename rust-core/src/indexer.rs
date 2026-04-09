@@ -255,32 +255,76 @@ impl Indexer {
         let all_files = self.discover_files()?;
         stats.files_found = all_files.len();
 
-        // In resume mode, filter out files that already have vectors in the DB.
-        // The path stored in IndexMetadata is relative to magento_root, so we
-        // compute the same relative path here for comparison.
-        let (files, skipped_resume): (Vec<PathBuf>, usize) = if resume {
-            let root = &self.magento_root;
-            let mut skipped = 0usize;
-            let remaining: Vec<PathBuf> = all_files
-                .into_iter()
-                .filter(|p| {
-                    let rel = p.strip_prefix(root).unwrap_or(p).to_string_lossy().to_string();
-                    if already_indexed.contains(&rel) {
-                        skipped += 1;
-                        false
-                    } else {
-                        true
-                    }
+        // In resume mode, use FileManifest for true incremental indexing:
+        // detect added/modified/deleted files via mtime+size comparison,
+        // not just "is path in DB".
+        let manifest_path = self.db_path.as_ref()
+            .map(|p| crate::watcher::FileManifest::sidecar_path(p));
+        let mut manifest = if resume {
+            manifest_path.as_ref()
+                .and_then(|p| crate::watcher::FileManifest::load(p))
+                .unwrap_or_else(|| {
+                    // No manifest on disk — first run after upgrade.
+                    // Build from filesystem (treats all indexed files as current).
+                    tracing::info!("No manifest found — building from filesystem for existing index");
+                    crate::watcher::FileManifest::from_existing_index(&self.magento_root, self)
                 })
+        } else {
+            crate::watcher::FileManifest::new()
+        };
+
+        let (files, skipped_resume): (Vec<PathBuf>, usize) = if resume {
+            // Detect changes against manifest
+            let changes = manifest.detect_changes(&self.magento_root)?;
+            let modified_count = changes.modified.len();
+            let deleted_count = changes.deleted.len();
+            let added_count = changes.added.len();
+
+            // Tombstone vectors for modified files (will be re-indexed)
+            for path in &changes.modified {
+                let relative = path
+                    .strip_prefix(&self.magento_root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string();
+                self.remove_vectors_for_path(&relative);
+            }
+
+            // Tombstone vectors for deleted files
+            for path in &changes.deleted {
+                self.remove_vectors_for_path(path);
+            }
+            manifest.apply_deleted(&changes.deleted);
+
+            // Compact if many tombstones
+            if self.vectordb_tombstone_ratio() > 0.20 {
+                tracing::info!("Compacting vector DB after removing modified/deleted file vectors");
+                self.compact_vectordb();
+            }
+
+            // Files to process = new + modified
+            let to_process: Vec<PathBuf> = changes.added
+                .into_iter()
+                .chain(changes.modified.into_iter())
                 .collect();
-            (remaining, skipped)
+
+            let skipped = stats.files_found - to_process.len() - deleted_count;
+
+            if modified_count > 0 || deleted_count > 0 || added_count > 0 {
+                println!(
+                    "📊 Incremental: {} new, {} modified, {} deleted, {} unchanged",
+                    added_count, modified_count, deleted_count, skipped
+                );
+            }
+
+            (to_process, skipped)
         } else {
             (all_files, 0)
         };
 
         if resume {
             println!(
-                "✓ Found {} total files; {} already indexed, {} remaining to process\n",
+                "✓ Found {} total files; {} unchanged, {} to process\n",
                 stats.files_found, skipped_resume, files.len()
             );
         } else {
@@ -311,6 +355,23 @@ impl Indexer {
         if files.is_empty() {
             println!("✓ Nothing to index — all discovered files already have vectors.\n");
             stats.vectors_created = self.vectordb.len();
+            // Still save manifest (deleted files may have been tombstoned above)
+            if let Some(ref mp) = manifest_path {
+                if !resume {
+                    manifest = crate::watcher::FileManifest::from_existing_index(&self.magento_root, self);
+                }
+                if let Err(e) = manifest.save(mp) {
+                    tracing::warn!("Failed to save manifest: {}", e);
+                }
+            }
+            // Save DB if we tombstoned any vectors (deleted/modified files)
+            if resume && self.vectordb.len() != preexisting_vectors {
+                if let Some(ref db_path) = self.db_path {
+                    if let Err(e) = self.save_atomic(db_path) {
+                        tracing::warn!("Failed to save index after cleanup: {}", e);
+                    }
+                }
+            }
             return Ok(stats);
         }
 
@@ -506,6 +567,35 @@ impl Indexer {
         println!("\n════════════════════════════════════════════════════════════");
         println!("                    INDEXING COMPLETE                       ");
         println!("════════════════════════════════════════════════════════════\n");
+
+        // Build and save manifest for future incremental runs.
+        // On a full (non-resume) run, build a fresh manifest from all discovered files.
+        // On a resume run, update the existing manifest with newly indexed files.
+        if let Some(ref mp) = manifest_path {
+            if !resume {
+                // Full index — build manifest from filesystem
+                manifest = crate::watcher::FileManifest::from_existing_index(&self.magento_root, self);
+            } else {
+                // Incremental — update manifest entries for the files we just processed
+                let root = &self.magento_root;
+                for f in &files {
+                    let rel = f.strip_prefix(root).unwrap_or(f).to_string_lossy().to_string();
+                    if let Ok(meta) = std::fs::metadata(f) {
+                        let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                        manifest.files.insert(rel, crate::watcher::FileRecord {
+                            mtime,
+                            size: meta.len(),
+                            vector_ids: Vec::new(),
+                        });
+                    }
+                }
+            }
+            if let Err(e) = manifest.save(mp) {
+                tracing::warn!("Failed to save manifest: {}", e);
+            } else {
+                tracing::info!("Saved manifest ({} files) to {:?}", manifest.files.len(), mp);
+            }
+        }
 
         Ok(stats)
     }
