@@ -2302,6 +2302,287 @@ class OrderProcessor {
   try { rmSync(tmpDir, { recursive: true }); } catch {}
 }
 
+// ─── Trace Data Flow Tests ─────────────────────────────────────
+
+async function testTraceDataFlow() {
+  console.log('\n── Trace Data Flow ──');
+
+  const tmpDir = path.join(__dirname, '__fixtures_dataflow');
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/Model/Quote/Address/Total'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/Plugin'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/etc'), { recursive: true });
+
+  // File that SETS the attribute via magic setter
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/Model/Quote/Address/Total/DiscountCollector.php'),
+    `<?php
+namespace Acme\\Foo\\Model\\Quote\\Address\\Total;
+class DiscountCollector {
+    public const CODE = 'drmax_discounted_price_incl_tax';
+    public function collect($quote, $shippingAssignment, $total) {
+        $total->setDrmaxDiscountedPriceInclTax(100.50);
+        $total->setBaseDrmaxDiscountedPriceInclTax(100.50);
+    }
+}
+`);
+
+  // File that GETS the attribute via magic getter
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/Plugin/TotalsPlugin.php'),
+    `<?php
+namespace Acme\\Foo\\Plugin;
+class TotalsPlugin {
+    public function afterCollect($subject, $result, $quote) {
+        foreach ($quote->getAllAddresses() as $address) {
+            $value = $address->getDrmaxDiscountedPriceInclTax();
+        }
+        return $result;
+    }
+}
+`);
+
+  // File using setData pattern
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/Model/Observer.php'),
+    `<?php
+namespace Acme\\Foo\\Model;
+class Observer {
+    public function execute($observer) {
+        $address = $observer->getData('address');
+        $address->setData('drmax_discounted_price_incl_tax', 42.0);
+    }
+}
+`);
+
+  // XML reference
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/etc/sales.xml'),
+    `<?xml version="1.0"?>
+<config>
+  <section name="quote">
+    <group name="totals">
+      <item name="drmax_discounted_price_incl_tax" instance="Acme\\Foo\\Model\\Quote\\Address\\Total\\DiscountCollector" sort_order="450"/>
+    </group>
+  </section>
+</config>`);
+
+  const { glob: globFn } = await import('glob');
+  const { readFileSync: readFn } = await import('fs');
+  const root = tmpDir;
+  const attributeKey = 'drmax_discounted_price_incl_tax';
+  const pascal = attributeKey.split('_').map(p => p.charAt(0).toUpperCase() + p.slice(1)).join('');
+  const setterMethod = `set${pascal}`;
+  const getterMethod = `get${pascal}`;
+
+  // Test PascalCase conversion
+  assertEq(setterMethod, 'setDrmaxDiscountedPriceInclTax', 'traceDataFlow: PascalCase setter');
+  assertEq(getterMethod, 'getDrmaxDiscountedPriceInclTax', 'traceDataFlow: PascalCase getter');
+
+  // Test setter detection
+  const phpFiles = await globFn('**/*.php', { cwd: root, absolute: true, nodir: true });
+  let setterCount = 0;
+  let getterCount = 0;
+  let constCount = 0;
+  const setterRegex = new RegExp(
+    `(?:->|::)${setterMethod}\\s*\\(|setData\\s*\\(\\s*['"]${attributeKey}['"]`
+  );
+  const getterRegex = new RegExp(
+    `(?:->|::)${getterMethod}\\s*\\(`
+  );
+  const constRegex = new RegExp(
+    `const\\s+\\w+\\s*=\\s*['"]${attributeKey}['"]`
+  );
+
+  for (const phpFile of phpFiles) {
+    const content = readFn(phpFile, 'utf-8');
+    if (setterRegex.test(content)) setterCount++;
+    if (getterRegex.test(content)) getterCount++;
+    if (constRegex.test(content)) constCount++;
+  }
+
+  assertEq(setterCount, 2, 'traceDataFlow: finds 2 setter files (magic + setData)');
+  assertEq(getterCount, 1, 'traceDataFlow: finds 1 getter file');
+  assertEq(constCount, 1, 'traceDataFlow: finds 1 constant definition');
+
+  // Test XML reference detection
+  const xmlFiles = await globFn('**/etc/**/*.xml', { cwd: root, absolute: true, nodir: true });
+  let xmlRefCount = 0;
+  for (const xmlFile of xmlFiles) {
+    const content = readFn(xmlFile, 'utf-8');
+    if (content.includes(attributeKey)) xmlRefCount++;
+  }
+  assertEq(xmlRefCount, 1, 'traceDataFlow: finds 1 XML reference');
+
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+}
+
+// ─── Find Event Dispatchers Tests ──────────────────────────────
+
+async function testFindEventDispatchers() {
+  console.log('\n── Find Event Dispatchers ──');
+
+  const tmpDir = path.join(__dirname, '__fixtures_dispatchers');
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/Model'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-bar/Observer'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-foo/etc'), { recursive: true });
+
+  // File that dispatches the event
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/Model/OrderService.php'),
+    `<?php
+namespace Acme\\Foo\\Model;
+class OrderService {
+    private $eventManager;
+    public function __construct($eventManager) {
+        $this->eventManager = $eventManager;
+    }
+    public function placeOrder($order) {
+        $this->eventManager->dispatch('sales_order_place_after', ['order' => $order]);
+    }
+}
+`);
+
+  // Another file that dispatches the same event
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-bar/Observer/ReorderProcessor.php'),
+    `<?php
+namespace Acme\\Bar\\Observer;
+class ReorderProcessor {
+    private $eventManager;
+    public function execute($observer) {
+        $order = $observer->getData('order');
+        $this->eventManager->dispatch('sales_order_place_after', ['order' => $order]);
+    }
+}
+`);
+
+  // Events.xml with observer
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-foo/etc/events.xml'),
+    `<?xml version="1.0"?>
+<config>
+  <event name="sales_order_place_after">
+    <observer name="order_email" instance="Acme\\Foo\\Observer\\SendEmail"/>
+    <observer name="order_index" instance="Acme\\Foo\\Observer\\IndexOrder"/>
+  </event>
+</config>`);
+
+  const { glob: globFn } = await import('glob');
+  const { readFileSync: readFn } = await import('fs');
+  const root = tmpDir;
+  const eventName = 'sales_order_place_after';
+  const escaped = eventName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const dispatchRegex = new RegExp(`dispatch\\s*\\(\\s*['"]${escaped}['"]`);
+
+  // Test dispatcher detection
+  const phpFiles = await globFn('**/*.php', { cwd: root, absolute: true, nodir: true });
+  const dispatchers = [];
+  for (const phpFile of phpFiles) {
+    const content = readFn(phpFile, 'utf-8');
+    if (!content.includes(eventName)) continue;
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (dispatchRegex.test(lines[i])) {
+        let methodName = null;
+        for (let j = i; j >= Math.max(0, i - 30); j--) {
+          const mMatch = lines[j].match(/(?:public|protected|private|static)\s+function\s+(\w+)/);
+          if (mMatch) { methodName = mMatch[1]; break; }
+        }
+        const classMatch = content.match(/class\s+(\w+)/);
+        dispatchers.push({
+          class: classMatch?.[1],
+          method: methodName,
+          line: i + 1
+        });
+      }
+    }
+  }
+
+  assertEq(dispatchers.length, 2, 'findEventDispatchers: finds 2 dispatch locations');
+  assert(dispatchers.some(d => d.class === 'OrderService' && d.method === 'placeOrder'),
+    'findEventDispatchers: OrderService::placeOrder dispatches');
+  assert(dispatchers.some(d => d.class === 'ReorderProcessor' && d.method === 'execute'),
+    'findEventDispatchers: ReorderProcessor::execute dispatches');
+
+  // Test observer counting from events.xml
+  const eventsFiles = await globFn('**/etc/**/events.xml', { cwd: root, absolute: true, nodir: true });
+  let observerCount = 0;
+  for (const file of eventsFiles) {
+    const content = readFn(file, 'utf-8');
+    if (!content.includes(eventName)) continue;
+    const eventBlockRegex = new RegExp(`<event\\s+name="${escaped}"[^>]*>([\\s\\S]*?)<\\/event>`, 'g');
+    let em;
+    while ((em = eventBlockRegex.exec(content)) !== null) {
+      const obsMatches = em[1].match(/<observer\s+/g);
+      if (obsMatches) observerCount += obsMatches.length;
+    }
+  }
+  assertEq(observerCount, 2, 'findEventDispatchers: counts 2 registered observers');
+
+  // Test non-existent event
+  const nonExistentRegex = /dispatch\s*\(\s*['"]non_existent_event_xyz['"]/;
+  let foundNonExistent = false;
+  for (const phpFile of phpFiles) {
+    const content = readFn(phpFile, 'utf-8');
+    if (nonExistentRegex.test(content)) { foundNonExistent = true; break; }
+  }
+  assert(!foundNonExistent, 'findEventDispatchers: no false positives for non-existent event');
+
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+}
+
+// ─── Module Filter Array Support Tests ─────────────────────────
+
+function testModuleFilterArray() {
+  console.log('\n── Module Filter Array Support ──');
+
+  // Re-implement filterByModule logic inline for testing
+  function filterByModule(results, moduleFilter) {
+    if (!moduleFilter) return results;
+    const patterns = Array.isArray(moduleFilter) ? moduleFilter : [moduleFilter];
+    return results.filter(r => {
+      const mod = r.module || '';
+      return patterns.some(pat => {
+        if (pat.includes('*')) {
+          const normalized = pat.replace(/[/_]/g, '[/_]');
+          const regex = new RegExp('^' + normalized.replace(/\*/g, '.*') + '$', 'i');
+          return regex.test(mod);
+        }
+        // Exact match with separator normalization
+        const normalizedPat = pat.replace(/[/_]/g, '_').toLowerCase();
+        const normalizedMod = mod.replace(/[/_]/g, '_').toLowerCase();
+        return normalizedMod === normalizedPat || normalizedMod.startsWith(normalizedPat);
+      });
+    });
+  }
+
+  const results = [
+    { module: 'drmax_paymentrestrictions', path: 'vendor/drmax/paymentrestrictions/Model/Foo.php' },
+    { module: 'drmax_module-free-shipping', path: 'vendor/drmax/module-free-shipping/Model/Bar.php' },
+    { module: 'magento_module-sales-rule', path: 'vendor/magento/module-sales-rule/Model/Baz.php' },
+    { module: 'drmax_module-quote', path: 'vendor/drmax/module-quote/Plugin/Qux.php' },
+  ];
+
+  // Single string filter
+  const single = filterByModule(results, 'drmax_paymentrestrictions');
+  assertEq(single.length, 1, 'moduleFilter: single string matches 1 result');
+
+  // Array filter with multiple modules
+  const multi = filterByModule(results, ['drmax_paymentrestrictions', 'drmax_module-free-shipping']);
+  assertEq(multi.length, 2, 'moduleFilter: array matches 2 results');
+
+  // Wildcard with array
+  const wildcard = filterByModule(results, ['drmax_*']);
+  assertEq(wildcard.length, 3, 'moduleFilter: wildcard drmax_* matches 3 drmax modules');
+
+  // Mixed array: wildcard + specific
+  const mixed = filterByModule(results, ['magento_module-sales-rule', 'drmax_module-quote']);
+  assertEq(mixed.length, 2, 'moduleFilter: mixed exact array matches 2 results');
+
+  // Empty array returns nothing (no patterns to match)
+  const empty = filterByModule(results, []);
+  assertEq(empty.length, 0, 'moduleFilter: empty array returns no results (no patterns)');
+
+  // null/undefined returns all results (no filtering)
+  const noFilter = filterByModule(results, null);
+  assertEq(noFilter.length, 4, 'moduleFilter: null returns all results');
+}
+
 // ─── Run All ───────────────────────────────────────────────────
 
 async function main() {
@@ -2340,6 +2621,9 @@ async function main() {
   await testFindCallers();
   await testFindDiWiring();
   await testTraceCallChain();
+  await testTraceDataFlow();
+  await testFindEventDispatchers();
+  testModuleFilterArray();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);

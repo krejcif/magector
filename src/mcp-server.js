@@ -2362,6 +2362,244 @@ async function findDiWiring(className) {
   return result;
 }
 
+// ─── Trace Data Flow ───────────────────────────────────────────
+// Find all setters and getters for a data attribute across the codebase
+
+async function traceDataFlow(attributeKey, modelClass) {
+  const root = config.magentoRoot;
+
+  // Convert snake_case to PascalCase for magic method names
+  const pascal = attributeKey.split('_').map(p => p.charAt(0).toUpperCase() + p.slice(1)).join('');
+  const setterMethod = `set${pascal}`;
+  const getterMethod = `get${pascal}`;
+
+  const result = {
+    attributeKey,
+    setterMethod,
+    getterMethod,
+    setters: [],
+    getters: [],
+    xmlReferences: []
+  };
+
+  // 1. Search PHP files for setters/getters
+  const phpFiles = await glob('**/*.php', {
+    cwd: root, absolute: true, nodir: true,
+    ignore: ['**/test/**', '**/tests/**', '**/Test/**', '**/Tests/**']
+  });
+
+  const setterRegex = new RegExp(
+    `(?:->|::)${setterMethod}\\s*\\(|` +
+    `setData\\s*\\(\\s*['"]${attributeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]`
+  );
+  const getterRegex = new RegExp(
+    `(?:->|::)${getterMethod}\\s*\\(|` +
+    `getData\\s*\\(\\s*['"]${attributeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]`
+  );
+  // Also match addData calls that could set this attribute
+  const addDataRegex = new RegExp(
+    `addData\\s*\\(.*${attributeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`
+  );
+  // Match constant definitions for this key
+  const constRegex = new RegExp(
+    `(?:const\\s+\\w+\\s*=\\s*['"]${attributeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"])`
+  );
+
+  const shortModel = modelClass ? modelClass.split('\\').pop() : null;
+
+  for (const phpFile of phpFiles) {
+    let content;
+    try { content = readFileSync(phpFile, 'utf-8'); } catch { continue; }
+
+    // Quick pre-check
+    if (!content.includes(setterMethod) && !content.includes(getterMethod) &&
+        !content.includes(attributeKey)) continue;
+
+    // If modelClass specified, prioritize files that reference it
+    const refsModel = !shortModel || content.includes(shortModel);
+
+    const relativePath = phpFile.replace(root + '/', '');
+    const classMatch = content.match(/(?:class|abstract\s+class|trait)\s+(\w+)/);
+    const nsMatch = content.match(/namespace\s+([\w\\]+)/);
+    const className = classMatch ? classMatch[1] : path.basename(phpFile, '.php');
+    const fqcn = nsMatch ? `${nsMatch[1]}\\${className}` : className;
+    const lines = content.split('\n');
+
+    // Determine area from path
+    const area = relativePath.includes('/frontend/') ? 'frontend'
+      : relativePath.includes('/adminhtml/') ? 'adminhtml'
+      : relativePath.includes('/graphql/') ? 'graphql' : 'global';
+
+    // Find setter lines
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (setterRegex.test(line) || (addDataRegex.test(line) && line.includes(attributeKey))) {
+        // Find enclosing method
+        let methodName = null;
+        for (let j = i; j >= Math.max(0, i - 30); j--) {
+          const mMatch = lines[j].match(/(?:public|protected|private|static)\s+function\s+(\w+)/);
+          if (mMatch) { methodName = mMatch[1]; break; }
+        }
+        result.setters.push({
+          path: relativePath,
+          class: fqcn,
+          method: methodName,
+          line: i + 1,
+          snippet: line.trim().slice(0, 200),
+          referencesModel: refsModel,
+          area
+        });
+        break; // one entry per file for setters
+      }
+    }
+
+    // Find getter lines
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (getterRegex.test(line)) {
+        let methodName = null;
+        for (let j = i; j >= Math.max(0, i - 30); j--) {
+          const mMatch = lines[j].match(/(?:public|protected|private|static)\s+function\s+(\w+)/);
+          if (mMatch) { methodName = mMatch[1]; break; }
+        }
+        result.getters.push({
+          path: relativePath,
+          class: fqcn,
+          method: methodName,
+          line: i + 1,
+          snippet: line.trim().slice(0, 200),
+          referencesModel: refsModel,
+          area
+        });
+        break; // one entry per file for getters
+      }
+    }
+
+    // Find constant definitions
+    if (constRegex.test(content)) {
+      const constLine = lines.findIndex(l => constRegex.test(l));
+      if (constLine >= 0) {
+        result.setters.push({
+          path: relativePath,
+          class: fqcn,
+          method: null,
+          line: constLine + 1,
+          snippet: lines[constLine].trim().slice(0, 200),
+          type: 'constant',
+          area
+        });
+      }
+    }
+  }
+
+  // 2. Search XML files (sales.xml, extension_attributes.xml) for attribute references
+  const xmlFiles = await glob('**/etc/**/*.xml', { cwd: root, absolute: true, nodir: true });
+  const escapedKey = attributeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const xmlRegex = new RegExp(escapedKey);
+
+  for (const xmlFile of xmlFiles) {
+    let content;
+    try { content = readFileSync(xmlFile, 'utf-8'); } catch { continue; }
+    if (!xmlRegex.test(content)) continue;
+
+    const relativePath = xmlFile.replace(root + '/', '');
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (xmlRegex.test(lines[i])) {
+        result.xmlReferences.push({
+          path: relativePath,
+          line: i + 1,
+          snippet: lines[i].trim().slice(0, 200)
+        });
+        break;
+      }
+    }
+  }
+
+  // Sort: files referencing the model get priority
+  if (shortModel) {
+    result.setters.sort((a, b) => (b.referencesModel ? 1 : 0) - (a.referencesModel ? 1 : 0));
+    result.getters.sort((a, b) => (b.referencesModel ? 1 : 0) - (a.referencesModel ? 1 : 0));
+  }
+
+  return result;
+}
+
+// ─── Find Event Dispatchers ────────────────────────────────────
+// Find all PHP locations where a specific Magento event is dispatched
+
+async function findEventDispatchers(eventName) {
+  const root = config.magentoRoot;
+
+  const result = {
+    eventName,
+    dispatchers: [],
+    observerCount: 0
+  };
+
+  const escaped = eventName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Match eventManager->dispatch('event_name' and similar patterns
+  const dispatchRegex = new RegExp(
+    `dispatch\\s*\\(\\s*['"]${escaped}['"]`
+  );
+
+  // 1. Grep PHP files for exact dispatch calls
+  const phpFiles = await glob('**/*.php', {
+    cwd: root, absolute: true, nodir: true,
+    ignore: ['**/test/**', '**/tests/**', '**/Test/**', '**/Tests/**']
+  });
+
+  for (const phpFile of phpFiles) {
+    let content;
+    try { content = readFileSync(phpFile, 'utf-8'); } catch { continue; }
+    if (!content.includes(eventName)) continue;
+
+    const relativePath = phpFile.replace(root + '/', '');
+    const lines = content.split('\n');
+    const classMatch = content.match(/(?:class|abstract\s+class|trait)\s+(\w+)/);
+    const nsMatch = content.match(/namespace\s+([\w\\]+)/);
+    const className = classMatch ? classMatch[1] : path.basename(phpFile, '.php');
+    const fqcn = nsMatch ? `${nsMatch[1]}\\${className}` : className;
+
+    for (let i = 0; i < lines.length; i++) {
+      if (dispatchRegex.test(lines[i])) {
+        // Find enclosing method
+        let methodName = null;
+        for (let j = i; j >= Math.max(0, i - 30); j--) {
+          const mMatch = lines[j].match(/(?:public|protected|private|static)\s+function\s+(\w+)/);
+          if (mMatch) { methodName = mMatch[1]; break; }
+        }
+
+        // Get surrounding context (2 lines before and after)
+        const ctxStart = Math.max(0, i - 2);
+        const ctxEnd = Math.min(lines.length - 1, i + 2);
+        const context = lines.slice(ctxStart, ctxEnd + 1).map(l => l.trimEnd()).join('\n');
+
+        result.dispatchers.push({
+          path: relativePath,
+          class: fqcn,
+          method: methodName,
+          line: i + 1,
+          snippet: lines[i].trim().slice(0, 200),
+          context: context.slice(0, 500)
+        });
+      }
+    }
+  }
+
+  // 2. Count registered observers for context
+  const eventsFiles = await glob('**/etc/**/events.xml', { cwd: root, absolute: true, nodir: true });
+  for (const file of eventsFiles) {
+    let content;
+    try { content = readFileSync(file, 'utf-8'); } catch { continue; }
+    if (!content.includes(eventName)) continue;
+    const obsMatches = content.match(/<observer\s+/g);
+    if (obsMatches) result.observerCount += obsMatches.length;
+  }
+
+  return result;
+}
+
 // ─── Trace Call Chain ───────────────────────────────────────────
 // Trace internal method execution: method calls, dispatched events, observers
 
@@ -2606,8 +2844,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             default: 10
           },
           moduleFilter: {
-            type: 'string',
-            description: 'Filter results by vendor/module pattern. Supports wildcards and vendor prefix matching. Uses "/" or "_" interchangeably as separator. Examples: "Vendor_*" or "Vendor/*" to show modules from that vendor (also matches vendor-extended names like "Vendor-Extra_*"), "Magento_Catalog" for specific module. Omit to search all modules.'
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } }
+            ],
+            description: 'Filter results by vendor/module pattern(s). Accepts a single string or array of strings. Supports wildcards and vendor prefix matching. Uses "/" or "_" interchangeably as separator. Examples: "Vendor_*", ["drmax_paymentrestrictions", "drmax_module-free-shipping"], "Magento_Catalog".'
           },
           expand: {
             type: 'boolean',
@@ -3136,6 +3377,38 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['className', 'methodName']
       }
     },
+    {
+      name: 'magento_trace_data_flow',
+      description: 'Trace how a data attribute flows through the Magento codebase: find all PHP files that set (via magic setter, setData, addData) and get (via magic getter, getData) a specific attribute key. Shows which classes write vs read the attribute, in which methods, and whether XML configs reference it. Use this to understand data dependencies — e.g., who sets drmax_discounted_price_incl_tax on Quote\\Address and who reads it.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          attributeKey: {
+            type: 'string',
+            description: 'The snake_case data attribute key to trace. Examples: "drmax_discounted_price_incl_tax", "base_grand_total", "drmax_free_shipping_price", "subtotal_with_discount"'
+          },
+          modelClass: {
+            type: 'string',
+            description: 'Optional: model class name to prioritize results that reference this class. Examples: "Quote\\Address", "Order", "Product"'
+          }
+        },
+        required: ['attributeKey']
+      }
+    },
+    {
+      name: 'magento_find_event_dispatchers',
+      description: 'Find all PHP locations where a specific Magento event is dispatched via eventManager->dispatch(). Unlike magento_find_event_flow (which shows the full chain: dispatchers+observers+handlers), this tool focuses exclusively on finding WHERE an event is triggered — with exact grep matching, method context, and surrounding code. Use this to answer "does class X dispatch event Y?" or "who triggers this event?".',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          eventName: {
+            type: 'string',
+            description: 'Magento event name to find dispatchers for. Examples: "sales_order_place_after", "drmax_discount_rule_validation_before", "checkout_cart_add_product_complete"'
+          }
+        },
+        required: ['eventName']
+      }
+    },
   ]
 }));
 
@@ -3147,7 +3420,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // ── Warmup guard: index compatibility check or serve process still loading ──
   const indexFreeTools = ['magento_stats', 'magento_analyze_diff', 'magento_complexity',
     'magento_trace_dependency', 'magento_error_parser', 'magento_find_layout',
-    'magento_impact_analysis', 'magento_find_event_flow', 'magento_find_test'];
+    'magento_impact_analysis', 'magento_find_event_flow', 'magento_find_test',
+    'magento_trace_data_flow', 'magento_find_event_dispatchers'];
   if (warmupInProgress && !indexFreeTools.includes(name)) {
     logToFile('REQ', `${name} → blocked (warmup: loading index)`);
     return {
@@ -3330,12 +3604,65 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         );
         results = rerank(results, { isPlugin: true, pathContains: ['/Plugin/', 'di.xml'] });
 
-        return {
-          content: [{
-            type: 'text',
-            text: formatSearchResults(results.slice(0, 15))
-          }]
-        };
+        // Enrich results with di.xml registration area (frontend/adminhtml/global)
+        const enrichedResults = results.slice(0, 15).map(r => {
+          if (!r.path) return r;
+          let diArea = 'global';
+          if (r.path.includes('/etc/adminhtml/')) diArea = 'adminhtml';
+          else if (r.path.includes('/etc/frontend/')) diArea = 'frontend';
+          else if (r.path.includes('/etc/graphql/')) diArea = 'graphql';
+          else if (r.path.includes('/etc/webapi_rest/')) diArea = 'webapi_rest';
+          else if (r.path.includes('/etc/webapi_soap/')) diArea = 'webapi_soap';
+          else if (r.path.includes('/etc/crontab/')) diArea = 'crontab';
+          return { ...r, diArea };
+        });
+
+        // If targetClass provided, also scan di.xml for explicit registrations
+        let diRegistrations = [];
+        if (args.targetClass) {
+          const fpRoot = config.magentoRoot;
+          const diFiles = await glob('**/etc/**/di.xml', { cwd: fpRoot, absolute: true, nodir: true });
+          const shortTarget = args.targetClass.split('\\').pop();
+          for (const diFile of diFiles) {
+            let content;
+            try { content = readFileSync(diFile, 'utf-8'); } catch { continue; }
+            if (!content.includes(shortTarget)) continue;
+            const relPath = diFile.replace(fpRoot + '/', '');
+            // Find plugin registrations for this target
+            const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
+            let tm;
+            while ((tm = typeBlockRegex.exec(content)) !== null) {
+              const typeName = tm[1];
+              if (!typeName.includes(shortTarget)) continue;
+              const block = tm[2];
+              const pluginRegex = /<plugin\s+name="([^"]+)"[^>]*type="([^"]+)"[^>]*/g;
+              let pm;
+              while ((pm = pluginRegex.exec(block)) !== null) {
+                let area = 'global';
+                if (relPath.includes('/etc/adminhtml/')) area = 'adminhtml';
+                else if (relPath.includes('/etc/frontend/')) area = 'frontend';
+                else if (relPath.includes('/etc/graphql/')) area = 'graphql';
+                diRegistrations.push({
+                  target: typeName,
+                  pluginName: pm[1],
+                  pluginClass: pm[2],
+                  area,
+                  file: relPath
+                });
+              }
+            }
+          }
+        }
+
+        let text = formatSearchResults(enrichedResults);
+        if (diRegistrations.length > 0) {
+          text += `\n\n### DI Plugin Registrations for ${args.targetClass} (${diRegistrations.length})\n`;
+          for (const reg of diRegistrations) {
+            text += `- **${reg.pluginName}** → \`${reg.pluginClass}\` [${reg.area}] (${reg.file})\n`;
+          }
+        }
+
+        return { content: [{ type: 'text', text }] };
       }
 
       case 'magento_find_observer': {
@@ -4155,6 +4482,78 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
           }
           text += '\n';
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_trace_data_flow': {
+        const flowResult = await traceDataFlow(args.attributeKey, args.modelClass);
+
+        let text = `## Data Flow: \`${flowResult.attributeKey}\`\n`;
+        text += `Magic setter: \`${flowResult.setterMethod}()\` · Magic getter: \`${flowResult.getterMethod}()\`\n\n`;
+
+        if (flowResult.setters.length > 0) {
+          text += `### Setters (${flowResult.setters.length})\n`;
+          for (const s of flowResult.setters) {
+            const typeTag = s.type === 'constant' ? ' [const]' : '';
+            const methodTag = s.method ? `::${s.method}` : '';
+            text += `- \`${s.class}${methodTag}\`${typeTag} (${s.path}:${s.line})\n`;
+            if (s.snippet) text += `  \`${s.snippet}\`\n`;
+          }
+          text += '\n';
+        } else {
+          text += '### Setters\n_No setters found._\n\n';
+        }
+
+        if (flowResult.getters.length > 0) {
+          text += `### Getters (${flowResult.getters.length})\n`;
+          for (const g of flowResult.getters) {
+            const methodTag = g.method ? `::${g.method}` : '';
+            text += `- \`${g.class}${methodTag}\` (${g.path}:${g.line})\n`;
+            if (g.snippet) text += `  \`${g.snippet}\`\n`;
+          }
+          text += '\n';
+        } else {
+          text += '### Getters\n_No getters found._\n\n';
+        }
+
+        if (flowResult.xmlReferences.length > 0) {
+          text += `### XML References (${flowResult.xmlReferences.length})\n`;
+          for (const x of flowResult.xmlReferences) {
+            text += `- ${x.path}:${x.line}\n  \`${x.snippet}\`\n`;
+          }
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_find_event_dispatchers': {
+        const dispResult = await findEventDispatchers(args.eventName);
+
+        let text = `## Event Dispatchers: \`${dispResult.eventName}\`\n\n`;
+
+        if (dispResult.dispatchers.length > 0) {
+          text += `Found ${dispResult.dispatchers.length} dispatch location(s)`;
+          if (dispResult.observerCount > 0) {
+            text += ` (${dispResult.observerCount} observer(s) registered)`;
+          }
+          text += '.\n\n';
+
+          for (const d of dispResult.dispatchers) {
+            const methodTag = d.method ? `::${d.method}` : '';
+            text += `### \`${d.class}${methodTag}\`\n`;
+            text += `**File:** ${d.path}:${d.line}\n`;
+            if (d.context) {
+              text += '```php\n' + d.context + '\n```\n';
+            }
+            text += '\n';
+          }
+        } else {
+          text += '_No dispatch() calls found for this event._\n';
+          if (dispResult.observerCount > 0) {
+            text += `\nNote: ${dispResult.observerCount} observer(s) are registered for this event — it may be dispatched by Magento core or a module not in the scanned path.\n`;
+          }
         }
 
         return { content: [{ type: 'text', text }] };

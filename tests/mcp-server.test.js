@@ -142,7 +142,7 @@ async function main() {
     const toolsResp = await client.send('tools/list', {});
     const tools = toolsResp.result?.tools || [];
     const toolNames = tools.map((t) => t.name);
-    log(tools.length === 28 ? 'PASS' : 'FAIL', `tools/list returns 28 tools`, `got ${tools.length}`);
+    log(tools.length === 34 ? 'PASS' : 'FAIL', `tools/list returns 34 tools`, `got ${tools.length}`);
 
     // Verify all expected tools present
     const expectedTools = [
@@ -157,6 +157,9 @@ async function main() {
       'magento_performance_profile',
       'magento_find_layout', 'magento_impact_analysis',
       'magento_find_event_flow', 'magento_find_test',
+      'magento_find_implementors', 'magento_find_callers',
+      'magento_find_di_wiring', 'magento_trace_call_chain',
+      'magento_trace_data_flow', 'magento_find_event_dispatchers',
     ];
     for (const name of expectedTools) {
       log(toolNames.includes(name) ? 'PASS' : 'FAIL', `tool '${name}' listed`);
@@ -325,6 +328,31 @@ async function main() {
       }
     } else {
       log('SKIP', 'tools/call magento_performance_profile', 'no index');
+    }
+
+    // New v2.3 tools (grep-based, index-free)
+    console.log('\n── v2.3 Tool Calls ──');
+
+    try {
+      const dataFlowResult = await client.callTool('magento_trace_data_flow', {
+        attributeKey: 'base_grand_total'
+      });
+      const dataFlowText = dataFlowResult?.content?.[0]?.text || '';
+      const dataFlowOk = !dataFlowResult?.isError && dataFlowText.includes('Data Flow');
+      log(dataFlowOk ? 'PASS' : 'FAIL', 'tools/call magento_trace_data_flow', `${dataFlowText.length} chars`);
+    } catch (e) {
+      log('FAIL', 'tools/call magento_trace_data_flow', e.message);
+    }
+
+    try {
+      const dispResult = await client.callTool('magento_find_event_dispatchers', {
+        eventName: 'sales_order_place_after'
+      });
+      const dispText = dispResult?.content?.[0]?.text || '';
+      const dispOk = !dispResult?.isError && dispText.includes('Event Dispatchers');
+      log(dispOk ? 'PASS' : 'FAIL', 'tools/call magento_find_event_dispatchers', `${dispText.length} chars`);
+    } catch (e) {
+      log('FAIL', 'tools/call magento_find_event_dispatchers', e.message);
     }
 
     // Analysis tools (JS-based, no Rust binary)
