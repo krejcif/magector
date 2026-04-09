@@ -965,6 +965,228 @@ function normalizeResult(r) {
  * @param {Object} boosts - e.g. { fileType: 'xml', pathContains: 'di.xml', isPlugin: true }
  * @param {number} weight - boost multiplier (default 0.3 = 30% score bump per match)
  */
+/**
+ * Extract before/after/around plugin method signatures from a PHP file.
+ * Returns array of { name, type, targetMethod, signature } objects.
+ */
+function extractPluginMethods(filePath) {
+  const absPath = filePath.startsWith('/') ? filePath : path.join(config.magentoRoot, filePath);
+  let content;
+  try { content = readFileSync(absPath, 'utf-8'); } catch { return []; }
+  const methods = [];
+  const methodRegex = /^\s*public\s+function\s+((?:before|after|around)([A-Z]\w*))\s*\(([^)]*)\)/gm;
+  let match;
+  while ((match = methodRegex.exec(content)) !== null) {
+    const name = match[1];
+    const targetMethod = match[2].charAt(0).toLowerCase() + match[2].slice(1);
+    let type = 'around';
+    if (name.startsWith('before')) type = 'before';
+    else if (name.startsWith('after')) type = 'after';
+    methods.push({ name, type, targetMethod, signature: match[0].trim() });
+  }
+  return methods;
+}
+
+/**
+ * Read a short code snippet around a method definition from a PHP file.
+ * Returns up to `maxLines` lines starting from the method signature.
+ */
+function readMethodSnippet(filePath, methodName, maxLines = 15) {
+  const absPath = filePath.startsWith('/') ? filePath : path.join(config.magentoRoot, filePath);
+  let content;
+  try { content = readFileSync(absPath, 'utf-8'); } catch { return null; }
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes(`function ${methodName}(`)) {
+      return lines.slice(i, i + maxLines).join('\n');
+    }
+  }
+  return null;
+}
+
+/**
+ * Parse all fieldset.xml files in the Magento root.
+ * Returns array of { file, scope, fieldset, fields: [{ field, aspect }] }.
+ */
+async function parseFieldsetXml(filterFieldset, filterAspect) {
+  const root = config.magentoRoot;
+  const fieldsetFiles = await glob('**/etc/fieldset.xml', { cwd: root, absolute: true, nodir: true });
+  const results = [];
+  for (const fsFile of fieldsetFiles) {
+    let content;
+    try { content = readFileSync(fsFile, 'utf-8'); } catch { continue; }
+    const relPath = fsFile.replace(root + '/', '');
+    // Parse <scope id="..."> blocks
+    const scopeRegex = /<scope\s+id="([^"]+)">([\s\S]*?)<\/scope>/g;
+    let scopeMatch;
+    while ((scopeMatch = scopeRegex.exec(content)) !== null) {
+      const scopeName = scopeMatch[1];
+      const scopeBlock = scopeMatch[2];
+      const innerFsRegex = /<fieldset\s+id="([^"]+)">([\s\S]*?)<\/fieldset>/g;
+      let innerMatch;
+      while ((innerMatch = innerFsRegex.exec(scopeBlock)) !== null) {
+        const innerFieldsetId = innerMatch[1];
+        if (filterFieldset && !innerFieldsetId.toLowerCase().includes(filterFieldset.toLowerCase()) && !scopeName.toLowerCase().includes(filterFieldset.toLowerCase())) continue;
+        const innerBlock = innerMatch[2];
+        const fieldRegex = /<field\s+name="([^"]+)">([\s\S]*?)<\/field>/g;
+        let fieldMatch;
+        const fields = [];
+        while ((fieldMatch = fieldRegex.exec(innerBlock)) !== null) {
+          const fieldName = fieldMatch[1];
+          const fieldBlock = fieldMatch[2];
+          const aspectRegex = /<aspect\s+name="([^"]+)"\s*(?:\/>|>[^<]*<\/aspect>)/g;
+          let aspectMatch;
+          while ((aspectMatch = aspectRegex.exec(fieldBlock)) !== null) {
+            if (filterAspect && !aspectMatch[1].toLowerCase().includes(filterAspect.toLowerCase())) continue;
+            fields.push({ field: fieldName, aspect: aspectMatch[1] });
+          }
+        }
+        if (fields.length > 0) {
+          results.push({ file: relPath, scope: scopeName, fieldset: innerFieldsetId, fields });
+        }
+      }
+    }
+    // Also handle flat fieldset format: <fieldset id="..."> without scope wrapper
+    const flatFsRegex = /<fieldset\s+id="([^"]+)">([\s\S]*?)<\/fieldset>/g;
+    let flatMatch;
+    while ((flatMatch = flatFsRegex.exec(content)) !== null) {
+      const fieldsetId = flatMatch[1];
+      if (filterFieldset && !fieldsetId.toLowerCase().includes(filterFieldset.toLowerCase())) continue;
+      const block = flatMatch[2];
+      if (block.includes('<fieldset')) continue; // skip nested (handled above)
+      const fieldRegex = /<field\s+name="([^"]+)">([\s\S]*?)<\/field>/g;
+      let fieldMatch;
+      const fields = [];
+      while ((fieldMatch = fieldRegex.exec(block)) !== null) {
+        const fieldName = fieldMatch[1];
+        const fieldBlock = fieldMatch[2];
+        const aspectRegex = /<aspect\s+name="([^"]+)"\s*(?:\/>|>[^<]*<\/aspect>)/g;
+        let aspectMatch;
+        while ((aspectMatch = aspectRegex.exec(fieldBlock)) !== null) {
+          if (filterAspect && !aspectMatch[1].toLowerCase().includes(filterAspect.toLowerCase())) continue;
+          fields.push({ field: fieldName, aspect: aspectMatch[1] });
+        }
+      }
+      if (fields.length > 0) {
+        results.push({ file: relPath, scope: null, fieldset: fieldsetId, fields });
+      }
+    }
+  }
+  return results;
+}
+
+/**
+ * Resolve a PHP class name to a file path by converting namespace to path.
+ */
+function findClassFile(root, className) {
+  if (!className) return '';
+  const parts = className.replace(/\\\\/g, '\\').split('\\');
+  if (parts.length < 3) return '';
+  const vendor = parts[0].toLowerCase();
+  const moduleParts = parts[1].replace(/([A-Z])/g, '-$1').toLowerCase().replace(/^-/, '').split('-');
+  const candidates = [
+    path.join(root, 'vendor', vendor, parts.slice(1).join('/').replace(/\\/g, '/') + '.php'),
+    path.join(root, 'vendor', vendor, moduleParts.join('-'), parts.slice(2).join('/') + '.php'),
+    path.join(root, 'app/code', parts.join('/') + '.php'),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  // Glob fallback — search for the class filename
+  const fileName = parts[parts.length - 1] + '.php';
+  try {
+    const matches = glob.sync(`**/${fileName}`, { cwd: root, absolute: true, nodir: true, ignore: ['**/Test/**', '**/test/**'] });
+    for (const m of matches) {
+      const content = readFileSync(m, 'utf-8').slice(0, 500);
+      if (content.includes(parts[parts.length - 1])) return m;
+    }
+  } catch {}
+  return '';
+}
+
+/**
+ * Trace the shipping rate modification chain:
+ * carriers → plugins on collectRates → ShippingRateModifier pool → totals collector
+ */
+async function traceShippingChain(carrierOrMethod) {
+  const root = config.magentoRoot;
+  const chain = { carriers: [], collectRatesPlugins: [], rateModifiers: [], totalsCollectors: [], fieldsets: [] };
+
+  // 1. Find carrier classes
+  const carrierQuery = carrierOrMethod
+    ? `carrier shipping ${carrierOrMethod} collectRates`
+    : 'carrier shipping collectRates AbstractCarrier';
+  const carrierRaw = await safeSearch(carrierQuery, 30);
+  const carriers = carrierRaw.map(normalizeResult).filter(r =>
+    r.path?.includes('/Carrier/') || r.path?.includes('/Model/Carrier')
+  );
+  chain.carriers = carriers.slice(0, 10).map(r => ({
+    path: r.path, className: r.className || null, methods: r.methods || []
+  }));
+
+  // 2. Find plugins on AbstractCarrierInterface::collectRates
+  const diFiles = await glob('**/etc/**/di.xml', { cwd: root, absolute: true, nodir: true });
+  for (const diFile of diFiles) {
+    let content;
+    try { content = readFileSync(diFile, 'utf-8'); } catch { continue; }
+    const carrierTargets = ['AbstractCarrier', 'CarrierInterface', 'AbstractCarrierInterface', 'AbstractCarrierOnline'];
+    for (const target of carrierTargets) {
+      if (!content.includes(target)) continue;
+      const typeBlockRegex = /<type\s+name="([^"]*)"[^>]*>([\s\S]*?)<\/type>/g;
+      let tm;
+      while ((tm = typeBlockRegex.exec(content)) !== null) {
+        if (!tm[1].includes(target)) continue;
+        const block = tm[2];
+        const pluginRegex = /<plugin\s+([^/>]*)\/?>/g;
+        let pm;
+        while ((pm = pluginRegex.exec(block)) !== null) {
+          const attrs = {};
+          const attrRe = /(\w+)="([^"]*)"/g;
+          let am;
+          while ((am = attrRe.exec(pm[1])) !== null) attrs[am[1]] = am[2];
+          let area = 'global';
+          const relPath = diFile.replace(root + '/', '');
+          if (relPath.includes('/etc/adminhtml/')) area = 'adminhtml';
+          else if (relPath.includes('/etc/frontend/')) area = 'frontend';
+          const pluginFile = attrs.type ? findClassFile(root, attrs.type) : '';
+          const pluginMethods = pluginFile ? extractPluginMethods(pluginFile) : [];
+          chain.collectRatesPlugins.push({
+            target: tm[1], pluginName: attrs.name || '', pluginClass: attrs.type || '',
+            disabled: attrs.disabled === 'true', sortOrder: attrs.sortOrder || null,
+            area, file: relPath, methods: pluginMethods
+          });
+        }
+      }
+    }
+  }
+
+  // 3. Find ShippingRateModifier implementations
+  const modifierRaw = await safeSearch('ShippingRateModifier shipping rate modifier', 20);
+  const modifiers = modifierRaw.map(normalizeResult).filter(r =>
+    r.path?.includes('Modifier') || r.path?.includes('modifier') ||
+    r.className?.includes('Modifier')
+  );
+  chain.rateModifiers = modifiers.slice(0, 10).map(r => ({
+    path: r.path, className: r.className || null, methods: r.methods || []
+  }));
+
+  // 4. Find shipping totals collectors
+  const totalsRaw = await safeSearch('shipping total collector quote address', 20);
+  const totals = totalsRaw.map(normalizeResult).filter(r =>
+    r.path?.includes('/Total/') || r.path?.includes('Shipping') ||
+    r.className?.includes('Shipping')
+  );
+  chain.totalsCollectors = totals.slice(0, 5).map(r => ({
+    path: r.path, className: r.className || null, methods: r.methods || []
+  }));
+
+  // 5. Find relevant fieldsets
+  const fieldsets = await parseFieldsetXml('sales_convert', null);
+  chain.fieldsets = fieldsets;
+
+  return chain;
+}
+
 function rerank(results, boosts = {}, weight = 0.3) {
   if (!boosts || Object.keys(boosts).length === 0) return results;
 
@@ -1027,6 +1249,9 @@ async function traceRoute(entryPoint, depth) {
   const best = ranked[0];
   if (best) {
     trace.controller = { path: best.path, className: best.className || null, methods: best.methods || [] };
+    // Add code snippet for the controller's execute() method
+    const execSnippet = readMethodSnippet(best.path, 'execute');
+    if (execSnippet) trace.controller.codeSnippet = execSnippet;
   }
 
   const routeConfigs = routeRaw.map(normalizeResult).filter(r => r.path?.includes('routes.xml'));
@@ -1039,7 +1264,13 @@ async function traceRoute(entryPoint, depth) {
     const pluginRaw = await safeSearch(`plugin interceptor ${best.className}`, 20);
     const plugins = pluginRaw.map(normalizeResult).filter(r => r.isPlugin || r.path?.includes('/Plugin/') || r.path?.includes('di.xml'));
     if (plugins.length > 0) {
-      trace.plugins = plugins.slice(0, 10).map(r => ({ path: r.path, className: r.className || null, methods: r.methods || [] }));
+      trace.plugins = plugins.slice(0, 10).map(r => {
+        const entry = { path: r.path, className: r.className || null, methods: r.methods || [] };
+        if (r.path && !r.path.endsWith('.xml')) {
+          entry.pluginMethods = extractPluginMethods(r.path);
+        }
+        return entry;
+      });
     }
   }
 
@@ -1075,6 +1306,13 @@ async function traceRoute(entryPoint, depth) {
     if (templates.length > 0) {
       trace.templates = templates.slice(0, 10).map(r => ({ path: r.path }));
     }
+
+    // Fieldset discovery — look for fieldsets related to the route domain
+    const domain = parts[0]; // e.g., "sales", "checkout", "catalog"
+    const fieldsets = await parseFieldsetXml(domain, null);
+    if (fieldsets.length > 0) {
+      trace.fieldsets = fieldsets;
+    }
   }
 
   return trace;
@@ -1103,6 +1341,12 @@ async function traceApi(entryPoint, depth) {
     const svcs = svcRaw.map(normalizeResult).filter(r => r.className?.includes(serviceShortName));
     if (svcs.length > 0) {
       trace.serviceClass = { path: svcs[0].path, className: svcs[0].className || serviceClassName, methods: svcs[0].methods || [] };
+      // Try to add code snippet for the main service method
+      const methodMatch = (webapis[0]?.searchText || '').match(/method="([^"]+)"/);
+      if (methodMatch) {
+        const svcSnippet = readMethodSnippet(svcs[0].path, methodMatch[1]);
+        if (svcSnippet) trace.serviceClass.codeSnippet = svcSnippet;
+      }
     }
   }
 
@@ -1168,7 +1412,15 @@ async function traceEvent(entryPoint, depth) {
   const obsRaw = await safeSearch(`event ${entryPoint} observer`, 30);
   const observers = obsRaw.map(normalizeResult).filter(r => r.isObserver || r.path?.includes('/Observer/') || r.path?.includes('events.xml'));
   if (observers.length > 0) {
-    trace.observers = observers.slice(0, 15).map(r => ({ eventName: entryPoint, path: r.path, className: r.className || null }));
+    trace.observers = observers.slice(0, 15).map(r => {
+      const entry = { eventName: entryPoint, path: r.path, className: r.className || null };
+      // Add execute() snippet for observer PHP classes
+      if (r.path && r.path.endsWith('.php')) {
+        const snippet = readMethodSnippet(r.path, 'execute');
+        if (snippet) entry.codeSnippet = snippet;
+      }
+      return entry;
+    });
   }
 
   if (depth === 'deep') {
@@ -1179,6 +1431,13 @@ async function traceEvent(entryPoint, depth) {
     const origins = originRaw.map(normalizeResult).filter(r => r.isModel || r.path?.includes('/Model/'));
     if (origins.length > 0) {
       trace.origin = { path: origins[0].path, className: origins[0].className || null, methods: origins[0].methods || [] };
+    }
+
+    // Fieldset discovery — look for fieldsets related to the event domain
+    const domain = entryPoint.split('_').slice(0, 2).join('_'); // e.g., "sales_convert", "sales_order"
+    const fieldsets = await parseFieldsetXml(domain, null);
+    if (fieldsets.length > 0) {
+      trace.fieldsets = fieldsets;
     }
   }
 
@@ -1202,6 +1461,8 @@ async function traceCron(entryPoint, depth) {
   const handlers = handlerRaw.map(normalizeResult).filter(r => r.path?.includes('/Cron/'));
   if (handlers.length > 0) {
     trace.handler = { path: handlers[0].path, className: handlers[0].className || null, methods: handlers[0].methods || [] };
+    const cronSnippet = readMethodSnippet(handlers[0].path, 'execute');
+    if (cronSnippet) trace.handler.codeSnippet = cronSnippet;
   }
 
   if (depth === 'deep' && handlers[0]?.className) {
@@ -1305,6 +1566,32 @@ function formatSearchResults(results) {
       entry.snippet = r.searchText.length > 300
         ? r.searchText.slice(0, 300) + '...'
         : r.searchText;
+    }
+
+    // Code preview — read actual source lines for PHP files with known class/method
+    if (r.path && (r.path.endsWith('.php') || r.path.endsWith('.phtml'))) {
+      if (r.methodName) {
+        const preview = readMethodSnippet(r.path, r.methodName, 10);
+        if (preview) entry.codePreview = preview;
+      } else if (r.className) {
+        // Show class declaration + first few lines
+        const classShort = r.className.split('\\').pop();
+        const preview = readMethodSnippet(r.path, classShort ? `class ${classShort}` : null, 10);
+        if (!preview) {
+          // Fallback: read file header (namespace + class line)
+          const absP = r.path.startsWith('/') ? r.path : path.join(config.magentoRoot, r.path);
+          try {
+            const content = readFileSync(absP, 'utf-8');
+            const lines = content.split('\n');
+            const classLine = lines.findIndex(l => /^\s*(abstract\s+|final\s+)?class\s+/.test(l));
+            if (classLine >= 0) {
+              entry.codePreview = lines.slice(Math.max(0, classLine - 2), classLine + 8).join('\n');
+            }
+          } catch {}
+        } else {
+          entry.codePreview = preview;
+        }
+      }
     }
 
     return entry;
@@ -3200,6 +3487,36 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
+      name: 'magento_find_fieldset',
+      description: 'Find fieldset.xml definitions that control how data is copied between Magento entities (e.g., order→quote, quote→order). Shows which fields are copied for each aspect (to_order, to_edit, to_quote). Essential for understanding data conversion flows like reorder, order edit, and checkout.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          fieldset: {
+            type: 'string',
+            description: 'Fieldset name or partial match. Examples: "sales_copy_order", "sales_convert_quote", "sales_convert_order", "customer_account"'
+          },
+          aspect: {
+            type: 'string',
+            description: 'Aspect name filter. Examples: "to_order", "to_edit", "to_quote", "to_customer"'
+          }
+        }
+      }
+    },
+    {
+      name: 'magento_trace_shipping_chain',
+      description: 'Trace the complete shipping rate calculation chain: carrier classes → plugins on collectRates() → ShippingRateModifier pool → totals collectors → fieldset copy mappings. Use this to understand how shipping prices are calculated, modified, and propagated during checkout, reorder, or order edit.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          carrier: {
+            type: 'string',
+            description: 'Optional carrier or shipping method to focus on. Examples: "flatrate", "freeshipping", "tablerate", "innoship", "home_delivery", "pickup"'
+          }
+        }
+      }
+    },
+    {
       name: 'magento_trace_flow',
       description: 'Trace Magento execution flow from an entry point (route, API endpoint, GraphQL mutation, event, or cron job). Chains multiple searches to map controller → plugins → observers → templates for a given request path. Use this to understand how a request is processed end-to-end.',
       inputSchema: {
@@ -3696,6 +4013,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
 
+        // Resolve plugin methods for DI registrations
+        const fpRoot = args.targetClass ? config.magentoRoot : null;
+        for (const reg of diRegistrations) {
+          if (reg.pluginClass && fpRoot) {
+            const pluginFile = findClassFile(fpRoot, reg.pluginClass);
+            if (pluginFile) {
+              reg.methods = extractPluginMethods(pluginFile);
+              reg.resolvedFile = pluginFile.replace(fpRoot + '/', '');
+            }
+          }
+        }
+
         let text = formatSearchResults(enrichedResults);
         if (diRegistrations.length > 0) {
           text += `\n\n### DI Plugin Registrations for ${args.targetClass} (${diRegistrations.length})\n`;
@@ -3703,6 +4032,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const disabledTag = reg.disabled ? ' **[DISABLED]**' : '';
             const sortTag = reg.sortOrder ? ` (sortOrder: ${reg.sortOrder})` : '';
             text += `- **${reg.pluginName}** → \`${reg.pluginClass}\` [${reg.area}]${sortTag}${disabledTag} (${reg.file})\n`;
+            if (reg.resolvedFile) {
+              text += `  PHP: \`${reg.resolvedFile}\`\n`;
+            }
+            if (reg.methods?.length > 0) {
+              for (const m of reg.methods) {
+                text += `  - \`${m.type}\` **${m.targetMethod}** → \`${m.name}()\`\n`;
+              }
+            }
           }
         }
 
@@ -4220,6 +4557,93 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             isError: true
           };
         }
+      }
+
+      case 'magento_find_fieldset': {
+        const fieldsets = await parseFieldsetXml(args.fieldset || null, args.aspect || null);
+        if (fieldsets.length === 0) {
+          return { content: [{ type: 'text', text: 'No fieldset.xml definitions found matching the criteria.' }] };
+        }
+        let text = `## Fieldset Definitions (${fieldsets.length} matches)\n\n`;
+        for (const fs of fieldsets) {
+          text += `### ${fs.scope ? `${fs.scope} / ` : ''}${fs.fieldset}\n`;
+          text += `File: \`${fs.file}\`\n`;
+          // Group fields by aspect
+          const byAspect = {};
+          for (const f of fs.fields) {
+            if (!byAspect[f.aspect]) byAspect[f.aspect] = [];
+            byAspect[f.aspect].push(f.field);
+          }
+          for (const [aspect, fields] of Object.entries(byAspect)) {
+            text += `- **${aspect}**: ${fields.map(f => `\`${f}\``).join(', ')}\n`;
+          }
+          text += '\n';
+        }
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_trace_shipping_chain': {
+        const chain = await traceShippingChain(args.carrier || null);
+        let text = `## Shipping Rate Chain\n\n`;
+
+        if (chain.carriers.length > 0) {
+          text += `### Carriers (${chain.carriers.length})\n`;
+          for (const c of chain.carriers) {
+            text += `- \`${c.className || c.path}\` (${c.path})\n`;
+            if (c.methods?.length > 0) text += `  Methods: ${c.methods.join(', ')}\n`;
+          }
+          text += '\n';
+        }
+
+        if (chain.collectRatesPlugins.length > 0) {
+          text += `### Plugins on collectRates (${chain.collectRatesPlugins.length})\n`;
+          for (const p of chain.collectRatesPlugins) {
+            const disabledTag = p.disabled ? ' **[DISABLED]**' : '';
+            const sortTag = p.sortOrder ? ` (sortOrder: ${p.sortOrder})` : '';
+            text += `- **${p.pluginName}** → \`${p.pluginClass}\` [${p.area}]${sortTag}${disabledTag}\n`;
+            text += `  Target: \`${p.target}\` | DI: \`${p.file}\`\n`;
+            if (p.methods?.length > 0) {
+              for (const m of p.methods) {
+                text += `  - \`${m.type}\` **${m.targetMethod}** → \`${m.name}()\`\n`;
+              }
+            }
+          }
+          text += '\n';
+        }
+
+        if (chain.rateModifiers.length > 0) {
+          text += `### Shipping Rate Modifiers (${chain.rateModifiers.length})\n`;
+          for (const m of chain.rateModifiers) {
+            text += `- \`${m.className || m.path}\` (${m.path})\n`;
+          }
+          text += '\n';
+        }
+
+        if (chain.totalsCollectors.length > 0) {
+          text += `### Totals Collectors (${chain.totalsCollectors.length})\n`;
+          for (const t of chain.totalsCollectors) {
+            text += `- \`${t.className || t.path}\` (${t.path})\n`;
+          }
+          text += '\n';
+        }
+
+        if (chain.fieldsets.length > 0) {
+          text += `### Related Fieldsets (${chain.fieldsets.length})\n`;
+          for (const fs of chain.fieldsets) {
+            const byAspect = {};
+            for (const f of fs.fields) {
+              if (!byAspect[f.aspect]) byAspect[f.aspect] = [];
+              byAspect[f.aspect].push(f.field);
+            }
+            text += `- **${fs.scope || fs.fieldset}** (${fs.file})\n`;
+            for (const [aspect, fields] of Object.entries(byAspect)) {
+              text += `  - ${aspect}: ${fields.map(f => `\`${f}\``).join(', ')}\n`;
+            }
+          }
+          text += '\n';
+        }
+
+        return { content: [{ type: 'text', text }] };
       }
 
       case 'magento_trace_flow': {

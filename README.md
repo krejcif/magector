@@ -415,7 +415,8 @@ All search tools return structured JSON:
 |------|-------------|
 | `magento_find_config` | Find XML configuration (di.xml, events.xml, routes.xml, system.xml, webapi.xml, module.xml, layout) |
 | `magento_find_template` | Find PHTML template files for frontend or admin rendering |
-| `magento_find_plugin` | Find interceptor plugins (before/after/around methods) and di.xml declarations |
+| `magento_find_plugin` | Find interceptor plugins (before/after/around methods) and di.xml declarations. Resolves plugin PHP files and extracts interceptor method signatures **(v2.5)** |
+| `magento_find_fieldset` | Find fieldset.xml definitions controlling data copy between entities (order→quote, quote→order). Shows fields per aspect (to_order, to_edit) **(v2.5)** |
 | `magento_find_observer` | Find event observers and events.xml declarations |
 | `magento_find_preference` | Find DI preference overrides -- which class implements an interface |
 | `magento_find_controller` | Find MVC controllers by frontend or admin route path |
@@ -429,7 +430,8 @@ All search tools return structured JSON:
 
 | Tool | Description |
 |------|-------------|
-| `magento_trace_flow` | Trace execution flow from an entry point (route, API, GraphQL, event, cron) -- maps controller → plugins → observers → templates in one call |
+| `magento_trace_flow` | Trace execution flow from an entry point (route, API, GraphQL, event, cron) -- maps controller → plugins → observers → templates with code snippets **(v2.5)** |
+| `magento_trace_shipping_chain` | Trace the complete shipping rate chain: carriers → collectRates plugins → rate modifiers → totals collectors → fieldset mappings **(v2.5)** |
 | `magento_trace_dependency` | Trace DI graph for a class/interface -- preferences, plugins, virtualTypes, argument overrides (parses all di.xml, no index needed) |
 | `magento_find_event_flow` | Trace complete event chain: dispatchers → observers → handler PHP classes (parses events.xml + vector search) |
 | `magento_find_event_dispatchers` | Find all PHP locations where a specific event is dispatched -- exact grep matching with method context and surrounding code **(v2.3)** |

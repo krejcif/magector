@@ -4,6 +4,21 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.5.0] - 2026-04-09
+
+### Added
+- **`magento_find_fieldset` tool** — new MCP tool to search `fieldset.xml` definitions that control data copy between Magento entities (order→quote, quote→order). Shows which fields are copied for each aspect (`to_order`, `to_edit`, `to_quote`). Essential for understanding data conversion flows like reorder, order edit, and checkout.
+- **`magento_trace_shipping_chain` tool** — traces the complete shipping rate calculation chain: carrier classes → plugins on `collectRates()` → ShippingRateModifier pool → totals collectors → fieldset copy mappings. Useful for debugging shipping price issues.
+- **Plugin method extraction in `magento_find_plugin`** — when plugins are found via di.xml, the tool now resolves the PHP class file and extracts `before`/`after`/`around` method signatures, showing which target methods are intercepted by each plugin.
+- **Code snippets in `magento_trace_flow`** — trace results now include actual code snippets for controllers (`execute()`), observers (`execute()`), cron handlers, and API service methods. Plugin entries include extracted interceptor methods.
+- **Fieldset tracking in deep `magento_trace_flow`** — when using `depth: "deep"`, trace results now automatically discover relevant `fieldset.xml` mappings for the traced domain (e.g., `sales_convert_*` fieldsets for sales routes).
+- **Code preview in search results** — `formatSearchResults` now reads actual source file lines for PHP results with known class/method names, providing real code previews alongside the indexed text snippet.
+- **Helper functions** — `extractPluginMethods()`, `readMethodSnippet()`, `parseFieldsetXml()`, `findClassFile()`, `traceShippingChain()` as reusable utilities for the new tools.
+- **29 new unit tests** covering all new helper functions: plugin method extraction, fieldset XML parsing, method snippet reading, and class file resolution.
+
+### Fixed
+- **Fieldset filter now matches fieldset ID** — previously `parseFieldsetXml` only filtered by scope ID (e.g., "global"), not the actual fieldset ID (e.g., "sales_copy_order"). Filter now matches against both scope and fieldset IDs.
+
 ## [1.7.2] - 2026-04-07
 
 ### Fixed

@@ -10,7 +10,7 @@
 
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -2762,6 +2762,272 @@ function testSqlTableReferenceDetection() {
   assertEq(categorizeResult('vendor/acme/module/etc/di.xml'), 'xml', 'Categorize: di.xml -> xml');
 }
 
+// ─── extractPluginMethods Tests ───────────────────────────────
+
+async function testExtractPluginMethods() {
+  console.log('\n── extractPluginMethods ──');
+
+  const tmpDir = path.join(__dirname, 'tmp_plugin_test');
+  mkdirSync(tmpDir, { recursive: true });
+  const pluginFile = path.join(tmpDir, 'TestPlugin.php');
+  writeFileSync(pluginFile, [
+    '<?php',
+    'namespace Test\\Module\\Plugin;',
+    '',
+    'class TestPlugin',
+    '{',
+    '    public function beforeSave($subject, $result)',
+    '    {',
+    '        return [$result];',
+    '    }',
+    '',
+    '    public function afterGetPrice($subject, $result)',
+    '    {',
+    '        return $result * 1.1;',
+    '    }',
+    '',
+    '    public function aroundExecute($subject, callable $proceed, ...$args)',
+    '    {',
+    '        return $proceed(...$args);',
+    '    }',
+    '',
+    '    public function normalMethod()',
+    '    {',
+    '        // not a plugin method',
+    '    }',
+    '}'
+  ].join('\n'));
+
+  function extractPluginMethods(filePath) {
+    let content;
+    try { content = readFileSync(filePath, 'utf-8'); } catch { return []; }
+    const methods = [];
+    const methodRegex = /^\s*public\s+function\s+((?:before|after|around)([A-Z]\w*))\s*\(([^)]*)\)/gm;
+    let match;
+    while ((match = methodRegex.exec(content)) !== null) {
+      const name = match[1];
+      const targetMethod = match[2].charAt(0).toLowerCase() + match[2].slice(1);
+      let type = 'around';
+      if (name.startsWith('before')) type = 'before';
+      else if (name.startsWith('after')) type = 'after';
+      methods.push({ name, type, targetMethod, signature: match[0].trim() });
+    }
+    return methods;
+  }
+
+  const methods = extractPluginMethods(pluginFile);
+  assertEq(methods.length, 3, 'extractPluginMethods: finds 3 plugin methods (not normalMethod)');
+  assertEq(methods[0].name, 'beforeSave', 'first method: beforeSave');
+  assertEq(methods[0].type, 'before', 'beforeSave type is before');
+  assertEq(methods[0].targetMethod, 'save', 'beforeSave targets save');
+  assertEq(methods[1].name, 'afterGetPrice', 'second method: afterGetPrice');
+  assertEq(methods[1].type, 'after', 'afterGetPrice type is after');
+  assertEq(methods[1].targetMethod, 'getPrice', 'afterGetPrice targets getPrice');
+  assertEq(methods[2].name, 'aroundExecute', 'third method: aroundExecute');
+  assertEq(methods[2].type, 'around', 'aroundExecute type is around');
+  assertEq(methods[2].targetMethod, 'execute', 'aroundExecute targets execute');
+
+  const empty = extractPluginMethods('/nonexistent/path.php');
+  assertEq(empty.length, 0, 'non-existent file returns empty array');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
+// ─── parseFieldsetXml Tests ──────────────────────────────────
+
+async function testParseFieldsetXml() {
+  console.log('\n── parseFieldsetXml ──');
+
+  const tmpDir = path.join(__dirname, 'tmp_fieldset_test', 'vendor', 'test', 'module-sales', 'etc');
+  mkdirSync(tmpDir, { recursive: true });
+  const fieldsetFile = path.join(tmpDir, 'fieldset.xml');
+  writeFileSync(fieldsetFile, [
+    '<?xml version="1.0"?>',
+    '<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">',
+    '    <scope id="global">',
+    '        <fieldset id="sales_copy_order">',
+    '            <field name="customer_email">',
+    '                <aspect name="to_edit" />',
+    '                <aspect name="to_order" />',
+    '            </field>',
+    '            <field name="shipping_amount">',
+    '                <aspect name="to_order" />',
+    '            </field>',
+    '        </fieldset>',
+    '        <fieldset id="sales_convert_quote">',
+    '            <field name="coupon_code">',
+    '                <aspect name="to_order" />',
+    '            </field>',
+    '        </fieldset>',
+    '    </scope>',
+    '</config>'
+  ].join('\n'));
+
+  function parseFieldsetXmlSync(root, filterFieldset, filterAspect) {
+    const results = [];
+    const fsFiles = [fieldsetFile];
+    for (const fsFile of fsFiles) {
+      let content;
+      try { content = readFileSync(fsFile, 'utf-8'); } catch { continue; }
+      const relPath = fsFile.replace(root + '/', '');
+      const scopeRegex = /<scope\s+id="([^"]+)">([\s\S]*?)<\/scope>/g;
+      let scopeMatch;
+      while ((scopeMatch = scopeRegex.exec(content)) !== null) {
+        const scopeName = scopeMatch[1];
+        const scopeBlock = scopeMatch[2];
+        const innerFsRegex = /<fieldset\s+id="([^"]+)">([\s\S]*?)<\/fieldset>/g;
+        let innerMatch;
+        while ((innerMatch = innerFsRegex.exec(scopeBlock)) !== null) {
+          const innerFieldsetId = innerMatch[1];
+          if (filterFieldset && !innerFieldsetId.toLowerCase().includes(filterFieldset.toLowerCase()) && !scopeName.toLowerCase().includes(filterFieldset.toLowerCase())) continue;
+          const innerBlock = innerMatch[2];
+          const fieldRegex = /<field\s+name="([^"]+)">([\s\S]*?)<\/field>/g;
+          let fieldMatch;
+          const fields = [];
+          while ((fieldMatch = fieldRegex.exec(innerBlock)) !== null) {
+            const fieldName = fieldMatch[1];
+            const fieldBlock = fieldMatch[2];
+            const aspectRegex = /<aspect\s+name="([^"]+)"\s*(?:\/>|>[^<]*<\/aspect>)/g;
+            let aspectMatch;
+            while ((aspectMatch = aspectRegex.exec(fieldBlock)) !== null) {
+              if (filterAspect && !aspectMatch[1].toLowerCase().includes(filterAspect.toLowerCase())) continue;
+              fields.push({ field: fieldName, aspect: aspectMatch[1] });
+            }
+          }
+          if (fields.length > 0) {
+            results.push({ file: relPath, scope: scopeName, fieldset: innerFieldsetId, fields });
+          }
+        }
+      }
+    }
+    return results;
+  }
+
+  const root = path.join(__dirname, 'tmp_fieldset_test');
+
+  const all = parseFieldsetXmlSync(root, null, null);
+  assertEq(all.length, 2, 'parseFieldsetXml: finds 2 fieldsets without filter');
+
+  const orderOnly = parseFieldsetXmlSync(root, 'sales_copy_order', null);
+  assertEq(orderOnly.length, 1, 'filter by sales_copy_order: 1 result');
+  assertEq(orderOnly[0].fieldset, 'sales_copy_order', 'correct fieldset name');
+  assertEq(orderOnly[0].fields.length, 3, 'sales_copy_order has 3 field+aspect pairs');
+
+  const toEditOnly = parseFieldsetXmlSync(root, null, 'to_edit');
+  assert(toEditOnly.length >= 1, 'filter by to_edit: at least 1 result');
+  const editFields = toEditOnly[0].fields.filter(f => f.aspect === 'to_edit');
+  assert(editFields.length > 0, 'to_edit aspect found in results');
+
+  const noMatch = parseFieldsetXmlSync(root, 'nonexistent_fieldset', null);
+  assertEq(noMatch.length, 0, 'nonexistent filter returns empty');
+
+  rmSync(path.join(__dirname, 'tmp_fieldset_test'), { recursive: true, force: true });
+}
+
+// ─── readMethodSnippet Tests ──────────────────────────────────
+
+function testReadMethodSnippet() {
+  console.log('\n── readMethodSnippet ──');
+
+  const tmpDir = path.join(__dirname, 'tmp_snippet_test');
+  mkdirSync(tmpDir, { recursive: true });
+  const phpFile = path.join(tmpDir, 'TestClass.php');
+  writeFileSync(phpFile, [
+    '<?php',
+    'namespace Test\\Module;',
+    '',
+    'class TestClass',
+    '{',
+    '    public function execute()',
+    '    {',
+    '        $this->doSomething();',
+    '        return $result;',
+    '    }',
+    '',
+    '    public function save($entity)',
+    '    {',
+    '        return $this->repository->save($entity);',
+    '    }',
+    '}'
+  ].join('\n'));
+
+  function readMethodSnippet(filePath, methodName, maxLines = 15) {
+    let content;
+    try { content = readFileSync(filePath, 'utf-8'); } catch { return null; }
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes(`function ${methodName}(`)) {
+        return lines.slice(i, i + maxLines).join('\n');
+      }
+    }
+    return null;
+  }
+
+  const executeSnippet = readMethodSnippet(phpFile, 'execute');
+  assert(executeSnippet !== null, 'readMethodSnippet: finds execute()');
+  assert(executeSnippet.includes('function execute()'), 'snippet contains function signature');
+  assert(executeSnippet.includes('doSomething'), 'snippet contains method body');
+
+  const saveSnippet = readMethodSnippet(phpFile, 'save', 3);
+  assert(saveSnippet !== null, 'readMethodSnippet: finds save()');
+  const saveLines = saveSnippet.split('\n');
+  assertEq(saveLines.length, 3, 'maxLines=3 limits output to 3 lines');
+
+  const missing = readMethodSnippet(phpFile, 'nonExistentMethod');
+  assertEq(missing, null, 'nonexistent method returns null');
+
+  const badFile = readMethodSnippet('/nonexistent/path.php', 'execute');
+  assertEq(badFile, null, 'nonexistent file returns null');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
+// ─── findClassFile Tests ──────────────────────────────────────
+
+function testFindClassFile() {
+  console.log('\n── findClassFile ──');
+
+  const tmpDir = path.join(__dirname, 'tmp_classfile_test');
+  const vendorDir = path.join(tmpDir, 'vendor', 'acme', 'Module', 'Model');
+  const appDir = path.join(tmpDir, 'app', 'code', 'Custom', 'Module', 'Model');
+  mkdirSync(vendorDir, { recursive: true });
+  mkdirSync(appDir, { recursive: true });
+  writeFileSync(path.join(vendorDir, 'Product.php'), '<?php class Product {}');
+  writeFileSync(path.join(appDir, 'Order.php'), '<?php class Order {}');
+
+  function findClassFile(root, className) {
+    if (!className) return '';
+    const parts = className.replace(/\\\\/g, '\\').split('\\');
+    if (parts.length < 3) return '';
+    const vendor = parts[0].toLowerCase();
+    const candidates = [
+      path.join(root, 'vendor', vendor, parts.slice(1).join('/') + '.php'),
+      path.join(root, 'app/code', parts.join('/') + '.php'),
+    ];
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) return candidate;
+    }
+    return '';
+  }
+
+  const vendorResult = findClassFile(tmpDir, 'Acme\\Module\\Model\\Product');
+  assert(vendorResult.includes('Product.php'), 'resolves vendor class to file');
+
+  const appResult = findClassFile(tmpDir, 'Custom\\Module\\Model\\Order');
+  assert(appResult.includes('Order.php'), 'resolves app/code class to file');
+
+  const shortResult = findClassFile(tmpDir, 'Foo\\Bar');
+  assertEq(shortResult, '', 'short class name returns empty');
+
+  const noResult = findClassFile(tmpDir, 'Acme\\Module\\Model\\NonExistent');
+  assertEq(noResult, '', 'non-existent class returns empty');
+
+  assertEq(findClassFile(tmpDir, ''), '', 'empty class name returns empty');
+  assertEq(findClassFile(tmpDir, null), '', 'null class name returns empty');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
 // ─── Run All ───────────────────────────────────────────────────
 
 async function main() {
@@ -2806,6 +3072,10 @@ async function main() {
   testNewMcpToolDefinitions();
   testSetupScriptDetection();
   testSqlTableReferenceDetection();
+  await testExtractPluginMethods();
+  await testParseFieldsetXml();
+  testReadMethodSnippet();
+  testFindClassFile();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
