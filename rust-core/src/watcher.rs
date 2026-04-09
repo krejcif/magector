@@ -77,7 +77,8 @@ impl FileManifest {
 
     /// Build initial manifest from the current index metadata.
     /// This scans the filesystem to populate mtime/size for files already in the index.
-    pub fn from_existing_index(magento_root: &Path, indexer: &Indexer) -> Self {
+    /// Only includes files that are in `indexed_paths` (have vectors in the DB).
+    pub fn from_existing_index(magento_root: &Path, indexed_paths: &std::collections::HashSet<String>) -> Self {
         let mut manifest = Self::new();
         // Walk the filesystem and record current mtimes for files we'd index
         let walker = WalkDir::new(magento_root)
@@ -107,6 +108,11 @@ impl FileManifest {
                     .to_string_lossy()
                     .to_string();
 
+                // Only include files that actually have vectors in the DB
+                if !indexed_paths.contains(&relative) {
+                    continue;
+                }
+
                 let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                 manifest.files.insert(
                     relative,
@@ -119,7 +125,6 @@ impl FileManifest {
             }
         }
 
-        let _ = indexer; // used conceptually for the magento_root
         manifest
     }
 
@@ -252,7 +257,8 @@ pub fn watcher_loop(
     // Build initial manifest
     let mut manifest = {
         let idx = indexer.lock().unwrap();
-        FileManifest::from_existing_index(&magento_root, &idx)
+        let paths = idx.indexed_paths();
+        FileManifest::from_existing_index(&magento_root, &paths)
     };
 
     {

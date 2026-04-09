@@ -173,7 +173,7 @@ impl Indexer {
     /// Collect paths (relative to magento_root, as stored in IndexMetadata)
     /// of files that already have at least one vector in the current DB.
     /// Used by resume mode to avoid re-embedding work from a previous run.
-    fn indexed_paths(&self) -> HashSet<String> {
+    pub fn indexed_paths(&self) -> HashSet<String> {
         // IndexMetadata.path stores the path relative to magento_root, so it is
         // directly comparable with parse_file's output. Multiple vectors per
         // file all share the same path — HashSet naturally dedupes them.
@@ -267,7 +267,7 @@ impl Indexer {
                     // No manifest on disk — first run after upgrade.
                     // Build from filesystem (treats all indexed files as current).
                     tracing::info!("No manifest found — building from filesystem for existing index");
-                    crate::watcher::FileManifest::from_existing_index(&self.magento_root, self)
+                    crate::watcher::FileManifest::from_existing_index(&self.magento_root, &already_indexed)
                 })
         } else {
             crate::watcher::FileManifest::new()
@@ -358,7 +358,7 @@ impl Indexer {
             // Still save manifest (deleted files may have been tombstoned above)
             if let Some(ref mp) = manifest_path {
                 if !resume {
-                    manifest = crate::watcher::FileManifest::from_existing_index(&self.magento_root, self);
+                    manifest = crate::watcher::FileManifest::from_existing_index(&self.magento_root, &self.indexed_paths());
                 }
                 if let Err(e) = manifest.save(mp) {
                     tracing::warn!("Failed to save manifest: {}", e);
@@ -574,7 +574,7 @@ impl Indexer {
         if let Some(ref mp) = manifest_path {
             if !resume {
                 // Full index — build manifest from filesystem
-                manifest = crate::watcher::FileManifest::from_existing_index(&self.magento_root, self);
+                manifest = crate::watcher::FileManifest::from_existing_index(&self.magento_root, &self.indexed_paths());
             } else {
                 // Incremental — update manifest entries for the files we just processed
                 let root = &self.magento_root;
