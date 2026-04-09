@@ -1005,6 +1005,41 @@ function readMethodSnippet(filePath, methodName, maxLines = 15) {
 }
 
 /**
+ * Read the FULL method body using brace-counting to find the closing brace.
+ * Unlike readMethodSnippet (fixed N lines), this extracts the complete method
+ * regardless of length, up to a safety limit.
+ * @param {string} filePath - absolute or relative PHP file path
+ * @param {string} methodName - method name to find
+ * @param {number} maxLines - safety limit to prevent reading huge methods (default: 60)
+ * @returns {string|null} complete method source or null if not found
+ */
+function readFullMethodBody(filePath, methodName, maxLines = 60) {
+  const absPath = filePath.startsWith('/') ? filePath : path.join(config.magentoRoot, filePath);
+  let content;
+  try { content = readFileSync(absPath, 'utf-8'); } catch { return null; }
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes(`function ${methodName}(`)) {
+      // Use brace counting to find the complete method body
+      let braceCount = 0;
+      let started = false;
+      for (let j = i; j < lines.length && j < i + maxLines; j++) {
+        for (const ch of lines[j]) {
+          if (ch === '{') { braceCount++; started = true; }
+          if (ch === '}') braceCount--;
+        }
+        if (started && braceCount <= 0) {
+          return lines.slice(i, j + 1).join('\n');
+        }
+      }
+      // Safety: if closing brace not found within maxLines, return what we have
+      return lines.slice(i, Math.min(i + maxLines, lines.length)).join('\n');
+    }
+  }
+  return null;
+}
+
+/**
  * Parse all fieldset.xml files in the Magento root.
  * Returns array of { file, scope, fieldset, fields: [{ field, aspect }] }.
  */
@@ -1568,8 +1603,12 @@ function formatSearchResults(results) {
         : r.searchText;
     }
 
+    // Full method body — attached by magento_find_method for complete understanding
+    if (r.fullMethodBody) {
+      entry.codePreview = r.fullMethodBody;
+    }
     // Code preview — read actual source lines for PHP files with known class/method
-    if (r.path && (r.path.endsWith('.php') || r.path.endsWith('.phtml'))) {
+    else if (r.path && (r.path.endsWith('.php') || r.path.endsWith('.phtml'))) {
       if (r.methodName) {
         const preview = readMethodSnippet(r.path, r.methodName, 10);
         if (preview) entry.codePreview = preview;
@@ -2553,6 +2592,21 @@ async function findDiWiring(className) {
   const root = config.magentoRoot;
   const shortName = className.split('\\').pop();
   const shortLower = shortName.toLowerCase();
+  // When a FQCN is provided (contains \), use it for precise matching
+  const hasFqcn = className.includes('\\');
+  // Normalize FQCN for XML matching: di.xml uses backslash-escaped names
+  const fqcnNormalized = hasFqcn ? className.replace(/\\\\/g, '\\') : null;
+  const fqcnLower = fqcnNormalized ? fqcnNormalized.toLowerCase() : null;
+
+  // Helper: check if a di.xml class name matches the requested class.
+  // When FQCN is available, require full namespace match; otherwise fall back to short name.
+  function matchesClass(xmlClassName) {
+    const xmlLower = xmlClassName.toLowerCase().replace(/\\\\/g, '\\');
+    if (fqcnLower) {
+      return xmlLower === fqcnLower || xmlLower.endsWith('\\' + fqcnLower);
+    }
+    return xmlLower.includes(shortLower);
+  }
 
   const result = {
     className,
@@ -2573,15 +2627,14 @@ async function findDiWiring(className) {
     const relativePath = diFile.replace(root + '/', '');
     const contentLower = content.toLowerCase();
 
+    // Quick pre-filter: skip files that don't contain the short name at all
     if (!contentLower.includes(shortLower)) continue;
 
     // 1. Preferences where this class is the "for" or "type"
     const prefRegex = /<preference\s+for="([^"]+)"\s+type="([^"]+)"\s*\/?>/g;
     let m;
     while ((m = prefRegex.exec(content)) !== null) {
-      const forLower = m[1].toLowerCase();
-      const typeLower = m[2].toLowerCase();
-      if (forLower.includes(shortLower) || typeLower.includes(shortLower)) {
+      if (matchesClass(m[1]) || matchesClass(m[2])) {
         result.preferences.push({ for: m[1], type: m[2], file: relativePath });
       }
     }
@@ -2591,10 +2644,9 @@ async function findDiWiring(className) {
     let typeMatch;
     while ((typeMatch = typeBlockRegex.exec(content)) !== null) {
       const typeName = typeMatch[1];
-      const typeNameLower = typeName.toLowerCase();
       const typeBlock = typeMatch[2];
 
-      if (!typeNameLower.includes(shortLower)) continue;
+      if (!matchesClass(typeName)) continue;
 
       // Plugins
       const pluginRegex = /<plugin\s+name="([^"]+)"[^>]*type="([^"]+)"[^>]*/g;
@@ -2641,7 +2693,7 @@ async function findDiWiring(className) {
     const vtRegex = /<virtualType\s+name="([^"]+)"[^>]*type="([^"]+)"[^>]*(?:\/>|>([\s\S]*?)<\/virtualType>)/g;
     while ((m = vtRegex.exec(content)) !== null) {
       const vtType = m[2];
-      if (!vtType.toLowerCase().includes(shortLower)) continue;
+      if (!matchesClass(vtType)) continue;
       const vtEntry = { name: m[1], type: vtType, file: relativePath };
       if (m[3]) {
         const argRegex = /<argument\s+name="([^"]+)"[^>]*xsi:type="([^"]+)"[^>]*>([^<]*)<\/argument>/g;
@@ -2657,12 +2709,24 @@ async function findDiWiring(className) {
   }
 
   // 4. Constructor arguments from PHP class
+  // When FQCN is provided, verify namespace matches to avoid class name collisions
   const phpFiles = await glob(`**/${shortName}.php`, { cwd: root, absolute: true, nodir: true });
   for (const phpFile of phpFiles) {
     let content;
     try { content = readFileSync(phpFile, 'utf-8'); } catch { continue; }
     const classMatch = content.match(/(?:class|abstract\s+class)\s+(\w+)/);
     if (!classMatch || classMatch[1] !== shortName) continue;
+
+    // FQCN namespace verification: when a full class name was provided,
+    // check that the PHP file's namespace matches to avoid collisions
+    // (e.g., two different ViewPlugin classes in different modules)
+    if (fqcnNormalized) {
+      const nsMatch = content.match(/namespace\s+([\w\\]+)\s*;/);
+      if (nsMatch) {
+        const fileFqcn = (nsMatch[1] + '\\' + shortName).toLowerCase();
+        if (fileFqcn !== fqcnLower) continue; // Wrong class, skip
+      }
+    }
 
     const ctorMatch = content.match(/function\s+__construct\s*\(([\s\S]*?)\)\s*[{:]/);
     if (ctorMatch) {
@@ -2672,6 +2736,7 @@ async function findDiWiring(className) {
         result.constructorArguments.push({ typeHint: pm[1] || null, variable: pm[2] });
       }
     }
+    result.constructorSourceFile = phpFile.replace(root + '/', '');
     break;
   }
 
@@ -3992,10 +4057,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (r.methodName?.toLowerCase() === methodLower) bonus += 0.3;
           return { ...r, score: (r.score || 0) + bonus };
         }).sort((a, b) => b.score - a.score);
+        // Attach full method body to each result for complete understanding
+        const sliced = results.slice(0, 10);
+        for (const r of sliced) {
+          if (r.path && r.path.endsWith('.php')) {
+            const body = readFullMethodBody(r.path, args.methodName);
+            if (body) r.fullMethodBody = body;
+          }
+        }
         return {
           content: [{
             type: 'text',
-            text: formatSearchResults(results.slice(0, 10))
+            text: formatSearchResults(sliced)
           }]
         };
       }
@@ -5392,6 +5465,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const flow = await traceEventFlow(a.eventName);
                 text = `Dispatchers: ${flow.dispatchers.length}, Observers: ${flow.observers.length}\n`;
                 for (const o of flow.observers.slice(0, 10)) text += `- ${o.name}: ${o.instance} (${o.file})\n`;
+                break;
+              }
+              case 'magento_find_di_wiring': {
+                const wiring = await findDiWiring(a.className);
+                text = `Prefs: ${wiring.preferences.length}, Plugins: ${wiring.plugins.length}, VTs: ${wiring.virtualTypes.length}, Ctor: ${wiring.constructorArguments.length}\n`;
+                for (const p of wiring.plugins.slice(0, 5)) text += `- plugin: ${p.pluginName} → ${p.pluginClass}\n`;
+                for (const c of wiring.constructorArguments.slice(0, 10)) text += `- ctor: ${c.typeHint || '?'} ${c.variable}\n`;
+                if (wiring.constructorSourceFile) text += `Source: ${wiring.constructorSourceFile}\n`;
+                break;
+              }
+              case 'magento_find_method': {
+                const qr = `method ${a.methodName} function ${a.className || ''}`.trim();
+                const raw = await rustSearchAsync(qr, 50);
+                const ml = a.methodName.toLowerCase();
+                let res = raw.map(normalizeResult).filter(r =>
+                  r.methodName?.toLowerCase() === ml || r.methods?.some(m => m.toLowerCase() === ml)
+                );
+                for (const r of res.slice(0, 5)) {
+                  if (r.path?.endsWith('.php')) {
+                    const body = readFullMethodBody(r.path, a.methodName);
+                    if (body) r.fullMethodBody = body;
+                  }
+                }
+                text = formatSearchResults(res.slice(0, 5));
                 break;
               }
               default:

@@ -3268,6 +3268,225 @@ class Simple {
   assertEq(callers3.length, 0, 'runtimeCallers: no callers when no constructor');
 }
 
+// ─── readFullMethodBody Tests ─────────────────────────────────
+
+function testReadFullMethodBody() {
+  console.log('\n── readFullMethodBody ──');
+
+  const tmpDir = path.join(__dirname, 'tmp_fullmethod_test');
+  mkdirSync(tmpDir, { recursive: true });
+  const phpFile = path.join(tmpDir, 'ViewPlugin.php');
+  writeFileSync(phpFile, [
+    '<?php',
+    'namespace Acme\\OrderEdit\\Plugin;',
+    '',
+    'class ViewPlugin',
+    '{',
+    '    public function afterAddButton($subject, $result, $buttonId)',
+    '    {',
+    '        if ($buttonId === "order_edit") {',
+    '            $type = $subject->getOrder()->getData("order_type");',
+    '            if ($type === "reservation") {',
+    '                $subject->removeButton($buttonId);',
+    '            }',
+    '        }',
+    '        return $result;',
+    '    }',
+    '',
+    '    private function getNonEditableTypes($order)',
+    '    {',
+    '        return array_keys(',
+    '            $order->getResource()->aggregateProductsByTypes(',
+    '                $order->getId(),',
+    '                $this->salesConfig->getAvailableProductTypes(),',
+    '                false',
+    '            )',
+    '        );',
+    '    }',
+    '}'
+  ].join('\n'));
+
+  // Inline implementation matching mcp-server.js readFullMethodBody
+  function readFullMethodBody(filePath, methodName, maxLines = 60) {
+    let content;
+    try { content = readFileSync(filePath, 'utf-8'); } catch { return null; }
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes(`function ${methodName}(`)) {
+        let braceCount = 0;
+        let started = false;
+        for (let j = i; j < lines.length && j < i + maxLines; j++) {
+          for (const ch of lines[j]) {
+            if (ch === '{') { braceCount++; started = true; }
+            if (ch === '}') braceCount--;
+          }
+          if (started && braceCount <= 0) {
+            return lines.slice(i, j + 1).join('\n');
+          }
+        }
+        return lines.slice(i, Math.min(i + maxLines, lines.length)).join('\n');
+      }
+    }
+    return null;
+  }
+
+  // Test 1: Extract complete afterAddButton (9 lines with braces)
+  const afterBody = readFullMethodBody(phpFile, 'afterAddButton');
+  assert(afterBody !== null, 'readFullMethodBody: finds afterAddButton');
+  assert(afterBody.includes('function afterAddButton'), 'contains function signature');
+  assert(afterBody.includes('removeButton'), 'contains removeButton call');
+  assert(afterBody.includes('return $result;'), 'contains return statement');
+  // Should end at the closing brace, not continue to getNonEditableTypes
+  assert(!afterBody.includes('getNonEditableTypes'), 'does NOT leak into next method');
+
+  // Test 2: Extract complete getNonEditableTypes (multi-line call chain)
+  const getBody = readFullMethodBody(phpFile, 'getNonEditableTypes');
+  assert(getBody !== null, 'readFullMethodBody: finds getNonEditableTypes');
+  assert(getBody.includes('aggregateProductsByTypes'), 'contains nested call');
+  assert(getBody.includes('getAvailableProductTypes'), 'contains full method body');
+
+  // Test 3: Nonexistent method returns null
+  const missing = readFullMethodBody(phpFile, 'nonExistent');
+  assertEq(missing, null, 'nonexistent method returns null');
+
+  // Test 4: Nonexistent file returns null
+  const badFile = readFullMethodBody('/no/such/file.php', 'foo');
+  assertEq(badFile, null, 'nonexistent file returns null');
+
+  // Test 5: maxLines safety limit
+  const limited = readFullMethodBody(phpFile, 'afterAddButton', 3);
+  assert(limited !== null, 'maxLines safety: returns partial content');
+  const limitedLines = limited.split('\n');
+  assertEq(limitedLines.length, 3, 'maxLines=3 limits to 3 lines');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
+// ─── findDiWiring FQCN Disambiguation Tests ──────────────────
+
+async function testFindDiWiringFqcn() {
+  console.log('\n── findDiWiring FQCN disambiguation ──');
+
+  const tmpDir = path.join(__dirname, '__fixtures_di_fqcn');
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+  // Create two modules with same-named class ViewPlugin
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-order-edit/etc/adminhtml'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-order-edit/Plugin'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-subscription/etc'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor/acme/module-subscription/Plugin'), { recursive: true });
+
+  // Module A: OrderEdit ViewPlugin
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-order-edit/etc/adminhtml/di.xml'),
+    `<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <type name="Acme\\Sales\\Block\\Order\\View">
+    <plugin name="order_edit_view" type="Acme\\OrderEdit\\Plugin\\ViewPlugin"/>
+  </type>
+</config>`);
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-order-edit/Plugin/ViewPlugin.php'),
+    `<?php\nnamespace Acme\\OrderEdit\\Plugin;\nclass ViewPlugin {\n    public function __construct(\n        \\Acme\\Sales\\Model\\Config $salesConfig\n    ) {}\n}\n`);
+
+  // Module B: Subscription ViewPlugin (different class, same short name)
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-subscription/etc/di.xml'),
+    `<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <type name="Acme\\Framework\\Mview\\ViewPlugin">
+    <plugin name="sub_view" type="Acme\\Subscription\\Plugin\\ViewPlugin"/>
+  </type>
+</config>`);
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-subscription/Plugin/ViewPlugin.php'),
+    `<?php\nnamespace Acme\\Subscription\\Plugin;\nclass ViewPlugin {\n    public function __construct(\n        \\Acme\\Subscription\\Model\\SubscriptionFactory $subscriptionFactory\n    ) {}\n}\n`);
+
+  const { glob: globFn } = await import('glob');
+
+  // Helper that mimics findDiWiring FQCN logic
+  async function findDiWiringTest(className) {
+    const root = tmpDir;
+    const shortName = className.split('\\').pop();
+    const shortLower = shortName.toLowerCase();
+    const hasFqcn = className.includes('\\');
+    const fqcnNormalized = hasFqcn ? className.replace(/\\\\/g, '\\') : null;
+    const fqcnLower = fqcnNormalized ? fqcnNormalized.toLowerCase() : null;
+
+    function matchesClass(xmlClassName) {
+      const xmlLower = xmlClassName.toLowerCase().replace(/\\\\/g, '\\');
+      if (fqcnLower) {
+        return xmlLower === fqcnLower || xmlLower.endsWith('\\' + fqcnLower);
+      }
+      return xmlLower.includes(shortLower);
+    }
+
+    const result = { plugins: [], constructorArguments: [] };
+    const diFiles = await globFn('**/etc/**/di.xml', { cwd: root, absolute: true, nodir: true });
+
+    for (const diFile of diFiles) {
+      const content = readFileSync(diFile, 'utf-8');
+      if (!content.toLowerCase().includes(shortLower)) continue;
+      const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
+      let typeMatch;
+      while ((typeMatch = typeBlockRegex.exec(content)) !== null) {
+        if (!matchesClass(typeMatch[1])) continue;
+        const pluginRegex = /<plugin\s+name="([^"]+)"[^>]*type="([^"]+)"[^>]*/g;
+        let pMatch;
+        while ((pMatch = pluginRegex.exec(typeMatch[2])) !== null) {
+          result.plugins.push({ target: typeMatch[1], pluginClass: pMatch[2] });
+        }
+      }
+    }
+
+    // PHP constructor with FQCN verification
+    const phpFiles = await globFn(`**/${shortName}.php`, { cwd: root, absolute: true, nodir: true });
+    for (const phpFile of phpFiles) {
+      const content = readFileSync(phpFile, 'utf-8');
+      const classMatch = content.match(/(?:class|abstract\s+class)\s+(\w+)/);
+      if (!classMatch || classMatch[1] !== shortName) continue;
+      if (fqcnNormalized) {
+        const nsMatch = content.match(/namespace\s+([\w\\]+)\s*;/);
+        if (nsMatch) {
+          const fileFqcn = (nsMatch[1] + '\\' + shortName).toLowerCase();
+          if (fileFqcn !== fqcnLower) continue;
+        }
+      }
+      const ctorMatch = content.match(/function\s+__construct\s*\(([\s\S]*?)\)\s*[{:]/);
+      if (ctorMatch) {
+        const paramRegex = /(?:([\w\\]+)\s+)?(\$\w+)/g;
+        let pm;
+        while ((pm = paramRegex.exec(ctorMatch[1])) !== null) {
+          result.constructorArguments.push({ typeHint: pm[1] || null, variable: pm[2] });
+        }
+      }
+      break;
+    }
+    return result;
+  }
+
+  // Test 1: Short name "ViewPlugin" — Module B type is "Acme\\Framework\\Mview\\ViewPlugin" (matches),
+  // Module A type is "Acme\\Sales\\Block\\Order\\View" (does not contain "viewplugin")
+  const shortResult = await findDiWiringTest('ViewPlugin');
+  assertEq(shortResult.plugins.length, 1, 'short name: finds 1 plugin (only type name containing ViewPlugin)');
+  assert(shortResult.constructorArguments.length > 0, 'short name: finds some constructor args (first match)');
+
+  // Test 2: FQCN for OrderEdit ViewPlugin — only matches OrderEdit constructor
+  const orderEditResult = await findDiWiringTest('Acme\\OrderEdit\\Plugin\\ViewPlugin');
+  // The di.xml type is "Acme\\Sales\\Block\\Order\\View", not this class, so 0 plugins
+  assertEq(orderEditResult.plugins.length, 0, 'FQCN OrderEdit: no plugins (target is different class)');
+  assertEq(orderEditResult.constructorArguments.length, 1, 'FQCN OrderEdit: finds 1 constructor arg');
+  assert(
+    orderEditResult.constructorArguments[0]?.variable === '$salesConfig',
+    'FQCN OrderEdit: correct param is $salesConfig'
+  );
+
+  // Test 3: FQCN for Subscription ViewPlugin — only matches Subscription constructor
+  const subResult = await findDiWiringTest('Acme\\Subscription\\Plugin\\ViewPlugin');
+  assertEq(subResult.constructorArguments.length, 1, 'FQCN Subscription: finds 1 constructor arg');
+  assert(
+    subResult.constructorArguments[0]?.variable === '$subscriptionFactory',
+    'FQCN Subscription: correct param is $subscriptionFactory'
+  );
+
+  try { rmSync(tmpDir, { recursive: true }); } catch {}
+}
+
 async function main() {
   console.log('╔═══════════════════════════════════════════════════════════╗');
   console.log('║            MAGECTOR UNIT TESTS                          ║');
@@ -3314,6 +3533,8 @@ async function main() {
   await testExtractPluginMethods();
   await testParseFieldsetXml();
   testReadMethodSnippet();
+  testReadFullMethodBody();
+  await testFindDiWiringFqcn();
   testFindClassFile();
   testPreciseSearchFilter();
   testRuntimeCallerDetection();

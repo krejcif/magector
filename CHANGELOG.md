@@ -4,6 +4,15 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.5.2] - 2026-04-09
+
+### Added
+- **Full method body in `magento_find_method`** — results now include the complete method source code extracted via brace-counting, not just a 10-line snippet. This lets LLM agents verify what a method actually does without needing a separate file-read tool. Critical for accurate bug analysis where method behavior must be understood, not just located.
+- **`magento_find_di_wiring` and `magento_find_method` in `magento_batch`** — both tools can now be used in batch requests for parallel execution.
+
+### Fixed
+- **FQCN disambiguation in `magento_find_di_wiring`** — when a fully-qualified class name is provided (e.g., `Acme\OrderEdit\Plugin\ViewPlugin`), DI XML matching and PHP constructor extraction now verify the full namespace instead of matching on the short class name alone. Previously, if two modules had classes with the same short name (e.g., `ViewPlugin`), the tool could return the wrong module's constructor and DI configuration. The fix adds namespace verification for both XML `<type>` matching and PHP file selection.
+
 ## [2.5.1] - 2026-04-09
 
 ### Added
