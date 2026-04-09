@@ -3655,30 +3655,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (args.targetClass) {
           const fpRoot = config.magentoRoot;
           const diFiles = await glob('**/etc/**/di.xml', { cwd: fpRoot, absolute: true, nodir: true });
-          const shortTarget = args.targetClass.split('\\').pop();
+          // Normalize target class for matching (both \ and \\)
+          const normalizedTarget = args.targetClass.replace(/\\\\/g, '\\');
           for (const diFile of diFiles) {
             let content;
             try { content = readFileSync(diFile, 'utf-8'); } catch { continue; }
-            if (!content.includes(shortTarget)) continue;
+            if (!content.includes(normalizedTarget)) continue;
             const relPath = diFile.replace(fpRoot + '/', '');
             // Find plugin registrations for this target
             const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
             let tm;
             while ((tm = typeBlockRegex.exec(content)) !== null) {
-              const typeName = tm[1];
-              if (!typeName.includes(shortTarget)) continue;
+              const typeName = tm[1].replace(/\\\\/g, '\\');
+              if (typeName !== normalizedTarget) continue;
               const block = tm[2];
-              const pluginRegex = /<plugin\s+name="([^"]+)"[^>]*type="([^"]+)"[^>]*/g;
+              const pluginRegex = /<plugin\s+([^/>]*)\/?>/g;
               let pm;
               while ((pm = pluginRegex.exec(block)) !== null) {
+                const attrs = {};
+                const localAttrRe = /(\w+)="([^"]*)"/g;
+                let am;
+                while ((am = localAttrRe.exec(pm[1])) !== null) {
+                  attrs[am[1]] = am[2];
+                }
                 let area = 'global';
                 if (relPath.includes('/etc/adminhtml/')) area = 'adminhtml';
                 else if (relPath.includes('/etc/frontend/')) area = 'frontend';
                 else if (relPath.includes('/etc/graphql/')) area = 'graphql';
                 diRegistrations.push({
                   target: typeName,
-                  pluginName: pm[1],
-                  pluginClass: pm[2],
+                  pluginName: attrs.name || '',
+                  pluginClass: attrs.type || '',
+                  disabled: attrs.disabled === 'true',
+                  sortOrder: attrs.sortOrder || null,
                   area,
                   file: relPath
                 });
@@ -3691,7 +3700,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (diRegistrations.length > 0) {
           text += `\n\n### DI Plugin Registrations for ${args.targetClass} (${diRegistrations.length})\n`;
           for (const reg of diRegistrations) {
-            text += `- **${reg.pluginName}** → \`${reg.pluginClass}\` [${reg.area}] (${reg.file})\n`;
+            const disabledTag = reg.disabled ? ' **[DISABLED]**' : '';
+            const sortTag = reg.sortOrder ? ` (sortOrder: ${reg.sortOrder})` : '';
+            text += `- **${reg.pluginName}** → \`${reg.pluginClass}\` [${reg.area}]${sortTag}${disabledTag} (${reg.file})\n`;
           }
         }
 

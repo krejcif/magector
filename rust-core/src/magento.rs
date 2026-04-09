@@ -336,11 +336,22 @@ pub struct PluginMethod {
     pub target_method: String,
 }
 
+/// Structured plugin declaration from di.xml
+#[derive(Debug, Clone, Default)]
+pub struct PluginDeclaration {
+    pub target_class: String,
+    pub name: String,
+    pub plugin_class: String,
+    pub disabled: bool,
+    pub sort_order: Option<i32>,
+}
+
 /// XML config analyzer
 pub struct XmlAnalyzer {
     preference_re: Regex,
     type_re: Regex,
-    plugin_re: Regex,
+    type_block_re: Regex,
+    plugin_in_block_re: Regex,
     event_re: Regex,
     route_re: Regex,
     table_re: Regex,
@@ -352,7 +363,8 @@ impl XmlAnalyzer {
         Self {
             preference_re: Regex::new(r#"<preference\s+for="([^"]+)"\s+type="([^"]+)""#).unwrap(),
             type_re: Regex::new(r#"<type\s+name="([^"]+)""#).unwrap(),
-            plugin_re: Regex::new(r#"<plugin\s+name="([^"]+)"\s+type="([^"]+)""#).unwrap(),
+            type_block_re: Regex::new(r#"(?s)<type\s+name="([^"]+)"[^>]*>(.*?)</type>"#).unwrap(),
+            plugin_in_block_re: Regex::new(r#"<plugin\s+([^/>]*?)/?>"#).unwrap(),
             event_re: Regex::new(r#"<event\s+name="([^"]+)""#).unwrap(),
             route_re: Regex::new(r#"<route\s+url="([^"]+)"\s+method="([^"]+)""#).unwrap(),
             table_re: Regex::new(r#"<table\s+name="([^"]+)""#).unwrap(),
@@ -373,9 +385,30 @@ impl XmlAnalyzer {
             meta.types.push(caps[1].to_string());
         }
 
-        // Plugins
-        for caps in self.plugin_re.captures_iter(content) {
-            meta.plugins.push((caps[1].to_string(), caps[2].to_string()));
+        // Plugins — parse <type name="TargetClass"><plugin name=".." type=".." disabled="true"/></type>
+        let attr_re = Regex::new(r#"(\w+)="([^"]*)""#).unwrap();
+        for type_caps in self.type_block_re.captures_iter(content) {
+            let target_class = type_caps[1].to_string();
+            let block_content = &type_caps[2];
+            for plugin_caps in self.plugin_in_block_re.captures_iter(block_content) {
+                let attrs_str = &plugin_caps[1];
+                let mut decl = PluginDeclaration {
+                    target_class: target_class.clone(),
+                    ..Default::default()
+                };
+                for attr in attr_re.captures_iter(attrs_str) {
+                    match &attr[1] {
+                        "name" => decl.name = attr[2].to_string(),
+                        "type" => decl.plugin_class = attr[2].to_string(),
+                        "disabled" => decl.disabled = &attr[2] == "true",
+                        "sortOrder" => decl.sort_order = attr[2].parse().ok(),
+                        _ => {}
+                    }
+                }
+                if !decl.name.is_empty() {
+                    meta.plugins.push(decl);
+                }
+            }
         }
 
         // Events
@@ -412,7 +445,7 @@ impl Default for XmlAnalyzer {
 pub struct XmlMetadata {
     pub preferences: Vec<(String, String)>,
     pub types: Vec<String>,
-    pub plugins: Vec<(String, String)>,
+    pub plugins: Vec<PluginDeclaration>,
     pub events: Vec<String>,
     pub routes: Vec<(String, String)>,
     pub tables: Vec<String>,
@@ -472,6 +505,12 @@ pub fn generate_search_text(
     if let Some(xml) = xml_meta {
         for (from, to) in &xml.preferences {
             terms.push(format!("preference {} {}", from, to));
+        }
+        for plugin in &xml.plugins {
+            terms.push(format!("plugin {} {} {}", plugin.target_class, plugin.name, plugin.plugin_class));
+            if plugin.disabled {
+                terms.push(format!("disabled plugin {}", plugin.name));
+            }
         }
         for event in &xml.events {
             terms.push(format!("event {}", event.replace('_', " ")));
@@ -937,5 +976,116 @@ mod tests {
         "#;
         let tables = analyzer.extract_table_references(content);
         assert!(tables.is_empty(), "Should not extract tables from non-SQL code, got: {:?}", tables);
+    }
+
+    #[test]
+    fn test_xml_analyzer_plugin_with_target_class() {
+        let analyzer = XmlAnalyzer::new();
+        let content = r#"
+        <config>
+            <type name="Magento\SalesRule\Model\Rule\Condition\Address">
+                <plugin name="add_grand_total_condition" type="Vendor\Module\Plugin\AddGrandTotalPlugin" />
+            </type>
+        </config>
+        "#;
+        let meta = analyzer.analyze(content);
+        assert_eq!(meta.plugins.len(), 1);
+        let plugin = &meta.plugins[0];
+        assert_eq!(plugin.target_class, "Magento\\SalesRule\\Model\\Rule\\Condition\\Address");
+        assert_eq!(plugin.name, "add_grand_total_condition");
+        assert_eq!(plugin.plugin_class, "Vendor\\Module\\Plugin\\AddGrandTotalPlugin");
+        assert!(!plugin.disabled);
+    }
+
+    #[test]
+    fn test_xml_analyzer_plugin_disabled() {
+        let analyzer = XmlAnalyzer::new();
+        let content = r#"
+        <config>
+            <type name="Magento\SalesRule\Model\Rule\Condition\Address">
+                <plugin name="add_grand_total_condition" disabled="true" />
+            </type>
+        </config>
+        "#;
+        let meta = analyzer.analyze(content);
+        assert_eq!(meta.plugins.len(), 1);
+        assert!(meta.plugins[0].disabled, "Plugin should be marked as disabled");
+        assert_eq!(meta.plugins[0].target_class, "Magento\\SalesRule\\Model\\Rule\\Condition\\Address");
+    }
+
+    #[test]
+    fn test_xml_analyzer_multiple_plugins_per_type() {
+        let analyzer = XmlAnalyzer::new();
+        let content = r#"
+        <config>
+            <type name="Magento\Catalog\Model\Product">
+                <plugin name="plugin_one" type="Vendor\A\PluginOne" sortOrder="10" />
+                <plugin name="plugin_two" type="Vendor\B\PluginTwo" disabled="true" />
+            </type>
+        </config>
+        "#;
+        let meta = analyzer.analyze(content);
+        assert_eq!(meta.plugins.len(), 2);
+        assert_eq!(meta.plugins[0].name, "plugin_one");
+        assert_eq!(meta.plugins[0].sort_order, Some(10));
+        assert!(!meta.plugins[0].disabled);
+        assert_eq!(meta.plugins[1].name, "plugin_two");
+        assert!(meta.plugins[1].disabled);
+        // Both should have the same target class
+        assert_eq!(meta.plugins[0].target_class, meta.plugins[1].target_class);
+    }
+
+    #[test]
+    fn test_xml_analyzer_plugins_across_multiple_types() {
+        let analyzer = XmlAnalyzer::new();
+        let content = r#"
+        <config>
+            <type name="Magento\Catalog\Model\Product">
+                <plugin name="catalog_plugin" type="Vendor\CatalogPlugin" />
+            </type>
+            <type name="Magento\Sales\Model\Order">
+                <plugin name="sales_plugin" type="Vendor\SalesPlugin" />
+            </type>
+        </config>
+        "#;
+        let meta = analyzer.analyze(content);
+        assert_eq!(meta.plugins.len(), 2);
+        assert_eq!(meta.plugins[0].target_class, "Magento\\Catalog\\Model\\Product");
+        assert_eq!(meta.plugins[1].target_class, "Magento\\Sales\\Model\\Order");
+    }
+
+    #[test]
+    fn test_generate_search_text_includes_plugin_target() {
+        let xml_meta = XmlMetadata {
+            plugins: vec![PluginDeclaration {
+                target_class: "Magento\\SalesRule\\Model\\Rule\\Condition\\Address".to_string(),
+                name: "add_grand_total".to_string(),
+                plugin_class: "Vendor\\Plugin\\AddGrandTotal".to_string(),
+                disabled: false,
+                sort_order: None,
+            }],
+            ..Default::default()
+        };
+        let text = generate_search_text("", None, Some(&xml_meta));
+        assert!(text.contains("Magento\\SalesRule\\Model\\Rule\\Condition\\Address"),
+            "Search text should contain the target class, got: {}", text);
+        assert!(text.contains("add_grand_total"), "Search text should contain plugin name");
+    }
+
+    #[test]
+    fn test_generate_search_text_disabled_plugin() {
+        let xml_meta = XmlMetadata {
+            plugins: vec![PluginDeclaration {
+                target_class: "Magento\\Catalog\\Model\\Product".to_string(),
+                name: "my_plugin".to_string(),
+                plugin_class: "Vendor\\Plugin\\MyPlugin".to_string(),
+                disabled: true,
+                sort_order: None,
+            }],
+            ..Default::default()
+        };
+        let text = generate_search_text("", None, Some(&xml_meta));
+        assert!(text.contains("disabled plugin my_plugin"),
+            "Search text should indicate disabled plugin, got: {}", text);
     }
 }

@@ -984,8 +984,12 @@ impl Indexer {
                 terms.push(pref.1.clone());
             }
             for plugin in &xml.plugins {
-                terms.push(plugin.0.clone());
-                terms.push(plugin.1.clone());
+                terms.push(plugin.target_class.clone());
+                terms.push(plugin.name.clone());
+                terms.push(plugin.plugin_class.clone());
+                if plugin.disabled {
+                    terms.push(format!("disabled plugin {}", plugin.name));
+                }
             }
             for event in &xml.events {
                 terms.push(event.clone());
