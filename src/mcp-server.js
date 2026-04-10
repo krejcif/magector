@@ -4043,11 +4043,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const reqStart = Date.now();
   logToFile('REQ', `${name}(${JSON.stringify(args || {})})`);
 
-  // ── Warmup guard: index compatibility check or serve process still loading ──
+  // ── Warmup guard: only block if no DB exists at all (nothing to search) ──
+  // Tools with filesystem fallback work without the serve process, so we
+  // don't block them during warmup. Only block if the DB doesn't exist.
   const indexFreeTools = ['magento_stats', 'magento_analyze_diff', 'magento_complexity',
     'magento_trace_dependency', 'magento_error_parser', 'magento_find_layout',
     'magento_impact_analysis', 'magento_find_event_flow', 'magento_find_test',
-    'magento_trace_data_flow', 'magento_find_event_dispatchers'];
+    'magento_trace_data_flow', 'magento_find_event_dispatchers',
+    // These tools have filesystem/di.xml fallbacks — work without serve process
+    'magento_find_class', 'magento_find_method', 'magento_find_plugin',
+    'magento_find_observer', 'magento_find_di_wiring', 'magento_module_structure',
+    'magento_batch', 'magento_find_config', 'magento_find_callers'];
   if (warmupInProgress && !indexFreeTools.includes(name)) {
     logToFile('REQ', `${name} → blocked (warmup: loading index)`);
     return {
@@ -5960,8 +5966,9 @@ async function main() {
       logToFile('WARN', `Serve process version mismatch: ${staleVersion} vs ${__pkg.version} — killing stale process`);
       console.error(`Killing stale serve process (version ${staleVersion}, current ${__pkg.version})`);
       killStaleServeProcess();
-      // Remove stale socket so we don't connect to it
+      // Remove stale socket and lock so we don't connect to dead process
       try { if (existsSync(SOCK_PATH)) unlinkSync(SOCK_PATH); } catch {}
+      releasePrimaryLock();
     }
 
     const connected = await tryConnectSocket();
@@ -5972,47 +5979,53 @@ async function main() {
       role = 'primary';
       logToFile('INFO', 'Acquired primary lock — this instance owns the serve process');
 
-      // Check DB format (uses cache → instant if already validated)
-      if (existsSync(config.dbPath)) {
-        if (!(await checkDbFormat())) {
-          logToFile('WARN', 'Database format incompatible — scheduling background re-index');
-          startBackgroundReindex();
-        } else {
-          logToFile('INFO', 'Existing database is compatible — reusing index');
-        }
-      } else if (config.magentoRoot && existsSync(config.magentoRoot)) {
-        logToFile('INFO', 'No index database found — scheduling background index');
-        startBackgroundReindex();
-      }
-
-      const canStartServe = !reindexInProgress || (existsSync(config.dbPath) && (() => { try { return statSync(config.dbPath).size > 100; } catch { return false; } })());
-      if (canStartServe) {
+      // Start serve process in background — don't block tool availability
+      // Tools with filesystem fallbacks work immediately via execFileSync.
+      // Serve process provides faster search once ready.
+      (async () => {
         try {
-          startServeProcess();
-          if (serveReadyPromise) {
-            const ready = await Promise.race([
-              serveReadyPromise,
-              new Promise(r => setTimeout(() => r(false), 60000))
-            ]);
-            if (ready) {
-              logToFile('INFO', 'Serve process ready (primary)');
-              console.error('Serve process ready (primary)');
-              startSocketProxy();
+          // Check DB format (uses cache → instant if already validated)
+          if (existsSync(config.dbPath)) {
+            if (!(await checkDbFormat())) {
+              logToFile('WARN', 'Database format incompatible — scheduling background re-index');
+              startBackgroundReindex();
             } else {
-              logToFile('WARN', 'Serve process not ready in time, will use fallback');
-              console.error('Serve process not ready in time, will use fallback');
+              logToFile('INFO', 'Existing database is compatible — reusing index');
+            }
+          } else if (config.magentoRoot && existsSync(config.magentoRoot)) {
+            logToFile('INFO', 'No index database found — scheduling background index');
+            startBackgroundReindex();
+          }
+
+          const canStartServe = !reindexInProgress || (existsSync(config.dbPath) && (() => { try { return statSync(config.dbPath).size > 100; } catch { return false; } })());
+          if (canStartServe) {
+            startServeProcess();
+            if (serveReadyPromise) {
+              const ready = await Promise.race([
+                serveReadyPromise,
+                new Promise(r => setTimeout(() => r(false), 60000))
+              ]);
+              if (ready) {
+                logToFile('INFO', 'Serve process ready (primary)');
+                console.error('Serve process ready (primary)');
+                startSocketProxy();
+              } else {
+                logToFile('WARN', 'Serve process not ready in time, will use fallback');
+                console.error('Serve process not ready in time, will use fallback');
+              }
             }
           }
         } catch {
           // Non-fatal: falls back to execFileSync per query
         }
-      }
+      })();
     } else {
-      // Another instance is starting up — wait for its socket to appear
-      logToFile('INFO', 'Another instance is primary — waiting for socket...');
-      console.error('Waiting for primary instance to start serve process...');
-      for (let i = 0; i < 12; i++) { // wait up to 60s
-        await new Promise(r => setTimeout(r, 5000));
+      // Another instance is starting up — try socket briefly, then fall through
+      logToFile('INFO', 'Another instance is primary — trying socket...');
+      console.error('Trying to join existing serve process...');
+      // Quick check: 3 attempts at 2s intervals (6s max), then give up and use fallback
+      for (let i = 0; i < 3; i++) {
+        await new Promise(r => setTimeout(r, 2000));
         if (await tryConnectSocket()) {
           logToFile('INFO', 'Connected to socket after waiting (secondary)');
           console.error('Joined existing serve process (secondary)');
@@ -6020,15 +6033,21 @@ async function main() {
         }
       }
       if (!globalServeQuery) {
-        logToFile('WARN', 'Socket not available after waiting — using cold-start fallback');
+        logToFile('INFO', 'Socket not available — tools will use cold-start fallback');
       }
     }
 
-    await loadDescriptions();
-  } finally {
+    // Mark tools as available ASAP — filesystem fallbacks work without serve process
     warmupInProgress = false;
-    logToFile('INFO', 'Warmup complete — all tools available');
+    logToFile('INFO', 'Tools available (serve process loading in background)');
     console.error('Warmup complete — all tools available');
+
+    // Load descriptions in background (non-blocking)
+    loadDescriptions().catch(() => {});
+  } catch (err) {
+    warmupInProgress = false;
+    logToFile('WARN', `Startup error (tools still available via fallback): ${err.message}`);
+    console.error('Warmup complete — all tools available (with fallbacks)');
   }
 }
 
