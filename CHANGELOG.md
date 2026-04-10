@@ -7,7 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 ## [2.6.3] - 2026-04-10
 
 ### Fixed
-- **`magento_find_method` filesystem fallback** — when vector search returns no results for a method name (e.g., `isEditableOrderType`), the tool now greps PHP files for `function methodName(` as a fallback. This was the #1 remaining gap vs classical file search — `find_method` returning empty for methods that exist but don't embed well in vector space. With className provided, globs `**/{ClassName}.php`; without, searches up to 500 PHP files. Returns full method body via brace-counting.
+- **`magento_find_method` filesystem fallback** — when vector search returns no results for a method name (e.g., `isEditableOrderType`), the tool now uses `grep -rl` to find PHP files containing the method signature across the entire codebase. Previously used `glob` limited to 500 files which missed methods in deep directory trees. The `grep -rl` approach is fast (~2s for 80K files) and finds all matches regardless of path depth. With className provided, falls back to targeted glob. Returns full method body via brace-counting.
 
 ## [2.6.2] - 2026-04-10
 

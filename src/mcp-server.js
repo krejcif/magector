@@ -4156,16 +4156,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           );
           results = results.concat(pathFallback);
         }
-        // Filesystem fallback: grep for the method definition in PHP files
+        // Filesystem fallback: use grep to find method definition across all PHP files
         if (results.length === 0 && config.magentoRoot) {
           try {
             const methodSig = `function ${args.methodName}(`;
-            // Use className to narrow the glob if provided
+            // Use className to narrow search if provided, otherwise grep all PHP
             const classShort = args.className ? args.className.split('\\').pop() : null;
-            const globPattern = classShort ? `**/${classShort}.php` : '**/*.php';
-            const files = await glob(globPattern, { cwd: config.magentoRoot, absolute: false, nodir: true, ignore: ['**/test/**', '**/tests/**', '**/Test/**'] });
-            for (const f of files.slice(0, classShort ? 50 : 500)) {
-              const absPath = path.join(config.magentoRoot, f);
+            let files = [];
+            if (classShort) {
+              files = await glob(`**/${classShort}.php`, { cwd: config.magentoRoot, absolute: false, nodir: true });
+            } else {
+              // Use grep -rl for fast search across all PHP files (much faster than reading each file)
+              try {
+                const grepResult = execFileSync('grep', ['-rl', '--include=*.php', methodSig, '.'],
+                  { cwd: config.magentoRoot, encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] });
+                files = grepResult.trim().split('\n').filter(Boolean).map(f => f.replace(/^\.\//, ''));
+              } catch {
+                // grep returns exit code 1 when no matches — fall through with empty files
+              }
+            }
+            for (const f of files.slice(0, 20)) {
+              const absPath = f.startsWith('/') ? f : path.join(config.magentoRoot, f);
               let content;
               try { content = readFileSync(absPath, 'utf-8'); } catch { continue; }
               if (!content.includes(methodSig)) continue;
