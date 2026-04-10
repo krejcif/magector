@@ -4151,8 +4151,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
+      name: 'magento_trace_api',
+      description: 'Trace a REST or GraphQL API endpoint from URL to implementation. Parses webapi.xml to find the service interface, resolves the DI preference to the concrete class, reads the execute/method body, and checks di.xml for constructor arguments. Returns the complete chain in one call.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          url: {
+            type: 'string',
+            description: 'REST API URL pattern to trace. Example: "/V1/orders/:orderId/items", "/V1/carts/mine/payment-information"'
+          },
+          interfaceName: {
+            type: 'string',
+            description: 'Alternative: service interface class name. Example: "ChangePaymentMethodInterface"'
+          },
+          method: {
+            type: 'string',
+            description: 'HTTP method (GET, PUT, POST, DELETE). Default: any.',
+            enum: ['GET', 'PUT', 'POST', 'DELETE']
+          }
+        }
+      }
+    },
+    {
       name: 'magento_read',
-      description: 'Read a file from the Magento codebase. Use in magento_batch to read multiple files in a single MCP call (e.g., grep finds 5 files → read all 5 in one batch). Supports line ranges for large files.',
+      description: 'Read a file from the Magento codebase. Use in magento_batch to read multiple files in a single MCP call (e.g., grep finds 5 files → read all 5 in one batch). Supports line ranges and method extraction.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -4167,6 +4189,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           endLine: {
             type: 'number',
             description: 'Stop reading at this line number (inclusive). Default: end of file. Use with startLine for large files.'
+          },
+          methodName: {
+            type: 'string',
+            description: 'Extract only this method from the file (uses brace-counting). Returns the complete method body with line numbers. Much more token-efficient than reading the whole file. Example: "execute"'
           }
         },
         required: ['path']
@@ -4190,7 +4216,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // These tools have filesystem/di.xml fallbacks — work without serve process
     'magento_find_class', 'magento_find_method', 'magento_find_plugin',
     'magento_find_observer', 'magento_find_di_wiring', 'magento_module_structure',
-    'magento_batch', 'magento_find_config', 'magento_find_callers', 'magento_grep', 'magento_read'];
+    'magento_batch', 'magento_find_config', 'magento_find_callers', 'magento_grep', 'magento_read', 'magento_trace_api'];
   if (warmupInProgress && !indexFreeTools.includes(name)) {
     logToFile('REQ', `${name} → blocked (warmup: loading index)`);
     return {
@@ -6027,6 +6053,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   text = `File not found: ${a.path}`;
                   break;
                 }
+                if (a.methodName) {
+                  const body = readFullMethodBody(filePath, a.methodName);
+                  if (!body) { text = `Method ${a.methodName} not found in ${a.path}`; break; }
+                  const fLines = fileContent.split('\n');
+                  let mLine = 0;
+                  for (let i = 0; i < fLines.length; i++) {
+                    if (fLines[i].includes(`function ${a.methodName}(`)) { mLine = i + 1; break; }
+                  }
+                  text = body.split('\n').map((line, i) => `${mLine + i}\t${line}`).join('\n');
+                  break;
+                }
                 const allLines = fileContent.split('\n');
                 const s = Math.max((a.startLine || 1) - 1, 0);
                 const e = a.endLine ? Math.min(a.endLine, allLines.length) : allLines.length;
@@ -6039,7 +6076,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const include = a.include || '*.php';
                 const maxRes = Math.min(a.maxResults || 30, 100);
                 const batchCtx = a.context !== undefined ? a.context : 2;
-                const gArgs = ['-rn'];
+                const gArgs = ['-rn', '-E'];
                 if (a.ignoreCase) gArgs.push('-i');
                 if (batchCtx > 0) gArgs.push('-C', String(batchCtx));
                 for (const pat of include.split(',').map(p => p.trim())) gArgs.push('--include=' + pat);
@@ -6076,7 +6113,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const include = args.include || '*.php';
         const maxResults = Math.min(args.maxResults || 50, 200);
         const ctxLines = args.context !== undefined ? args.context : 2;
-        const grepArgs = ['-rn'];
+        const grepArgs = ['-rn', '-E'];
         if (args.ignoreCase) grepArgs.push('-i');
         if (ctxLines > 0) grepArgs.push('-C', String(ctxLines));
         // Support multiple include patterns (e.g., "*.{php,xml}")
@@ -6106,6 +6143,151 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text }] };
       }
 
+      case 'magento_trace_api': {
+        const root = config.magentoRoot;
+        if (!root) return { content: [{ type: 'text', text: 'MAGENTO_ROOT not set.' }], isError: true };
+        let text = '';
+
+        // 1. Find the endpoint in webapi.xml files
+        const webapiFiles = await glob('**/etc/webapi.xml', { cwd: root, absolute: true, nodir: true });
+        let matchedRoute = null;
+        const searchUrl = args.url || '';
+        const searchInterface = args.interfaceName || '';
+        const searchMethod = args.method || '';
+
+        for (const wf of webapiFiles) {
+          let wContent;
+          try { wContent = readFileSync(wf, 'utf-8'); } catch { continue; }
+          const relPath = wf.replace(root + '/', '');
+
+          const routeRegex = /<route\s+url="([^"]+)"\s+method="([^"]+)"[^>]*>([\s\S]*?)<\/route>/g;
+          let rm;
+          while ((rm = routeRegex.exec(wContent)) !== null) {
+            const routeUrl = rm[1];
+            const routeMethod = rm[2];
+            const routeBody = rm[3];
+
+            const urlMatch = searchUrl ? routeUrl.includes(searchUrl) || searchUrl.includes(routeUrl) : false;
+            const ifaceMatch = searchInterface ? routeBody.includes(searchInterface) : false;
+            const methodMatch = searchMethod ? routeMethod === searchMethod : true;
+
+            if ((urlMatch || ifaceMatch) && methodMatch) {
+              const serviceMatch = routeBody.match(/class="([^"]+)"\s+method="([^"]+)"/);
+              if (serviceMatch) {
+                matchedRoute = {
+                  url: routeUrl,
+                  httpMethod: routeMethod,
+                  serviceClass: serviceMatch[1],
+                  serviceMethod: serviceMatch[2],
+                  file: relPath
+                };
+                // Extract resource
+                const resMatch = routeBody.match(/resource\s+ref="([^"]+)"/);
+                if (resMatch) matchedRoute.acl = resMatch[1];
+                break;
+              }
+            }
+          }
+          if (matchedRoute) break;
+        }
+
+        if (!matchedRoute) {
+          return { content: [{ type: 'text', text: `No API endpoint found matching url="${searchUrl}" interface="${searchInterface}"` }] };
+        }
+
+        text += `## API Endpoint\n\n`;
+        text += `- **URL:** \`${matchedRoute.httpMethod} ${matchedRoute.url}\`\n`;
+        text += `- **Interface:** \`${matchedRoute.serviceClass}::${matchedRoute.serviceMethod}()\`\n`;
+        text += `- **ACL:** \`${matchedRoute.acl || 'none'}\`\n`;
+        text += `- **webapi.xml:** \`${matchedRoute.file}\`\n\n`;
+
+        // 2. Find DI preference (implementation)
+        const diFiles = await getDiXmlFiles(root);
+        const shortIface = matchedRoute.serviceClass.split('\\').pop();
+        let implClass = null;
+        let implFile = null;
+
+        for (const { content: diContent, relPath } of diFiles) {
+          if (!diContent.includes(shortIface)) continue;
+          const prefRegex = /<preference\s+for="([^"]+)"\s+type="([^"]+)"\s*\/?>/g;
+          let pm;
+          while ((pm = prefRegex.exec(diContent)) !== null) {
+            if (pm[1].includes(shortIface)) {
+              implClass = pm[2];
+              implFile = relPath;
+              break;
+            }
+          }
+          if (implClass) break;
+        }
+
+        if (implClass) {
+          text += `## Implementation\n\n`;
+          text += `- **Class:** \`${implClass}\`\n`;
+          text += `- **di.xml:** \`${implFile}\`\n\n`;
+
+          // 3. Read the implementation method body
+          const implPhpFile = findClassFile(root, implClass);
+          if (implPhpFile) {
+            const relImpl = implPhpFile.replace(root + '/', '');
+            const body = readFullMethodBody(implPhpFile, matchedRoute.serviceMethod);
+            if (body) {
+              const implContent = readFileSync(implPhpFile, 'utf-8');
+              const lines = implContent.split('\n');
+              let mLine = 0;
+              for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes(`function ${matchedRoute.serviceMethod}(`)) { mLine = i + 1; break; }
+              }
+              text += `## ${matchedRoute.serviceMethod}() — \`${relImpl}\` (line ${mLine})\n\n`;
+              text += '```php\n' + body + '\n```\n\n';
+
+              // 4. Check for collectTotals / key patterns
+              const hasCollectTotals = body.includes('collectTotals');
+              const hasEventDispatch = body.includes('dispatch') || body.includes('eventManager');
+              text += `## Quick checks\n\n`;
+              text += `- collectTotals() called: **${hasCollectTotals ? 'YES' : 'NO'}**\n`;
+              text += `- Event dispatched: **${hasEventDispatch ? 'YES' : 'NO'}**\n`;
+
+              // 5. Extract constructor for DI understanding
+              const ctorBody = readFullMethodBody(implPhpFile, '__construct');
+              if (ctorBody) {
+                text += `\n## Constructor\n\n`;
+                text += '```php\n' + ctorBody + '\n```\n';
+              }
+            }
+          }
+
+          // 6. Check di.xml for type arguments (e.g., allowed payment methods)
+          for (const { content: diContent, relPath } of diFiles) {
+            const implShort = implClass.split('\\').pop();
+            if (!diContent.includes(implShort)) continue;
+            const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
+            let tm;
+            while ((tm = typeBlockRegex.exec(diContent)) !== null) {
+              if (tm[1].includes(implShort)) {
+                text += `\n## DI Arguments — \`${relPath}\`\n\n`;
+                text += '```xml\n' + tm[0] + '\n```\n';
+              }
+            }
+          }
+        }
+
+        // 7. Check for plugins on the interface
+        for (const { content: diContent, relPath } of diFiles) {
+          if (!diContent.includes(shortIface)) continue;
+          const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
+          let tm;
+          while ((tm = typeBlockRegex.exec(diContent)) !== null) {
+            if (tm[1].includes(shortIface) && tm[2].includes('<plugin')) {
+              text += `\n## Plugins on \`${tm[1]}\` — \`${relPath}\`\n\n`;
+              text += '```xml\n' + tm[0] + '\n```\n';
+            }
+          }
+        }
+
+        return { content: [{ type: 'text', text }] };
+      }
+
       case 'magento_read': {
         const root = config.magentoRoot;
         if (!root) return { content: [{ type: 'text', text: 'MAGENTO_ROOT not set.' }], isError: true };
@@ -6114,11 +6296,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         try { content = readFileSync(filePath, 'utf-8'); } catch (err) {
           return { content: [{ type: 'text', text: `File not found: ${args.path}` }], isError: true };
         }
+
+        // Method extraction mode: return only the specified method
+        if (args.methodName) {
+          const body = readFullMethodBody(filePath, args.methodName);
+          if (!body) {
+            return { content: [{ type: 'text', text: `## ${args.path}\n\nMethod \`${args.methodName}\` not found in file.` }] };
+          }
+          // Find line number of the method
+          const lines = content.split('\n');
+          let methodLine = 0;
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes(`function ${args.methodName}(`)) { methodLine = i + 1; break; }
+          }
+          const bodyLines = body.split('\n');
+          const numbered = bodyLines.map((line, i) => `${methodLine + i}\t${line}`).join('\n');
+          return { content: [{ type: 'text', text: `## ${args.path}::${args.methodName}() (line ${methodLine})\n\n${numbered}` }] };
+        }
+
         const allLines = content.split('\n');
         const start = Math.max((args.startLine || 1) - 1, 0);
         const end = args.endLine ? Math.min(args.endLine, allLines.length) : allLines.length;
         const sliced = allLines.slice(start, end);
-        // Format with line numbers
         const numbered = sliced.map((line, i) => `${start + i + 1}\t${line}`).join('\n');
         let text = `## ${args.path}`;
         if (args.startLine || args.endLine) text += ` (lines ${start + 1}-${end})`;
