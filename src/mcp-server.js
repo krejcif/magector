@@ -4578,8 +4578,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             if (pluginFile) {
               reg.methods = extractPluginMethods(pluginFile);
               reg.resolvedFile = pluginFile.replace(fpRoot2 + '/', '');
-              // Read full method bodies so the agent sees actual code without follow-up calls
-              for (const m of reg.methods) {
+              // Read method bodies — only for targetMethod if specified (reduces token bloat)
+              const methodsToRead = args.targetMethod
+                ? reg.methods.filter(m => m.targetMethod === args.targetMethod)
+                : reg.methods;
+              for (const m of methodsToRead) {
                 const body = readFullMethodBody(pluginFile, m.name);
                 if (body) m.body = body;
               }
