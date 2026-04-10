@@ -1855,6 +1855,83 @@ const ERROR_PATTERNS = [
     type: 'invalid_plugin_method',
     extract: (m) => ({ class: m[1], type: m[2], method: m[3] }),
     suggestion: (ctx) => `Plugin method ${ctx.type}${ctx.method} in ${ctx.class} doesn't match any public method on the target class. Check method name spelling.`
+  },
+  // ── Business logic / configuration patterns ──
+  {
+    pattern: /rule\s+(?:did\s+)?not\s+(?:match|apply|work)|(?:sales|cart|price)\s*rule.*(?:not\s+applied|didn'?t\s+match|failed)/i,
+    type: 'rule_not_matching',
+    extract: () => ({}),
+    suggestion: () => [
+      'Sales/cart price rule not matching. Check BOTH code AND configuration:',
+      '',
+      '**Configuration checks (most common cause):**',
+      '- Rule Actions tab: are ALL required shipping methods selected?',
+      '- Rule Conditions: does the cart actually meet ALL conditions (customer group, subtotal threshold, date range)?',
+      '- Rule status: is it Active? Check date range (from/to).',
+      '- Rule priority/stop processing: is a higher-priority rule stopping this one?',
+      '- Coupon: if coupon-based, was the correct coupon applied?',
+      '- Website scope: is the rule assigned to the correct website?',
+      '',
+      '**Code checks (less common):**',
+      '- Custom condition types: check classes extending AbstractCondition in vendor/',
+      '- Plugins on Magento\\SalesRule\\Model\\Utility::canProcessRule() that may skip rules',
+      '- Plugins on Magento\\SalesRule\\Model\\Rule\\Condition\\Address::validate()',
+      '- DI preference overrides on Condition\\Address (e.g., marketplace container conditions)',
+      '- The condition_type stored in conditions_serialized — does the PHP class exist and validate correctly?',
+      '',
+      'Use magento_grep to find: custom conditions, plugins on validate/canProcessRule, and DI preferences on Address.',
+      '',
+      '**Ask the user for DB data:**',
+      'SELECT rule_id, name, conditions_serialized, actions_serialized, is_active, from_date, to_date',
+      'FROM salesrule WHERE rule_id = <ID>;',
+      'This lets you verify the exact condition_type classes and action configuration without guessing.'
+    ].join('\n')
+  },
+  {
+    pattern: /free\s*shipping.*(?:not|didn'?t|did\s+not)\s+(?:apply|work|match)|(?:not|didn'?t)\s+(?:get|receive)\s+free\s*shipping/i,
+    type: 'free_shipping_not_applied',
+    extract: () => ({}),
+    suggestion: () => [
+      'Free shipping not applied. Most common causes:',
+      '',
+      '**1. Rule Actions — shipping method not selected (MOST COMMON)**',
+      '   The free shipping rule must have the specific shipping method checked in Actions.',
+      '   If "home delivery" is not selected but the customer chose home delivery → rule won\'t apply.',
+      '',
+      '**2. Condition threshold mismatch**',
+      '   Check which subtotal attribute the condition uses: base_subtotal, subtotal_incl_tax,',
+      '   drmax_free_shipping_price (custom). Each calculates differently (with/without tax, discounts).',
+      '',
+      '**3. Custom condition type**',
+      '   Container attributes (SubtotalWithDiscountInclTax) aggregate per shop type.',
+      '   If condition uses :1p suffix instead of :whole, only 1P items count.',
+      '',
+      '**4. Plugin interference**',
+      '   Check plugins on Utility::canProcessRule() and Carrier::collectRates().',
+      '',
+      'Start with: check the rule\'s Actions tab in admin for shipping method selection.',
+      '',
+      '**Ask the user for DB data:**',
+      'SELECT rule_id, name, conditions_serialized, actions_serialized, simple_free_shipping',
+      'FROM salesrule WHERE rule_id = <ID>;',
+      'The actions_serialized will show which shipping methods are enabled for free shipping.'
+    ].join('\n')
+  },
+  {
+    pattern: /(?:condition|rule|promotion|discount).*(?:custom|type).*(?:not|fail|wrong|weird|unexpected)/i,
+    type: 'custom_condition_issue',
+    extract: () => ({}),
+    suggestion: () => [
+      'Possible custom condition type issue. Investigate:',
+      '',
+      '**1. Check the rule configuration FIRST** — most "condition not working" bugs are misconfiguration.',
+      '**2. Find custom condition classes:** grep for "extends AbstractCondition" in vendor/',
+      '**3. Check DI preference on Condition\\Address** — marketplace modules often override validate().',
+      '**4. Check if new attributes are registered in the Address override\'s switch/mapping.**',
+      '**5. Verify condition_type in DB:** the serialized condition must reference an existing PHP class.',
+      '',
+      'If code analysis finds no bugs, the root cause is likely rule configuration in admin panel.'
+    ].join('\n')
   }
 ];
 
