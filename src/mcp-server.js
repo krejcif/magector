@@ -5640,7 +5640,45 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const res = raw.map(normalizeResult).filter(r =>
                   r.magentoType === 'plugin' || r.path?.toLowerCase().includes('plugin')
                 );
-                text = formatSearchResults(res.slice(0, 10));
+                text = formatSearchResults(res.slice(0, 5));
+                // DI registrations + method bodies (same as standalone find_plugin)
+                if (a.targetClass) {
+                  const diFiles = await getDiXmlFiles(config.magentoRoot);
+                  const normalizedTarget = a.targetClass.replace(/\\\\/g, '\\');
+                  const isFqcn = normalizedTarget.includes('\\');
+                  const shortTarget = normalizedTarget.split('\\').pop().toLowerCase();
+                  for (const { content: diContent, relPath } of diFiles) {
+                    if (!diContent.includes(isFqcn ? normalizedTarget : a.targetClass)) continue;
+                    const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
+                    let tm;
+                    while ((tm = typeBlockRegex.exec(diContent)) !== null) {
+                      const typeName = tm[1].replace(/\\\\/g, '\\');
+                      const typeMatches = isFqcn ? typeName === normalizedTarget : typeName.split('\\').pop().toLowerCase() === shortTarget;
+                      if (!typeMatches) continue;
+                      const block = tm[2];
+                      const pluginRegex = /<plugin\s+([^/>]*)\/?>/g;
+                      let pm;
+                      while ((pm = pluginRegex.exec(block)) !== null) {
+                        const attrs = {};
+                        const localAttrRe = /(\w+)="([^"]*)"/g;
+                        let am;
+                        while ((am = localAttrRe.exec(pm[1])) !== null) attrs[am[1]] = am[2];
+                        text += `\n- **${attrs.name || '?'}** → \`${attrs.type || '?'}\` (${relPath})`;
+                        if (attrs.type) {
+                          const pFile = findClassFile(config.magentoRoot, attrs.type);
+                          if (pFile) {
+                            const methods = extractPluginMethods(pFile);
+                            for (const m of methods) {
+                              const body = readFullMethodBody(pFile, m.name);
+                              text += `\n  - \`${m.type}\` **${m.targetMethod}** → \`${m.name}()\``;
+                              if (body) text += '\n    ' + '```php\n    ' + body.split('\n').join('\n    ') + '\n    ' + '```';
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
                 break;
               }
               case 'magento_find_observer': {
