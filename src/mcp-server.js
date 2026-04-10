@@ -2283,6 +2283,7 @@ async function analyzeImpact(className) {
 
   // Filesystem fallback: if vector search found too few files, find the class file via glob
   if (relatedPaths.length < 5 && root) {
+    logToFile('INFO', `impact_analysis: vector search returned ${relatedPaths.length} files for "${className}" — using filesystem fallback`);
     try {
       const classFiles = await glob(`**/${shortName}.php`, { cwd: root, absolute: false, nodir: true });
       const existingPaths = new Set(relatedPaths.map(r => r.path));
@@ -4097,6 +4098,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (results.length === 0 && config.magentoRoot) {
           const shortName = args.className.split('\\').pop();
           const globPattern = `**/${shortName}.php`;
+          logToFile('INFO', `find_class: vector search returned 0 results for "${args.className}" — using filesystem fallback (glob ${globPattern})`);
           try {
             const files = await glob(globPattern, { cwd: config.magentoRoot, absolute: false, nodir: true, ignore: ['**/test/**', '**/tests/**', '**/Test/**'] });
             // Filter by namespace if provided
@@ -4128,6 +4130,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 results.push({ path: filePath, className, score: 0.5 });
               }
             }
+            if (results.length > 0) logToFile('INFO', `find_class: filesystem fallback found ${results.length} files for "${args.className}"`);
           } catch {}
         }
 
@@ -4158,6 +4161,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         // Filesystem fallback: use grep to find method definition across all PHP files
         if (results.length === 0 && config.magentoRoot) {
+          logToFile('INFO', `find_method: vector search returned 0 results for "${args.methodName}" — using filesystem fallback (grep -rl)`);
           try {
             const methodSig = `function ${args.methodName}(`;
             // Use className to narrow search if provided, otherwise grep all PHP
@@ -4200,7 +4204,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               });
               if (results.length >= 5) break;
             }
-          } catch {}
+            if (results.length > 0) logToFile('INFO', `find_method: filesystem fallback found ${results.length} files containing "${args.methodName}"`);
+          } catch (err) {
+            logToFile('WARN', `find_method: filesystem fallback error: ${err.message}`);
+          }
         }
         // Boost exact method matches to top
         results = results.map(r => {
@@ -4745,6 +4752,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Filesystem fallback: if vector search found nothing, glob the module directory
         if (results.length === 0 && config.magentoRoot && vendorPath) {
+          logToFile('INFO', `module_structure: vector search returned 0 results for "${args.moduleName}" — using filesystem fallback (glob ${vendorPath})`);
           try {
             const vendorGlob = `**/${vendorPath}**/*.{php,xml,phtml}`;
             const files = await glob(vendorGlob, { cwd: config.magentoRoot, absolute: false, nodir: true });
