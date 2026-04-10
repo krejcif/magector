@@ -2279,7 +2279,20 @@ async function analyzeImpact(className) {
   // Use vector search to find candidate files (much faster than globbing all PHP)
   const rawSearch = await rustSearchAsync(`${shortName} ${className}`, 50).catch(() => []);
   const raw = Array.isArray(rawSearch) ? rawSearch : [];
-  const relatedPaths = raw.map(r => normalizeResult(r)).filter(r => r.path);
+  let relatedPaths = raw.map(r => normalizeResult(r)).filter(r => r.path);
+
+  // Filesystem fallback: if vector search found too few files, find the class file via glob
+  if (relatedPaths.length < 5 && root) {
+    try {
+      const classFiles = await glob(`**/${shortName}.php`, { cwd: root, absolute: false, nodir: true });
+      const existingPaths = new Set(relatedPaths.map(r => r.path));
+      for (const f of classFiles) {
+        if (!existingPaths.has(f)) {
+          relatedPaths.push({ path: f, className: shortName, score: 0.3 });
+        }
+      }
+    } catch {}
+  }
 
   // Check DI references via xml parsing
   const diTrace = await traceDependency(className, 'both');
@@ -4075,10 +4088,49 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const query = `${args.className} ${ns}`.trim();
         const raw = await rustSearchAsync(query, 30);
         const classLower = args.className.toLowerCase();
-        const results = raw.map(normalizeResult).filter(r =>
+        let results = raw.map(normalizeResult).filter(r =>
           r.className?.toLowerCase().includes(classLower) ||
           r.path?.toLowerCase().includes(classLower.replace(/\\/g, '/'))
         );
+
+        // Filesystem fallback: if vector search found nothing, glob for ClassName.php
+        if (results.length === 0 && config.magentoRoot) {
+          const shortName = args.className.split('\\').pop();
+          const globPattern = `**/${shortName}.php`;
+          try {
+            const files = await glob(globPattern, { cwd: config.magentoRoot, absolute: false, nodir: true, ignore: ['**/test/**', '**/tests/**', '**/Test/**'] });
+            // Filter by namespace if provided
+            const nsLower = ns.toLowerCase().replace(/\\\\/g, '/').replace(/\\/g, '/');
+            const matched = files.filter(f => {
+              if (!nsLower) return true;
+              return f.toLowerCase().includes(nsLower);
+            }).slice(0, 10);
+            // Build result entries from file paths
+            for (const filePath of matched) {
+              const absPath = path.join(config.magentoRoot, filePath);
+              let className = shortName;
+              try {
+                const content = readFileSync(absPath, 'utf-8');
+                const nsMatch = content.match(/namespace\s+([\w\\]+)/);
+                if (nsMatch) className = nsMatch[1] + '\\' + shortName;
+                const methodsFound = [];
+                const methodRegex = /public\s+function\s+(\w+)\s*\(/g;
+                let mm;
+                while ((mm = methodRegex.exec(content)) !== null) methodsFound.push(mm[1]);
+                results.push({
+                  path: filePath,
+                  className,
+                  methods: methodsFound,
+                  score: 0.5,
+                  searchText: content.slice(0, 300)
+                });
+              } catch {
+                results.push({ path: filePath, className, score: 0.5 });
+              }
+            }
+          } catch {}
+        }
+
         return {
           content: [{
             type: 'text',
@@ -4632,17 +4684,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Support both app/code (Magento/Catalog/) and vendor (module-catalog/) paths
         const modulePath = args.moduleName.replace('_', '/') + '/';
         const parts = args.moduleName.split('_');
+        // Hyphenate camelCase for vendor path: OrderSplit → order-split
         const vendorPath = parts.length === 2
-          ? `module-${parts[1].toLowerCase()}/`
+          ? `module-${parts[1].replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()}/`
           : '';
-        const results = raw.map(normalizeResult).filter(r => {
-          const path = r.path || '';
+        let results = raw.map(normalizeResult).filter(r => {
+          const p = r.path || '';
           const mod = r.module || '';
           // Exact module match or directory-level path match (trailing slash prevents Catalog matching CatalogRule)
           return mod === args.moduleName ||
-            path.includes(modulePath) ||
-            (vendorPath && path.toLowerCase().includes(vendorPath));
+            p.includes(modulePath) ||
+            (vendorPath && p.toLowerCase().includes(vendorPath));
         });
+
+        // Filesystem fallback: if vector search found nothing, glob the module directory
+        if (results.length === 0 && config.magentoRoot && vendorPath) {
+          try {
+            const vendorGlob = `**/${vendorPath}**/*.{php,xml,phtml}`;
+            const files = await glob(vendorGlob, { cwd: config.magentoRoot, absolute: false, nodir: true });
+            for (const f of files.slice(0, 100)) {
+              const entry = { path: f, score: 0.5 };
+              if (f.includes('/Controller/')) entry.isController = true;
+              if (f.includes('/Model/')) entry.isModel = true;
+              if (f.includes('/Block/')) entry.isBlock = true;
+              if (f.includes('/Plugin/')) entry.isPlugin = true;
+              if (f.includes('/Observer/')) entry.isObserver = true;
+              if (f.endsWith('.xml')) entry.type = 'xml';
+              // Extract class name from path
+              const phpMatch = f.match(/\/([A-Z]\w+)\.php$/);
+              if (phpMatch) entry.className = phpMatch[1];
+              results.push(entry);
+            }
+          } catch {}
+        }
 
         const structure = {
           controllers: results.filter(r => r.isController || r.path?.includes('/Controller/')),
@@ -5490,9 +5564,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const qr = `${a.className} ${ns}`.trim();
                 const raw = await rustSearchAsync(qr, 30);
                 const cl = a.className.toLowerCase();
-                const res = raw.map(normalizeResult).filter(r =>
+                let res = raw.map(normalizeResult).filter(r =>
                   r.className?.toLowerCase().includes(cl) || r.path?.toLowerCase().includes(cl.replace(/\\/g, '/'))
                 );
+                // Filesystem fallback for batch find_class
+                if (res.length === 0 && config.magentoRoot) {
+                  const shortName = a.className.split('\\').pop();
+                  try {
+                    const files = await glob(`**/${shortName}.php`, { cwd: config.magentoRoot, absolute: false, nodir: true });
+                    for (const f of files.slice(0, 5)) {
+                      res.push({ path: f, className: shortName, score: 0.5 });
+                    }
+                  } catch {}
+                }
                 text = formatSearchResults(res.slice(0, 5));
                 break;
               }

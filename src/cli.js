@@ -12,6 +12,8 @@ import { resolveBinary } from './binary.js';
 import { ensureModels, resolveModels } from './model.js';
 import { init, setup } from './init.js';
 import { checkForUpdate } from './update.js';
+import { createRequire } from 'module';
+const __cliPkg = createRequire(import.meta.url)('../package.json');
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -325,6 +327,12 @@ async function main() {
 
     case 'benchmark':
       await import('./validation/benchmark.js');
+      break;
+
+    case 'version':
+    case '--version':
+    case '-V':
+      console.log(`magector v${__cliPkg.version}`);
       break;
 
     case 'help':

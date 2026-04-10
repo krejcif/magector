@@ -1188,6 +1188,105 @@ function testServePidVersion() {
   try { unlinkSync(tmpPidFile); } catch {}
 }
 
+// ─── find_class Filesystem Fallback Tests ───────────────────────
+
+async function testFindClassFilesystemFallback() {
+  console.log('\n── find_class filesystem fallback ──');
+
+  const tmpDir = path.join(__dirname, 'tmp_find_class');
+  const phpDir = path.join(tmpDir, 'vendor', 'acme', 'module-order', 'Plugin', 'Condition');
+  mkdirSync(phpDir, { recursive: true });
+  writeFileSync(path.join(phpDir, 'AddressConditions.php'), [
+    '<?php',
+    'namespace Acme\\Order\\Plugin\\Condition;',
+    '',
+    'class AddressConditions',
+    '{',
+    '    public function beforeValidate($subject, $model)',
+    '    {',
+    '        return [$model];',
+    '    }',
+    '}'
+  ].join('\n'));
+
+  const { glob: globFn } = await import('glob');
+
+  // Simulate filesystem fallback: vector search returns nothing, so glob for ClassName.php
+  async function findClassFallback(root, className) {
+    const shortName = className.split('\\').pop();
+    const files = await globFn(`**/${shortName}.php`, { cwd: root, absolute: false, nodir: true });
+    const results = [];
+    for (const f of files.slice(0, 10)) {
+      const absPath = path.join(root, f);
+      let cn = shortName;
+      try {
+        const content = readFileSync(absPath, 'utf-8');
+        const nsMatch = content.match(/namespace\s+([\w\\]+)/);
+        if (nsMatch) cn = nsMatch[1] + '\\' + shortName;
+        const methods = [];
+        const methodRegex = /public\s+function\s+(\w+)\s*\(/g;
+        let mm;
+        while ((mm = methodRegex.exec(content)) !== null) methods.push(mm[1]);
+        results.push({ path: f, className: cn, methods });
+      } catch {
+        results.push({ path: f, className: cn });
+      }
+    }
+    return results;
+  }
+
+  // Test: find class that vector search would miss
+  const results = await findClassFallback(tmpDir, 'AddressConditions');
+  assertEq(results.length, 1, 'fs fallback: finds AddressConditions.php');
+  assertEq(results[0].className, 'Acme\\Order\\Plugin\\Condition\\AddressConditions',
+    'fs fallback: resolves FQCN from namespace');
+  assert(results[0].methods.includes('beforeValidate'),
+    'fs fallback: extracts public methods');
+
+  // Non-existent class returns empty
+  const empty = await findClassFallback(tmpDir, 'NonExistentClass');
+  assertEq(empty.length, 0, 'fs fallback: non-existent class returns empty');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
+// ─── Module Structure CamelCase Hyphenation Tests ───────────────
+
+async function testModuleStructureCamelCase() {
+  console.log('\n── module_structure camelCase hyphenation ──');
+
+  // Test the hyphenation logic
+  function hyphenateCamelCase(str) {
+    return str.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
+  }
+
+  assertEq(hyphenateCamelCase('OrderSplit'), 'order-split', 'hyphenate: OrderSplit → order-split');
+  assertEq(hyphenateCamelCase('Catalog'), 'catalog', 'hyphenate: Catalog → catalog');
+  assertEq(hyphenateCamelCase('PaymentRestrictions'), 'payment-restrictions', 'hyphenate: PaymentRestrictions → payment-restrictions');
+  assertEq(hyphenateCamelCase('SalesRule'), 'sales-rule', 'hyphenate: SalesRule → sales-rule');
+  assertEq(hyphenateCamelCase('OrderEdit'), 'order-edit', 'hyphenate: OrderEdit → order-edit');
+
+  // Test that vendor path is built correctly
+  const moduleName = 'AcmeMarketplace_OrderSplit';
+  const parts = moduleName.split('_');
+  const vendorPath = parts.length === 2
+    ? `module-${parts[1].replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()}/`
+    : '';
+  assertEq(vendorPath, 'module-order-split/', 'module path: AcmeMarketplace_OrderSplit → module-order-split/');
+}
+
+// ─── CLI Version Tests ──────────────────────────────────────────
+
+function testCliVersion() {
+  console.log('\n── CLI --version ──');
+
+  // Verify package.json is readable and has a version
+  const pkgPath = path.resolve(__dirname, '..', 'package.json');
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+  assert(typeof pkg.version === 'string', 'cli version: package.json has version string');
+  assert(/^\d+\.\d+\.\d+/.test(pkg.version), 'cli version: version matches semver pattern');
+}
+
 // ─── buildTraceSummary Tests ────────────────────────────────────
 
 function testBuildTraceSummary() {
@@ -3947,6 +4046,9 @@ async function main() {
   await testFindPluginPartialMatch();
   await testFindObserverEventsXml();
   testServePidVersion();
+  await testFindClassFilesystemFallback();
+  await testModuleStructureCamelCase();
+  testCliVersion();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
