@@ -785,6 +785,230 @@ function testFormatSearchResults() {
   assertEq(r6.results[0].badges.length, 3, '3 badges: observer, model, repository');
 }
 
+// ─── formatSearchResults Rank-Based Truncation Tests ────────────
+
+function testFormatSearchResultsTruncation() {
+  console.log('\n── formatSearchResults rank-based truncation ──');
+
+  // Replicate production formatSearchResults with isTopRanked logic
+  function formatSearchResults(results) {
+    if (!results || results.length === 0) {
+      return JSON.stringify({ results: [], count: 0 });
+    }
+    const formatted = results.map((r, i) => {
+      const entry = {
+        rank: i + 1,
+        score: r.score ? parseFloat(r.score.toFixed(3)) : null,
+        path: r.path || 'unknown',
+      };
+      if (r.className) entry.className = r.className;
+      if (r.methodName) entry.methodName = r.methodName;
+
+      const isTopRanked = i < 3;
+
+      if (isTopRanked && r.searchText) {
+        entry.snippet = r.searchText.length > 300
+          ? r.searchText.slice(0, 300) + '...'
+          : r.searchText;
+      }
+
+      if (r.fullMethodBody) {
+        entry.codePreview = r.fullMethodBody;
+      }
+
+      return entry;
+    });
+    return JSON.stringify({ results: formatted, count: formatted.length });
+  }
+
+  // Create 5 results with searchText
+  const results = Array.from({ length: 5 }, (_, i) => ({
+    path: `vendor/test${i}.php`,
+    score: 0.9 - i * 0.1,
+    className: `TestClass${i}`,
+    searchText: `Description of class ${i} with enough text to be meaningful`,
+  }));
+
+  const parsed = JSON.parse(formatSearchResults(results));
+  assertEq(parsed.count, 5, 'truncation: returns all 5 results');
+
+  // Top 3 should have snippets
+  assert(parsed.results[0].snippet !== undefined, 'truncation: rank 1 has snippet');
+  assert(parsed.results[1].snippet !== undefined, 'truncation: rank 2 has snippet');
+  assert(parsed.results[2].snippet !== undefined, 'truncation: rank 3 has snippet');
+
+  // Rank 4+ should NOT have snippets
+  assertEq(parsed.results[3].snippet, undefined, 'truncation: rank 4 has no snippet');
+  assertEq(parsed.results[4].snippet, undefined, 'truncation: rank 5 has no snippet');
+
+  // All results should still have path and className
+  for (let i = 0; i < 5; i++) {
+    assert(parsed.results[i].path !== undefined, `truncation: rank ${i + 1} has path`);
+    assert(parsed.results[i].className !== undefined, `truncation: rank ${i + 1} has className`);
+  }
+
+  // fullMethodBody should always be included regardless of rank
+  const resultsWithBody = Array.from({ length: 5 }, (_, i) => ({
+    path: `vendor/test${i}.php`,
+    score: 0.9 - i * 0.1,
+    fullMethodBody: `public function test${i}() { return ${i}; }`,
+  }));
+  const parsedBody = JSON.parse(formatSearchResults(resultsWithBody));
+  for (let i = 0; i < 5; i++) {
+    assert(parsedBody.results[i].codePreview !== undefined,
+      `truncation: rank ${i + 1} keeps fullMethodBody codePreview`);
+  }
+}
+
+// ─── Plugin Method Bodies in find_plugin ────────────────────────
+
+async function testPluginMethodBodies() {
+  console.log('\n── Plugin method bodies ──');
+
+  const tmpDir = path.join(__dirname, 'tmp_plugin_bodies');
+  mkdirSync(tmpDir, { recursive: true });
+  const pluginFile = path.join(tmpDir, 'ViewPlugin.php');
+  writeFileSync(pluginFile, [
+    '<?php',
+    'namespace Acme\\OrderEdit\\Plugin;',
+    '',
+    'class ViewPlugin',
+    '{',
+    '    public function afterAddButton($subject, $result, $buttonId)',
+    '    {',
+    '        if ($buttonId === "order_edit") {',
+    '            $subject->removeButton($buttonId);',
+    '        }',
+    '        return $result;',
+    '    }',
+    '',
+    '    public function beforeAddButton($subject, $buttonId)',
+    '    {',
+    '        return [$buttonId];',
+    '    }',
+    '}'
+  ].join('\n'));
+
+  // Replicate extractPluginMethods
+  function extractPluginMethods(filePath) {
+    let content;
+    try { content = readFileSync(filePath, 'utf-8'); } catch { return []; }
+    const methods = [];
+    const methodRegex = /^\s*public\s+function\s+((?:before|after|around)([A-Z]\w*))\s*\(([^)]*)\)/gm;
+    let match;
+    while ((match = methodRegex.exec(content)) !== null) {
+      const name = match[1];
+      const targetMethod = match[2].charAt(0).toLowerCase() + match[2].slice(1);
+      let type = 'around';
+      if (name.startsWith('before')) type = 'before';
+      else if (name.startsWith('after')) type = 'after';
+      methods.push({ name, type, targetMethod, signature: match[0].trim() });
+    }
+    return methods;
+  }
+
+  // Replicate readFullMethodBody
+  function readFullMethodBody(filePath, methodName, maxLines = 60) {
+    let content;
+    try { content = readFileSync(filePath, 'utf-8'); } catch { return null; }
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes('function ' + methodName + '(')) {
+        let braceCount = 0;
+        let started = false;
+        for (let j = i; j < lines.length && j < i + maxLines; j++) {
+          for (const ch of lines[j]) {
+            if (ch === '{') { braceCount++; started = true; }
+            if (ch === '}') braceCount--;
+          }
+          if (started && braceCount <= 0) {
+            return lines.slice(i, j + 1).join('\n');
+          }
+        }
+        return lines.slice(i, Math.min(i + maxLines, lines.length)).join('\n');
+      }
+    }
+    return null;
+  }
+
+  const methods = extractPluginMethods(pluginFile);
+  assertEq(methods.length, 2, 'plugin bodies: finds 2 plugin methods');
+
+  // Simulate what find_plugin does: read body for each method
+  for (const m of methods) {
+    const body = readFullMethodBody(pluginFile, m.name);
+    if (body) m.body = body;
+  }
+
+  assert(methods[0].body !== undefined, 'plugin bodies: afterAddButton has body');
+  assert(methods[0].body.includes('removeButton'), 'plugin bodies: afterAddButton body contains removeButton');
+  assert(methods[1].body !== undefined, 'plugin bodies: beforeAddButton has body');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
+// ─── DI XML Session Cache Tests ─────────────────────────────────
+
+async function testDiXmlSessionCache() {
+  console.log('\n── DI XML session cache ──');
+
+  const { glob: globFn } = await import('glob');
+  const tmpDir = path.join(__dirname, 'tmp_di_cache');
+  const etcDir = path.join(tmpDir, 'vendor', 'acme', 'module-test', 'etc');
+  mkdirSync(etcDir, { recursive: true });
+  writeFileSync(path.join(etcDir, 'di.xml'), [
+    '<?xml version="1.0"?>',
+    '<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">',
+    '    <type name="Acme\\Test\\Model\\Service">',
+    '        <plugin name="testPlugin" type="Acme\\Test\\Plugin\\ServicePlugin"/>',
+    '    </type>',
+    '</config>'
+  ].join('\n'));
+
+  // Simulate getDiXmlFiles with cache
+  const cache = { files: new Map(), paths: null, root: null };
+
+  async function getDiXmlFiles(root) {
+    if (cache.root !== root || !cache.paths) {
+      cache.root = root;
+      cache.paths = await globFn('**/etc/**/di.xml', { cwd: root, absolute: true, nodir: true });
+      cache.files.clear();
+    }
+    const results = [];
+    for (const absPath of cache.paths) {
+      let content = cache.files.get(absPath);
+      if (content === undefined) {
+        try { content = readFileSync(absPath, 'utf-8'); } catch { content = null; }
+        cache.files.set(absPath, content);
+      }
+      if (content !== null) {
+        results.push({ absPath, relPath: absPath.replace(root + '/', ''), content });
+      }
+    }
+    return results;
+  }
+
+  // First call populates cache
+  const files1 = await getDiXmlFiles(tmpDir);
+  assertEq(files1.length, 1, 'cache: first call finds 1 di.xml');
+  assert(files1[0].content.includes('testPlugin'), 'cache: content contains testPlugin');
+
+  // Second call uses cache (same root)
+  const files2 = await getDiXmlFiles(tmpDir);
+  assertEq(files2.length, 1, 'cache: second call returns cached result');
+  assertEq(cache.files.size, 1, 'cache: file map has 1 entry');
+
+  // Different root invalidates cache
+  const tmpDir2 = path.join(__dirname, 'tmp_di_cache2');
+  mkdirSync(tmpDir2, { recursive: true });
+  const files3 = await getDiXmlFiles(tmpDir2);
+  assertEq(files3.length, 0, 'cache: different root returns 0 files');
+  assertEq(cache.root, tmpDir2, 'cache: root updated to new dir');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+  rmSync(tmpDir2, { recursive: true, force: true });
+}
+
 // ─── buildTraceSummary Tests ────────────────────────────────────
 
 function testBuildTraceSummary() {
@@ -3538,6 +3762,9 @@ async function main() {
   testFindClassFile();
   testPreciseSearchFilter();
   testRuntimeCallerDetection();
+  testFormatSearchResultsTruncation();
+  await testPluginMethodBodies();
+  await testDiXmlSessionCache();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);

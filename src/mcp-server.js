@@ -1596,8 +1596,12 @@ function formatSearchResults(results) {
     if (r.isBlock) badges.push('block');
     if (badges.length > 0) entry.badges = badges;
 
+    // Only include verbose content (snippet, codePreview) for top-ranked results
+    // to reduce token consumption — lower-ranked results just show metadata
+    const isTopRanked = i < 3;
+
     // Snippet — first 300 chars of indexed content for quick assessment
-    if (r.searchText) {
+    if (isTopRanked && r.searchText) {
       entry.snippet = r.searchText.length > 300
         ? r.searchText.slice(0, 300) + '...'
         : r.searchText;
@@ -1608,7 +1612,7 @@ function formatSearchResults(results) {
       entry.codePreview = r.fullMethodBody;
     }
     // Code preview — read actual source lines for PHP files with known class/method
-    else if (r.path && (r.path.endsWith('.php') || r.path.endsWith('.phtml'))) {
+    else if (isTopRanked && r.path && (r.path.endsWith('.php') || r.path.endsWith('.phtml'))) {
       if (r.methodName) {
         const preview = readMethodSnippet(r.path, r.methodName, 10);
         if (preview) entry.codePreview = preview;
@@ -1639,6 +1643,47 @@ function formatSearchResults(results) {
   return JSON.stringify({ results: formatted, count: formatted.length });
 }
 
+// ─── DI XML Session Cache ─────────────────────────────────────
+
+/**
+ * Session-level cache for parsed di.xml file contents.
+ * Avoids re-reading and re-globbing di.xml files across multiple tool calls
+ * (findDiWiring, traceDependency, magento_find_plugin all scan di.xml).
+ */
+const diXmlCache = {
+  /** @type {Map<string, string>} path → file content */
+  files: new Map(),
+  /** @type {string[]|null} cached list of all di.xml absolute paths */
+  paths: null,
+  /** @type {string|null} root used for caching (invalidate if root changes) */
+  root: null
+};
+
+/**
+ * Get all di.xml file paths and their contents, using session cache.
+ * @param {string} root - Magento root path
+ * @returns {Promise<Array<{absPath: string, relPath: string, content: string}>>}
+ */
+async function getDiXmlFiles(root) {
+  if (diXmlCache.root !== root || !diXmlCache.paths) {
+    diXmlCache.root = root;
+    diXmlCache.paths = await glob('**/etc/**/di.xml', { cwd: root, absolute: true, nodir: true });
+    diXmlCache.files.clear();
+  }
+  const results = [];
+  for (const absPath of diXmlCache.paths) {
+    let content = diXmlCache.files.get(absPath);
+    if (content === undefined) {
+      try { content = readFileSync(absPath, 'utf-8'); } catch { content = null; }
+      diXmlCache.files.set(absPath, content);
+    }
+    if (content !== null) {
+      results.push({ absPath, relPath: absPath.replace(root + '/', ''), content });
+    }
+  }
+  return results;
+}
+
 // ─── DI Dependency Tracing ─────────────────────────────────────
 
 /**
@@ -1647,7 +1692,7 @@ function formatSearchResults(results) {
  */
 async function traceDependency(className, direction = 'both') {
   const root = config.magentoRoot;
-  const diFiles = await glob('**/etc/**/di.xml', { cwd: root, absolute: true, nodir: true });
+  const diFiles = await getDiXmlFiles(root);
   const classLower = className.toLowerCase();
   const classShort = className.split('\\').pop().toLowerCase();
 
@@ -1660,13 +1705,7 @@ async function traceDependency(className, direction = 'both') {
     totalDiFiles: diFiles.length
   };
 
-  for (const diFile of diFiles) {
-    let content;
-    try {
-      content = readFileSync(diFile, 'utf-8');
-    } catch { continue; }
-
-    const relativePath = diFile.replace(root + '/', '');
+  for (const { content, relPath: relativePath } of diFiles) {
 
     if (direction === 'resolve' || direction === 'both') {
       // Find preferences: <preference for="ClassName" type="Implementation"/>
@@ -2618,13 +2657,10 @@ async function findDiWiring(className) {
     totalDiFiles: 0
   };
 
-  const diFiles = await glob('**/etc/**/di.xml', { cwd: root, absolute: true, nodir: true });
+  const diFiles = await getDiXmlFiles(root);
   result.totalDiFiles = diFiles.length;
 
-  for (const diFile of diFiles) {
-    let content;
-    try { content = readFileSync(diFile, 'utf-8'); } catch { continue; }
-    const relativePath = diFile.replace(root + '/', '');
+  for (const { content, relPath: relativePath } of diFiles) {
     const contentLower = content.toLowerCase();
 
     // Quick pre-filter: skip files that don't contain the short name at all
@@ -4011,7 +4047,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: formatSearchResults(results.slice(0, args.limit || 10))
+            text: formatSearchResults(results.slice(0, args.limit || 5))
           }]
         };
       }
@@ -4028,7 +4064,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text',
-            text: formatSearchResults(results.slice(0, 5))
+            text: formatSearchResults(results.slice(0, 3))
           }]
         };
       }
@@ -4058,7 +4094,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { ...r, score: (r.score || 0) + bonus };
         }).sort((a, b) => b.score - a.score);
         // Attach full method body to each result for complete understanding
-        const sliced = results.slice(0, 10);
+        const sliced = results.slice(0, 5);
         for (const r of sliced) {
           if (r.path && r.path.endsWith('.php')) {
             const body = readFullMethodBody(r.path, args.methodName);
@@ -4166,18 +4202,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { ...r, diArea };
         });
 
-        // If targetClass provided, also scan di.xml for explicit registrations
+        // If targetClass provided, also scan di.xml for explicit registrations (using session cache)
         let diRegistrations = [];
         if (args.targetClass) {
           const fpRoot = config.magentoRoot;
-          const diFiles = await glob('**/etc/**/di.xml', { cwd: fpRoot, absolute: true, nodir: true });
+          const diFiles = await getDiXmlFiles(fpRoot);
           // Normalize target class for matching (both \ and \\)
           const normalizedTarget = args.targetClass.replace(/\\\\/g, '\\');
-          for (const diFile of diFiles) {
-            let content;
-            try { content = readFileSync(diFile, 'utf-8'); } catch { continue; }
+          for (const { content, relPath } of diFiles) {
             if (!content.includes(normalizedTarget)) continue;
-            const relPath = diFile.replace(fpRoot + '/', '');
             // Find plugin registrations for this target
             const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
             let tm;
@@ -4212,14 +4245,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
 
-        // Resolve plugin methods for DI registrations
-        const fpRoot = args.targetClass ? config.magentoRoot : null;
+        // Resolve plugin methods + method bodies for DI registrations
+        const fpRoot2 = args.targetClass ? config.magentoRoot : null;
         for (const reg of diRegistrations) {
-          if (reg.pluginClass && fpRoot) {
-            const pluginFile = findClassFile(fpRoot, reg.pluginClass);
+          if (reg.pluginClass && fpRoot2) {
+            const pluginFile = findClassFile(fpRoot2, reg.pluginClass);
             if (pluginFile) {
               reg.methods = extractPluginMethods(pluginFile);
-              reg.resolvedFile = pluginFile.replace(fpRoot + '/', '');
+              reg.resolvedFile = pluginFile.replace(fpRoot2 + '/', '');
+              // Read full method bodies so the agent sees actual code without follow-up calls
+              for (const m of reg.methods) {
+                const body = readFullMethodBody(pluginFile, m.name);
+                if (body) m.body = body;
+              }
             }
           }
         }
@@ -4237,6 +4275,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             if (reg.methods?.length > 0) {
               for (const m of reg.methods) {
                 text += `  - \`${m.type}\` **${m.targetMethod}** → \`${m.name}()\`\n`;
+                if (m.body) {
+                  const indentedBody = m.body.split('\n').join('\n    ');
+                  text += '    ' + '```php\n    ' + indentedBody + '\n    ' + '```\n';
+                }
               }
             }
           }

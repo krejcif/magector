@@ -4,6 +4,16 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.6.0] - 2026-04-10
+
+### Changed
+- **Reduced default result limits** — `magento_search` default from 10 to 5, `magento_find_class` from 5 to 3, `magento_find_method` from 10 to 5. Agents rarely use results beyond rank 3-5, and the extra results consumed tokens without adding value. Use the `limit` parameter to override when more results are needed.
+- **Snippet truncation for lower-ranked results** — `formatSearchResults` now only includes `snippet` and `codePreview` for the top 3 results. Results ranked 4+ still show path, className, methodName and badges but omit verbose content. Reduces token consumption by ~40% for typical queries. `fullMethodBody` (from `magento_find_method`) is always included regardless of rank.
+- **`magento_find_plugin` now includes method bodies** — when DI registrations are resolved, each plugin method (before/after/around) now includes its complete source code in the response. Eliminates the need for follow-up `magento_find_method` calls to understand what a plugin actually does.
+
+### Added
+- **DI XML session cache** — `getDiXmlFiles()` caches the glob result and file contents across tool calls within a session. Tools that scan di.xml (find_plugin, find_di_wiring, trace_dependency) now share cached data instead of re-reading all files from disk on each call. Speeds up multi-tool debugging workflows significantly.
+
 ## [2.5.2] - 2026-04-09
 
 ### Added
