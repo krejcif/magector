@@ -5640,18 +5640,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const res = raw.map(normalizeResult).filter(r =>
                   r.magentoType === 'plugin' || r.path?.toLowerCase().includes('plugin')
                 );
-                text = formatSearchResults(res.slice(0, 5));
-                // DI registrations + method bodies (same as standalone find_plugin)
+                text = formatSearchResults(res.slice(0, 3));
+                // DI registrations + method bodies (compact: only targetMethod bodies)
                 if (a.targetClass) {
                   const diFiles = await getDiXmlFiles(config.magentoRoot);
                   const normalizedTarget = a.targetClass.replace(/\\\\/g, '\\');
                   const isFqcn = normalizedTarget.includes('\\');
                   const shortTarget = normalizedTarget.split('\\').pop().toLowerCase();
+                  let regCount = 0;
+                  text += '\n\n### DI Registrations\n';
                   for (const { content: diContent, relPath } of diFiles) {
+                    if (regCount >= 8) break;
                     if (!diContent.includes(isFqcn ? normalizedTarget : a.targetClass)) continue;
                     const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
                     let tm;
                     while ((tm = typeBlockRegex.exec(diContent)) !== null) {
+                      if (regCount >= 8) break;
                       const typeName = tm[1].replace(/\\\\/g, '\\');
                       const typeMatches = isFqcn ? typeName === normalizedTarget : typeName.split('\\').pop().toLowerCase() === shortTarget;
                       if (!typeMatches) continue;
@@ -5659,22 +5663,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                       const pluginRegex = /<plugin\s+([^/>]*)\/?>/g;
                       let pm;
                       while ((pm = pluginRegex.exec(block)) !== null) {
+                        if (regCount >= 8) break;
                         const attrs = {};
                         const localAttrRe = /(\w+)="([^"]*)"/g;
-                        let am;
-                        while ((am = localAttrRe.exec(pm[1])) !== null) attrs[am[1]] = am[2];
-                        text += `\n- **${attrs.name || '?'}** → \`${attrs.type || '?'}\` (${relPath})`;
-                        if (attrs.type) {
+                        let am2;
+                        while ((am2 = localAttrRe.exec(pm[1])) !== null) attrs[am2[1]] = am2[2];
+                        const disabled = attrs.disabled === 'true' ? ' [DISABLED]' : '';
+                        text += `- **${attrs.name || '?'}** → \`${attrs.type || '?'}\`${disabled} (${relPath})\n`;
+                        // Only read method bodies for plugins that intercept the targetMethod
+                        if (attrs.type && a.targetMethod) {
                           const pFile = findClassFile(config.magentoRoot, attrs.type);
                           if (pFile) {
                             const methods = extractPluginMethods(pFile);
-                            for (const m of methods) {
+                            const relevant = methods.filter(m => m.targetMethod === a.targetMethod);
+                            for (const m of relevant) {
                               const body = readFullMethodBody(pFile, m.name);
-                              text += `\n  - \`${m.type}\` **${m.targetMethod}** → \`${m.name}()\``;
-                              if (body) text += '\n    ' + '```php\n    ' + body.split('\n').join('\n    ') + '\n    ' + '```';
+                              text += `  - \`${m.type}\` **${m.targetMethod}** → \`${m.name}()\`\n`;
+                              if (body) text += '    ' + '```php\n    ' + body.split('\n').join('\n    ') + '\n    ' + '```\n';
                             }
                           }
                         }
+                        regCount++;
                       }
                     }
                   }
@@ -5740,9 +5749,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 let res = raw.map(normalizeResult).filter(r =>
                   r.methodName?.toLowerCase() === ml || r.methods?.some(m => m.toLowerCase() === ml)
                 );
+                // Filesystem fallback: grep -rl for method signature
+                if (res.length === 0 && config.magentoRoot) {
+                  const methodSig = `function ${a.methodName}(`;
+                  const classShort = a.className ? a.className.split('\\').pop() : null;
+                  try {
+                    let files = [];
+                    if (classShort) {
+                      files = await glob(`**/${classShort}.php`, { cwd: config.magentoRoot, absolute: false, nodir: true });
+                    } else {
+                      const grepResult = execFileSync('grep', ['-rl', '--include=*.php', methodSig, '.'],
+                        { cwd: config.magentoRoot, encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] });
+                      files = grepResult.trim().split('\n').filter(Boolean).map(f => f.replace(/^\.\//, ''));
+                    }
+                    for (const f of files.slice(0, 10)) {
+                      const absP = f.startsWith('/') ? f : path.join(config.magentoRoot, f);
+                      let content;
+                      try { content = readFileSync(absP, 'utf-8'); } catch { continue; }
+                      if (!content.includes(methodSig)) continue;
+                      let cn = null;
+                      const nsM = content.match(/namespace\s+([\w\\]+)/);
+                      const clM = content.match(/class\s+(\w+)/);
+                      if (nsM && clM) cn = nsM[1] + '\\' + clM[1];
+                      const body = readFullMethodBody(absP, a.methodName);
+                      res.push({ path: f, className: cn, methodName: a.methodName, score: 0.5, fullMethodBody: body || undefined });
+                      if (res.length >= 5) break;
+                    }
+                  } catch {}
+                }
                 for (const r of res.slice(0, 5)) {
-                  if (r.path?.endsWith('.php')) {
-                    const body = readFullMethodBody(r.path, a.methodName);
+                  if (r.path?.endsWith('.php') && !r.fullMethodBody) {
+                    const body = readFullMethodBody(path.join(config.magentoRoot, r.path), a.methodName);
                     if (body) r.fullMethodBody = body;
                   }
                 }
