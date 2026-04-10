@@ -1009,6 +1009,185 @@ async function testDiXmlSessionCache() {
   rmSync(tmpDir2, { recursive: true, force: true });
 }
 
+// ─── find_plugin partial match Tests ─────────────────────────────
+
+async function testFindPluginPartialMatch() {
+  console.log('\n── find_plugin partial class name matching ──');
+
+  const tmpDir = path.join(__dirname, 'tmp_plugin_partial');
+  const etcDir = path.join(tmpDir, 'vendor', 'acme', 'module-salesrule', 'etc');
+  mkdirSync(etcDir, { recursive: true });
+  writeFileSync(path.join(etcDir, 'di.xml'), [
+    '<?xml version="1.0"?>',
+    '<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">',
+    '    <type name="Acme\\SalesRule\\Model\\Rule\\Condition\\Address">',
+    '        <plugin name="addressConditions" type="Acme\\Marketplace\\Plugin\\Condition\\AddressConditions"/>',
+    '    </type>',
+    '</config>'
+  ].join('\n'));
+
+  const { glob: globFn } = await import('glob');
+
+  // Simulate the partial matching logic from magento_find_plugin
+  function findPluginRegistrations(diFiles, targetClass) {
+    const normalizedTarget = targetClass.replace(/\\\\/g, '\\');
+    const isFqcn = normalizedTarget.includes('\\');
+    const shortTarget = normalizedTarget.split('\\').pop().toLowerCase();
+    const registrations = [];
+
+    for (const { content, relPath } of diFiles) {
+      if (!content.includes(isFqcn ? normalizedTarget : targetClass)) continue;
+      const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
+      let tm;
+      while ((tm = typeBlockRegex.exec(content)) !== null) {
+        const typeName = tm[1].replace(/\\\\/g, '\\');
+        const typeMatches = isFqcn
+          ? typeName === normalizedTarget
+          : typeName.split('\\').pop().toLowerCase() === shortTarget;
+        if (!typeMatches) continue;
+        const block = tm[2];
+        const pluginRegex = /<plugin\s+([^/>]*)\/?>/g;
+        let pm;
+        while ((pm = pluginRegex.exec(block)) !== null) {
+          const attrs = {};
+          const localAttrRe = /(\w+)="([^"]*)"/g;
+          let am;
+          while ((am = localAttrRe.exec(pm[1])) !== null) {
+            attrs[am[1]] = am[2];
+          }
+          registrations.push({
+            target: typeName,
+            pluginName: attrs.name || '',
+            pluginClass: attrs.type || '',
+            file: relPath
+          });
+        }
+      }
+    }
+    return registrations;
+  }
+
+  // Read di.xml files
+  const diPaths = await globFn('**/etc/**/di.xml', { cwd: tmpDir, absolute: true, nodir: true });
+  const diFiles = diPaths.map(p => ({
+    absPath: p,
+    relPath: p.replace(tmpDir + '/', ''),
+    content: readFileSync(p, 'utf-8')
+  }));
+
+  // Test 1: Short name "Address" should find the plugin
+  const shortResults = findPluginRegistrations(diFiles, 'Address');
+  assertEq(shortResults.length, 1, 'partial match: short "Address" finds 1 plugin');
+  assertEq(shortResults[0].pluginName, 'addressConditions', 'partial match: correct plugin name');
+
+  // Test 2: FQCN should also work
+  const fqcnResults = findPluginRegistrations(diFiles, 'Acme\\SalesRule\\Model\\Rule\\Condition\\Address');
+  assertEq(fqcnResults.length, 1, 'partial match: FQCN finds 1 plugin');
+
+  // Test 3: Wrong short name should find nothing
+  const wrongResults = findPluginRegistrations(diFiles, 'Customer');
+  assertEq(wrongResults.length, 0, 'partial match: wrong name finds 0 plugins');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
+// ─── find_observer events.xml parsing Tests ─────────────────────
+
+async function testFindObserverEventsXml() {
+  console.log('\n── find_observer events.xml parsing ──');
+
+  const tmpDir = path.join(__dirname, 'tmp_observer_events');
+  const etcDir = path.join(tmpDir, 'vendor', 'acme', 'module-discount', 'etc');
+  mkdirSync(etcDir, { recursive: true });
+  writeFileSync(path.join(etcDir, 'events.xml'), [
+    '<?xml version="1.0"?>',
+    '<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">',
+    '    <event name="acme_discount_rule_validation_before">',
+    '        <observer name="discount_validator" instance="Acme\\Discount\\Observer\\ValidateDiscount" method="execute"/>',
+    '    </event>',
+    '    <event name="acme_other_event">',
+    '        <observer name="other_handler" instance="Acme\\Other\\Observer\\Handler"/>',
+    '    </event>',
+    '</config>'
+  ].join('\n'));
+
+  const { glob: globFn } = await import('glob');
+
+  // Replicate traceEventFlow observer parsing
+  async function parseObserversFromEventsXml(root, eventName) {
+    const observers = [];
+    const eventsFiles = await globFn('**/etc/**/events.xml', { cwd: root, absolute: true, nodir: true });
+    const escapedEvent = eventName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    for (const file of eventsFiles) {
+      let content;
+      try { content = readFileSync(file, 'utf-8'); } catch { continue; }
+      const relativePath = file.replace(root + '/', '');
+
+      const eventBlockRegex = new RegExp(
+        '<event\\s+name="' + escapedEvent + '"[^>]*>([\\s\\S]*?)<\\/event>', 'g'
+      );
+      let eventMatch;
+      while ((eventMatch = eventBlockRegex.exec(content)) !== null) {
+        const block = eventMatch[1];
+        const obsRegex = /<observer\s+[^>]*name="([^"]+)"[^>]*instance="([^"]+)"[^>]*(?:method="([^"]+)")?[^>]*\/?>/g;
+        let obsMatch;
+        while ((obsMatch = obsRegex.exec(block)) !== null) {
+          observers.push({
+            name: obsMatch[1],
+            instance: obsMatch[2],
+            method: obsMatch[3] || 'execute',
+            file: relativePath
+          });
+        }
+      }
+    }
+    return observers;
+  }
+
+  // Test 1: Exact event name finds correct observer
+  const observers = await parseObserversFromEventsXml(tmpDir, 'acme_discount_rule_validation_before');
+  assertEq(observers.length, 1, 'events.xml: finds 1 observer for exact event');
+  assertEq(observers[0].name, 'discount_validator', 'events.xml: correct observer name');
+  assertEq(observers[0].instance, 'Acme\\Discount\\Observer\\ValidateDiscount', 'events.xml: correct instance');
+  assertEq(observers[0].method, 'execute', 'events.xml: correct method');
+
+  // Test 2: Different event finds different observer
+  const other = await parseObserversFromEventsXml(tmpDir, 'acme_other_event');
+  assertEq(other.length, 1, 'events.xml: finds 1 observer for other event');
+  assertEq(other[0].name, 'other_handler', 'events.xml: correct other handler name');
+  assertEq(other[0].method, 'execute', 'events.xml: default method is execute');
+
+  // Test 3: Non-existent event finds nothing
+  const none = await parseObserversFromEventsXml(tmpDir, 'nonexistent_event');
+  assertEq(none.length, 0, 'events.xml: nonexistent event returns 0');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
+// ─── Serve PID Version Tests ────────────────────────────────────
+
+function testServePidVersion() {
+  console.log('\n── Serve PID version tracking ──');
+
+  const tmpPidFile = path.join(__dirname, 'tmp_serve.pid');
+
+  // Write PID + version format
+  writeFileSync(tmpPidFile, '12345\n2.6.0');
+  const content = readFileSync(tmpPidFile, 'utf-8').trim();
+  const lines = content.split('\n');
+  assertEq(lines[0], '12345', 'pid version: PID line correct');
+  assertEq(lines[1], '2.6.0', 'pid version: version line correct');
+
+  // Old format (PID only) should return null for version
+  writeFileSync(tmpPidFile, '12345');
+  const content2 = readFileSync(tmpPidFile, 'utf-8').trim();
+  const lines2 = content2.split('\n');
+  assertEq(lines2[1] || null, null, 'pid version: old format returns null version');
+
+  try { unlinkSync(tmpPidFile); } catch {}
+}
+
 // ─── buildTraceSummary Tests ────────────────────────────────────
 
 function testBuildTraceSummary() {
@@ -3765,6 +3944,9 @@ async function main() {
   testFormatSearchResultsTruncation();
   await testPluginMethodBodies();
   await testDiXmlSessionCache();
+  await testFindPluginPartialMatch();
+  await testFindObserverEventsXml();
+  testServePidVersion();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);

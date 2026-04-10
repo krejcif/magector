@@ -202,7 +202,16 @@ function releasePrimaryLock() {
  * Write the serve process PID to disk so future instances can clean up orphans.
  */
 function writePidFile(pid) {
-  try { writeFileSync(PID_PATH, String(pid)); } catch {}
+  try { writeFileSync(PID_PATH, `${pid}\n${__pkg.version}`); } catch {}
+}
+
+function getServePidVersion() {
+  try {
+    if (!existsSync(PID_PATH)) return null;
+    const content = readFileSync(PID_PATH, 'utf-8').trim();
+    const lines = content.split('\n');
+    return lines[1] || null;
+  } catch { return null; }
 }
 
 function removePidFile() {
@@ -809,20 +818,29 @@ async function rustSearchAsync(query, limit = 10) {
   if (queryFn) {
     try {
       const resp = await queryFn('search', { query, limit });
-      if (resp.ok && Array.isArray(resp.data)) {
+      if (resp.ok && Array.isArray(resp.data) && resp.data.length > 0) {
         cacheSet(cacheKey, resp.data);
         return resp.data;
+      }
+      // Serve returned empty results — fall through to execFileSync
+      // This catches stale serve processes with wrong/empty index
+      if (resp.ok && Array.isArray(resp.data) && resp.data.length === 0) {
+        logToFile('WARN', `Serve returned 0 results for "${query}" — trying execFileSync fallback`);
       }
     } catch (err) {
       logToFile('WARN', `Serve query failed, falling back to execFileSync: ${err.message}`);
     }
   }
 
-  // Fallback: cold-start execFileSync
+  // Fallback: cold-start execFileSync (always works if CLI works)
   logToFile('INFO', `Using execFileSync fallback for search: "${query}"`);
   try {
     const result = rustSearchSync(query, limit);
-    return Array.isArray(result) ? result : [];
+    const arr = Array.isArray(result) ? result : [];
+    if (arr.length > 0) {
+      cacheSet(cacheKey, arr);
+    }
+    return arr;
   } catch (err) {
     logToFile('WARN', `execFileSync fallback failed: ${err.message}`);
     return [];
@@ -4209,14 +4227,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const diFiles = await getDiXmlFiles(fpRoot);
           // Normalize target class for matching (both \ and \\)
           const normalizedTarget = args.targetClass.replace(/\\\\/g, '\\');
+          const isFqcn = normalizedTarget.includes('\\');
+          const shortTarget = normalizedTarget.split('\\').pop().toLowerCase();
           for (const { content, relPath } of diFiles) {
-            if (!content.includes(normalizedTarget)) continue;
+            if (!content.includes(isFqcn ? normalizedTarget : args.targetClass)) continue;
             // Find plugin registrations for this target
             const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
             let tm;
             while ((tm = typeBlockRegex.exec(content)) !== null) {
               const typeName = tm[1].replace(/\\\\/g, '\\');
-              if (typeName !== normalizedTarget) continue;
+              // FQCN: exact match. Short name: match if type ends with the short name
+              const typeMatches = isFqcn
+                ? typeName === normalizedTarget
+                : typeName.split('\\').pop().toLowerCase() === shortTarget;
+              if (!typeMatches) continue;
               const block = tm[2];
               const pluginRegex = /<plugin\s+([^/>]*)\/?>/g;
               let pm;
@@ -4288,19 +4312,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'magento_find_observer': {
-        const query = `event ${args.eventName} observer`;
-        const raw = await rustSearchAsync(query, 30);
-        let results = raw.map(normalizeResult).filter(r =>
-          r.isObserver || r.path?.includes('/Observer/') || r.path?.includes('events.xml')
-        );
-        results = rerank(results, { isObserver: true, pathContains: ['events.xml', '/Observer/'] });
+        // Primary: parse events.xml for exact event name match (structural, not semantic)
+        const eventFlow = await traceEventFlow(args.eventName);
+        let text = '';
 
-        return {
-          content: [{
-            type: 'text',
-            text: formatSearchResults(results.slice(0, 15))
-          }]
-        };
+        if (eventFlow.observers.length > 0) {
+          text += `### Observers for \`${args.eventName}\` (${eventFlow.observers.length})\n\n`;
+          for (const obs of eventFlow.observers) {
+            text += `- **${obs.name}** → \`${obs.instance}::${obs.method}()\` (${obs.file})\n`;
+          }
+          if (eventFlow.observerDetails.length > 0) {
+            text += `\n### Observer PHP Files\n`;
+            for (const det of eventFlow.observerDetails) {
+              text += `- \`${det.instance}\` → ${det.path}\n`;
+            }
+          }
+        }
+
+        // Fallback: semantic search if events.xml parsing found nothing
+        if (eventFlow.observers.length === 0) {
+          const query = `event ${args.eventName} observer`;
+          const raw = await rustSearchAsync(query, 30);
+          let results = raw.map(normalizeResult).filter(r =>
+            r.isObserver || r.path?.includes('/Observer/') || r.path?.includes('events.xml')
+          );
+          results = rerank(results, { isObserver: true, pathContains: ['events.xml', '/Observer/'] });
+          text = formatSearchResults(results.slice(0, 15));
+        }
+
+        return { content: [{ type: 'text', text }] };
       }
 
       case 'magento_find_preference': {
@@ -5533,6 +5573,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 text = formatSearchResults(res.slice(0, 5));
                 break;
               }
+              case 'magento_module_structure': {
+                const raw = await rustSearchAsync(a.moduleName, 200);
+                const modulePath = a.moduleName.replace('_', '/') + '/';
+                const parts = a.moduleName.split('_');
+                const vendorPath = parts.length === 2 ? `module-${parts[1].toLowerCase()}/` : '';
+                const res = raw.map(normalizeResult).filter(r => {
+                  const p = r.path || '';
+                  const mod = r.module || '';
+                  return mod === a.moduleName || p.includes(modulePath) || (vendorPath && p.toLowerCase().includes(vendorPath));
+                });
+                text = `Module: ${a.moduleName} (${res.length} files)\n`;
+                const cats = { controllers: '/Controller/', models: '/Model/', plugins: '/Plugin/', observers: '/Observer/', api: '/Api/' };
+                for (const [cat, pattern] of Object.entries(cats)) {
+                  const matches = res.filter(r => r.path?.includes(pattern));
+                  if (matches.length > 0) {
+                    text += `${cat}: ${matches.length} (${matches.slice(0, 3).map(r => r.className || r.path?.split('/').pop()).join(', ')})\n`;
+                  }
+                }
+                break;
+              }
+              case 'magento_find_observer': {
+                const flow = await traceEventFlow(a.eventName);
+                text = `Observers: ${flow.observers.length}\n`;
+                for (const o of flow.observers.slice(0, 10)) {
+                  text += `- ${o.name}: ${o.instance}::${o.method}() (${o.file})\n`;
+                }
+                break;
+              }
               default:
                 text = `Unsupported batch tool: ${q.tool}`;
             }
@@ -5624,6 +5692,16 @@ async function main() {
   // 3. Lock failed → wait for socket (another instance is starting)
   try {
     let role = 'secondary';
+
+    // Kill stale serve process if version mismatch (e.g., user upgraded Magector)
+    const staleVersion = getServePidVersion();
+    if (staleVersion && staleVersion !== __pkg.version) {
+      logToFile('WARN', `Serve process version mismatch: ${staleVersion} vs ${__pkg.version} — killing stale process`);
+      console.error(`Killing stale serve process (version ${staleVersion}, current ${__pkg.version})`);
+      killStaleServeProcess();
+      // Remove stale socket so we don't connect to it
+      try { if (existsSync(SOCK_PATH)) unlinkSync(SOCK_PATH); } catch {}
+    }
 
     const connected = await tryConnectSocket();
     if (connected) {

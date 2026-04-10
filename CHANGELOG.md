@@ -4,6 +4,17 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.6.1] - 2026-04-10
+
+### Fixed
+- **Stale serve process after upgrade** — when upgrading Magector (e.g., 2.1.2 → 2.6.x), the old serve process could remain running with an outdated index, causing all search-based tools to return empty results while the CLI worked fine. The MCP server now writes its version to the PID file and kills any serve process from a different version on startup.
+- **`rustSearchAsync` empty results fallback** — when the serve process returns 0 results (stale index, wrong DB), the tool now falls through to `execFileSync` (which always works if CLI works) instead of caching and returning the empty result.
+- **`magento_find_plugin` partial class name matching** — short class names like `"Address"` now correctly find plugins registered for `Vendor\Module\Model\Rule\Condition\Address` in di.xml. Previously, the DI scan used exact string comparison (`typeName !== normalizedTarget`), which required the full FQCN. Now uses short name suffix matching for non-FQCN inputs.
+- **`magento_find_observer` structural matching** — now parses `events.xml` files for exact event name matching (like `magento_find_event_flow` does), instead of relying solely on semantic vector search which returned loosely related results. Falls back to semantic search only when events.xml parsing finds nothing.
+
+### Added
+- **`magento_module_structure` and `magento_find_observer` in `magento_batch`** — both tools can now be used in batch requests.
+
 ## [2.6.0] - 2026-04-10
 
 ### Changed
