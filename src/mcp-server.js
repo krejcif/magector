@@ -4143,11 +4143,33 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           context: {
             type: 'number',
-            description: 'Lines of context around each match (default: 0). Like grep -C.',
-            default: 0
+            description: 'Lines of context around each match (default: 2). Like grep -C.',
+            default: 2
           }
         },
         required: ['pattern']
+      }
+    },
+    {
+      name: 'magento_read',
+      description: 'Read a file from the Magento codebase. Use in magento_batch to read multiple files in a single MCP call (e.g., grep finds 5 files → read all 5 in one batch). Supports line ranges for large files.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: 'File path relative to MAGENTO_ROOT. Example: "vendor/acme/module-sales/Model/OrderService.php"'
+          },
+          startLine: {
+            type: 'number',
+            description: 'Start reading from this line number (1-based). Default: 1 (beginning of file).'
+          },
+          endLine: {
+            type: 'number',
+            description: 'Stop reading at this line number (inclusive). Default: end of file. Use with startLine for large files.'
+          }
+        },
+        required: ['path']
       }
     },
   ]
@@ -4168,7 +4190,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // These tools have filesystem/di.xml fallbacks — work without serve process
     'magento_find_class', 'magento_find_method', 'magento_find_plugin',
     'magento_find_observer', 'magento_find_di_wiring', 'magento_module_structure',
-    'magento_batch', 'magento_find_config', 'magento_find_callers', 'magento_grep'];
+    'magento_batch', 'magento_find_config', 'magento_find_callers', 'magento_grep', 'magento_read'];
   if (warmupInProgress && !indexFreeTools.includes(name)) {
     logToFile('REQ', `${name} → blocked (warmup: loading index)`);
     return {
@@ -4969,7 +4991,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           structure: structureOutput.categories
         });
 
-        return { content: [{ type: 'text', text: jsonOutput }] };
+        // Include README.md if it exists in the module directory
+        let readmeText = '';
+        if (results.length > 0) {
+          // Find module root from first result path
+          const firstPath = results[0].path || '';
+          const moduleRoot = firstPath.split('/').slice(0, 3).join('/');
+          if (moduleRoot) {
+            const readmePath = path.join(config.magentoRoot, moduleRoot, 'README.md');
+            try {
+              const readme = readFileSync(readmePath, 'utf-8');
+              readmeText = '\n\n## README.md\n\n' + readme.slice(0, 2000) + (readme.length > 2000 ? '\n...(truncated)' : '');
+            } catch { /* no README */ }
+          }
+        }
+
+        return { content: [{ type: 'text', text: jsonOutput + readmeText }] };
       }
 
       case 'magento_analyze_diff': {
@@ -5983,13 +6020,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 }
                 break;
               }
+              case 'magento_read': {
+                const filePath = path.join(config.magentoRoot, a.path);
+                let fileContent;
+                try { fileContent = readFileSync(filePath, 'utf-8'); } catch {
+                  text = `File not found: ${a.path}`;
+                  break;
+                }
+                const allLines = fileContent.split('\n');
+                const s = Math.max((a.startLine || 1) - 1, 0);
+                const e = a.endLine ? Math.min(a.endLine, allLines.length) : allLines.length;
+                const sl = allLines.slice(s, e);
+                text = sl.map((line, i) => `${s + i + 1}\t${line}`).join('\n');
+                break;
+              }
               case 'magento_grep': {
                 const searchPath = a.path || '.';
                 const include = a.include || '*.php';
                 const maxRes = Math.min(a.maxResults || 30, 100);
+                const batchCtx = a.context !== undefined ? a.context : 2;
                 const gArgs = ['-rn'];
                 if (a.ignoreCase) gArgs.push('-i');
-                if (a.context) gArgs.push('-C', String(a.context));
+                if (batchCtx > 0) gArgs.push('-C', String(batchCtx));
                 for (const pat of include.split(',').map(p => p.trim())) gArgs.push('--include=' + pat);
                 gArgs.push('--', a.pattern, searchPath);
                 let out;
@@ -6023,9 +6075,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const searchPath = args.path || '.';
         const include = args.include || '*.php';
         const maxResults = Math.min(args.maxResults || 50, 200);
+        const ctxLines = args.context !== undefined ? args.context : 2;
         const grepArgs = ['-rn'];
         if (args.ignoreCase) grepArgs.push('-i');
-        if (args.context) grepArgs.push('-C', String(args.context));
+        if (ctxLines > 0) grepArgs.push('-C', String(ctxLines));
         // Support multiple include patterns (e.g., "*.{php,xml}")
         for (const pat of include.split(',').map(p => p.trim())) {
           grepArgs.push('--include=' + pat);
@@ -6050,6 +6103,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         for (const line of truncated) {
           text += line + '\n';
         }
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_read': {
+        const root = config.magentoRoot;
+        if (!root) return { content: [{ type: 'text', text: 'MAGENTO_ROOT not set.' }], isError: true };
+        const filePath = path.join(root, args.path);
+        let content;
+        try { content = readFileSync(filePath, 'utf-8'); } catch (err) {
+          return { content: [{ type: 'text', text: `File not found: ${args.path}` }], isError: true };
+        }
+        const allLines = content.split('\n');
+        const start = Math.max((args.startLine || 1) - 1, 0);
+        const end = args.endLine ? Math.min(args.endLine, allLines.length) : allLines.length;
+        const sliced = allLines.slice(start, end);
+        // Format with line numbers
+        const numbered = sliced.map((line, i) => `${start + i + 1}\t${line}`).join('\n');
+        let text = `## ${args.path}`;
+        if (args.startLine || args.endLine) text += ` (lines ${start + 1}-${end})`;
+        text += `\n\n${numbered}`;
         return { content: [{ type: 'text', text }] };
       }
 

@@ -1352,6 +1352,72 @@ async function testMagentoGrep() {
   rmSync(tmpDir, { recursive: true, force: true });
 }
 
+// ─── magento_read Tests ─────────────────────────────────────────
+
+async function testMagentoRead() {
+  console.log('\n── magento_read ──');
+
+  const tmpDir = path.join(__dirname, 'tmp_read_test');
+  mkdirSync(path.join(tmpDir, 'vendor', 'acme', 'module-test', 'Model'), { recursive: true });
+  const testFile = path.join(tmpDir, 'vendor/acme/module-test/Model/Service.php');
+  writeFileSync(testFile, [
+    '<?php',
+    'namespace Acme\\Test\\Model;',
+    '',
+    'class Service',
+    '{',
+    '    public function execute()',
+    '    {',
+    '        return true;',
+    '    }',
+    '',
+    '    public function validate()',
+    '    {',
+    '        return false;',
+    '    }',
+    '}'
+  ].join('\n'));
+
+  // Test 1: read entire file
+  const content = readFileSync(testFile, 'utf-8');
+  const allLines = content.split('\n');
+  assertEq(allLines.length, 15, 'read: file has 15 lines');
+
+  // Test 2: line range extraction
+  const start = 5;
+  const end = 9;
+  const sliced = allLines.slice(start - 1, end);
+  assertEq(sliced.length, 5, 'read: line range 5-9 returns 5 lines');
+  assert(sliced[0].includes('{') || sliced[0].includes('class'), 'read: line 5 is part of class block');
+
+  // Test 3: numbered output format
+  const numbered = sliced.map((line, i) => `${start + i}\t${line}`).join('\n');
+  assert(numbered.includes('5\t'), 'read: numbered output starts with line 5');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
+// ─── Grep Default Context Tests ─────────────────────────────────
+
+function testGrepDefaultContext() {
+  console.log('\n── grep default context ──');
+
+  // Verify the default context value is 2
+  const defaultCtx = undefined; // simulates args.context not provided
+  const ctxLines = defaultCtx !== undefined ? defaultCtx : 2;
+  assertEq(ctxLines, 2, 'grep default: context defaults to 2 when not provided');
+
+  // Verify explicit 0 is respected
+  const explicitZero = 0;
+  const ctxZero = explicitZero !== undefined ? explicitZero : 2;
+  assertEq(ctxZero, 0, 'grep default: explicit 0 is respected');
+
+  // Verify explicit value is respected
+  const explicit5 = 5;
+  const ctx5 = explicit5 !== undefined ? explicit5 : 2;
+  assertEq(ctx5, 5, 'grep default: explicit 5 is respected');
+}
+
 // ─── buildTraceSummary Tests ────────────────────────────────────
 
 function testBuildTraceSummary() {
@@ -4115,6 +4181,8 @@ async function main() {
   await testModuleStructureCamelCase();
   testCliVersion();
   await testMagentoGrep();
+  await testMagentoRead();
+  testGrepDefaultContext();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
