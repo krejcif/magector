@@ -2303,6 +2303,33 @@ async function analyzeImpact(className) {
     ...diTrace.virtualTypes.map(v => ({ type: 'virtualType', file: v.file, detail: `${v.name} extends ${v.type}` })),
     ...diTrace.argumentOverrides.map(a => ({ type: 'argument', file: a.file, detail: `${a.target}.${a.argumentName}` }))
   ];
+  // Also find where this class is used AS a plugin/preference/virtualType implementation
+  if (references.diXmlReferences.length === 0 && root) {
+    const diFiles = await getDiXmlFiles(root);
+    for (const { content, relPath } of diFiles) {
+      if (!content.toLowerCase().includes(shortName.toLowerCase())) continue;
+      // Check if class appears as plugin type
+      const pluginTypeRegex = /<plugin\s+[^>]*type="([^"]+)"[^>]*\/?>/g;
+      let pm;
+      while ((pm = pluginTypeRegex.exec(content)) !== null) {
+        if (pm[1].toLowerCase().includes(shortName.toLowerCase())) {
+          // Find parent <type> to know the target
+          const beforePlugin = content.slice(0, pm.index);
+          const typeMatch = beforePlugin.match(/<type\s+name="([^"]+)"[^>]*>\s*$/m);
+          const target = typeMatch ? typeMatch[1] : 'unknown';
+          references.diXmlReferences.push({ type: 'registered-as-plugin', file: relPath, detail: `plugin on ${target} → ${pm[1]}` });
+        }
+      }
+      // Check if class appears as preference type
+      const prefRegex = /<preference\s+for="([^"]+)"\s+type="([^"]+)"\s*\/?>/g;
+      let prm;
+      while ((prm = prefRegex.exec(content)) !== null) {
+        if (prm[2].toLowerCase().includes(shortName.toLowerCase())) {
+          references.diXmlReferences.push({ type: 'registered-as-preference', file: relPath, detail: `preference for ${prm[1]} → ${prm[2]}` });
+        }
+      }
+    }
+  }
 
   // Check PHP files for direct references
   const escapedShort = shortName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -5789,13 +5816,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               case 'magento_module_structure': {
                 const raw = await rustSearchAsync(a.moduleName, 200);
                 const modulePath = a.moduleName.replace('_', '/') + '/';
-                const parts = a.moduleName.split('_');
-                const vendorPath = parts.length === 2 ? `module-${parts[1].toLowerCase()}/` : '';
-                const res = raw.map(normalizeResult).filter(r => {
+                const mParts = a.moduleName.split('_');
+                // Hyphenate camelCase for vendor path: OrderSplit → order-split
+                const vendorPath = mParts.length === 2
+                  ? `module-${mParts[1].replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()}/`
+                  : '';
+                let res = raw.map(normalizeResult).filter(r => {
                   const p = r.path || '';
                   const mod = r.module || '';
                   return mod === a.moduleName || p.includes(modulePath) || (vendorPath && p.toLowerCase().includes(vendorPath));
                 });
+                // Filesystem fallback
+                if (res.length === 0 && config.magentoRoot && vendorPath) {
+                  try {
+                    const vendorGlob = `**/${vendorPath}**/*.{php,xml,phtml}`;
+                    const files = await glob(vendorGlob, { cwd: config.magentoRoot, absolute: false, nodir: true });
+                    for (const f of files.slice(0, 100)) {
+                      const entry = { path: f, score: 0.5 };
+                      if (f.includes('/Controller/')) entry.isController = true;
+                      if (f.includes('/Model/')) entry.isModel = true;
+                      if (f.includes('/Plugin/')) entry.isPlugin = true;
+                      if (f.includes('/Observer/')) entry.isObserver = true;
+                      if (f.endsWith('.xml')) entry.type = 'xml';
+                      const phpMatch = f.match(/\/([A-Z]\w+)\.php$/);
+                      if (phpMatch) entry.className = phpMatch[1];
+                      res.push(entry);
+                    }
+                  } catch {}
+                }
                 text = `Module: ${a.moduleName} (${res.length} files)\n`;
                 const cats = { controllers: '/Controller/', models: '/Model/', plugins: '/Plugin/', observers: '/Observer/', api: '/Api/' };
                 for (const [cat, pattern] of Object.entries(cats)) {
