@@ -4156,6 +4156,41 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           );
           results = results.concat(pathFallback);
         }
+        // Filesystem fallback: grep for the method definition in PHP files
+        if (results.length === 0 && config.magentoRoot) {
+          try {
+            const methodSig = `function ${args.methodName}(`;
+            // Use className to narrow the glob if provided
+            const classShort = args.className ? args.className.split('\\').pop() : null;
+            const globPattern = classShort ? `**/${classShort}.php` : '**/*.php';
+            const files = await glob(globPattern, { cwd: config.magentoRoot, absolute: false, nodir: true, ignore: ['**/test/**', '**/tests/**', '**/Test/**'] });
+            for (const f of files.slice(0, classShort ? 50 : 500)) {
+              const absPath = path.join(config.magentoRoot, f);
+              let content;
+              try { content = readFileSync(absPath, 'utf-8'); } catch { continue; }
+              if (!content.includes(methodSig)) continue;
+              let className = null;
+              const nsMatch = content.match(/namespace\s+([\w\\]+)/);
+              const classMatch = content.match(/class\s+(\w+)/);
+              if (nsMatch && classMatch) className = nsMatch[1] + '\\' + classMatch[1];
+              const methodsFound = [];
+              const mRegex = /public\s+function\s+(\w+)\s*\(/g;
+              let mm;
+              while ((mm = mRegex.exec(content)) !== null) methodsFound.push(mm[1]);
+              const body = readFullMethodBody(absPath, args.methodName);
+              results.push({
+                path: f,
+                className,
+                methods: methodsFound,
+                methodName: args.methodName,
+                score: 0.5,
+                searchText: content.slice(0, 300),
+                fullMethodBody: body || undefined
+              });
+              if (results.length >= 5) break;
+            }
+          } catch {}
+        }
         // Boost exact method matches to top
         results = results.map(r => {
           let bonus = 0;

@@ -4,6 +4,11 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.6.3] - 2026-04-10
+
+### Fixed
+- **`magento_find_method` filesystem fallback** — when vector search returns no results for a method name (e.g., `isEditableOrderType`), the tool now greps PHP files for `function methodName(` as a fallback. This was the #1 remaining gap vs classical file search — `find_method` returning empty for methods that exist but don't embed well in vector space. With className provided, globs `**/{ClassName}.php`; without, searches up to 500 PHP files. Returns full method body via brace-counting.
+
 ## [2.6.2] - 2026-04-10
 
 ### Fixed
