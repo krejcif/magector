@@ -4,6 +4,11 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.9.0] - 2026-04-10
+
+### Added
+- **`magento_grep` tool** — exact text search (grep) across Magento files. Unlike `magento_search` (semantic/vector), this finds EVERY occurrence of a literal string or regex pattern. Supports `path` filter, `include` file patterns, `context` lines, `ignoreCase`, and `maxResults` limit. Uses `grep -rn` internally — instant and deterministic. Available standalone and in `magento_batch`. Closes the #1 gap vs classical debugging: systematic coverage of all call sites in one call.
+
 ## [2.6.3] - 2026-04-10
 
 ### Fixed

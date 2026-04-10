@@ -1287,6 +1287,71 @@ function testCliVersion() {
   assert(/^\d+\.\d+\.\d+/.test(pkg.version), 'cli version: version matches semver pattern');
 }
 
+// ─── magento_grep Tests ─────────────────────────────────────────
+
+async function testMagentoGrep() {
+  console.log('\n── magento_grep ──');
+
+  const { execFileSync } = await import('child_process');
+  const tmpDir = path.join(__dirname, 'tmp_grep_test');
+  mkdirSync(path.join(tmpDir, 'vendor', 'acme', 'module-sales', 'Model'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor', 'acme', 'module-checkout', 'Observer'), { recursive: true });
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-sales/Model/OrderService.php'), [
+    '<?php',
+    'namespace Acme\\Sales\\Model;',
+    'class OrderService {',
+    '    public function process($order) {',
+    '        $method = $order->getPayment()->getMethod();',
+    '        return $method;',
+    '    }',
+    '}'
+  ].join('\n'));
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-checkout/Observer/SaveObserver.php'), [
+    '<?php',
+    'namespace Acme\\Checkout\\Observer;',
+    'class SaveObserver {',
+    '    public function execute($observer) {',
+    '        $order = $observer->getOrder();',
+    '        $payment = $order->getPayment();',
+    '        if ($payment !== null) {',
+    '            $method = $payment->getMethod();',
+    '        }',
+    '    }',
+    '}'
+  ].join('\n'));
+
+  // Test 1: grep for exact pattern finds all matches
+  let output;
+  try {
+    output = execFileSync('grep', ['-rn', '--include=*.php', '--', 'getPayment()', '.'],
+      { cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch (err) { output = err.stdout || ''; }
+  const lines = output.trim().split('\n').filter(Boolean);
+  assert(lines.length >= 2, 'grep: finds getPayment() in both files');
+
+  // Test 2: grep with path filter narrows results
+  let filtered;
+  try {
+    filtered = execFileSync('grep', ['-rn', '--include=*.php', '--', 'getPayment()->getMethod()', 'vendor/acme/module-sales/'],
+      { cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch (err) { filtered = err.stdout || ''; }
+  const filteredLines = filtered.trim().split('\n').filter(Boolean);
+  assertEq(filteredLines.length, 1, 'grep: path filter narrows to 1 match');
+  assert(filteredLines[0].includes('OrderService.php'), 'grep: found in OrderService.php');
+
+  // Test 3: no matches returns empty
+  let empty;
+  try {
+    empty = execFileSync('grep', ['-rn', '--include=*.php', '--', 'nonExistentPattern12345', '.'],
+      { cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch (err) { empty = err.stdout || ''; }
+  assertEq(empty.trim(), '', 'grep: no matches returns empty');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
 // ─── buildTraceSummary Tests ────────────────────────────────────
 
 function testBuildTraceSummary() {
@@ -4049,6 +4114,7 @@ async function main() {
   await testFindClassFilesystemFallback();
   await testModuleStructureCamelCase();
   testCliVersion();
+  await testMagentoGrep();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);

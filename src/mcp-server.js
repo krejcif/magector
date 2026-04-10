@@ -4035,6 +4035,44 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['queries']
       }
     },
+    {
+      name: 'magento_grep',
+      description: 'Exact text search (grep) across Magento PHP/XML/JS files. Unlike magento_search (semantic/vector), this finds EVERY occurrence of a literal string or regex pattern. Use for: finding all call sites of a method, all usages of a class name, all config references. Returns file:line:content for each match.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          pattern: {
+            type: 'string',
+            description: 'Text pattern to search for. Literal string or POSIX regex. Examples: "getPayment()->getMethod()", "removeButton", "sales_order_place_after", "class AddressConditions"'
+          },
+          path: {
+            type: 'string',
+            description: 'Subdirectory to search in (relative to MAGENTO_ROOT). Default: "." (entire codebase). Examples: "vendor/acme/", "app/code/", "vendor/magento/module-sales/"'
+          },
+          include: {
+            type: 'string',
+            description: 'File glob pattern to include. Default: "*.php". Examples: "*.xml", "*.{php,xml}", "*.js", "*.phtml"',
+            default: '*.php'
+          },
+          ignoreCase: {
+            type: 'boolean',
+            description: 'Case-insensitive search (default: false)',
+            default: false
+          },
+          maxResults: {
+            type: 'number',
+            description: 'Maximum number of matches to return (default: 50, max: 200)',
+            default: 50
+          },
+          context: {
+            type: 'number',
+            description: 'Lines of context around each match (default: 0). Like grep -C.',
+            default: 0
+          }
+        },
+        required: ['pattern']
+      }
+    },
   ]
 }));
 
@@ -4053,7 +4091,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // These tools have filesystem/di.xml fallbacks — work without serve process
     'magento_find_class', 'magento_find_method', 'magento_find_plugin',
     'magento_find_observer', 'magento_find_di_wiring', 'magento_module_structure',
-    'magento_batch', 'magento_find_config', 'magento_find_callers'];
+    'magento_batch', 'magento_find_config', 'magento_find_callers', 'magento_grep'];
   if (warmupInProgress && !indexFreeTools.includes(name)) {
     logToFile('REQ', `${name} → blocked (warmup: loading index)`);
     return {
@@ -5868,6 +5906,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 }
                 break;
               }
+              case 'magento_grep': {
+                const searchPath = a.path || '.';
+                const include = a.include || '*.php';
+                const maxRes = Math.min(a.maxResults || 30, 100);
+                const gArgs = ['-rn'];
+                if (a.ignoreCase) gArgs.push('-i');
+                if (a.context) gArgs.push('-C', String(a.context));
+                for (const pat of include.split(',').map(p => p.trim())) gArgs.push('--include=' + pat);
+                gArgs.push('--', a.pattern, searchPath);
+                let out;
+                try {
+                  out = execFileSync('grep', gArgs, { cwd: config.magentoRoot, encoding: 'utf-8', timeout: 15000, maxBuffer: 5 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] });
+                } catch (err) { out = err.stdout || ''; }
+                const gLines = out.trim().split('\n').filter(Boolean);
+                text = `Found ${gLines.length} matches${gLines.length > maxRes ? ` (showing ${maxRes})` : ''}:\n`;
+                for (const gl of gLines.slice(0, maxRes)) text += gl + '\n';
+                break;
+              }
               default:
                 text = `Unsupported batch tool: ${q.tool}`;
             }
@@ -5880,6 +5936,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let text = `## Batch Results (${batchResults.length} queries)\n\n`;
         for (const br of batchResults) {
           text += `---\n### [${br.idx + 1}] ${br.tool}\n\n${br.text}\n\n`;
+        }
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_grep': {
+        const root = config.magentoRoot;
+        if (!root) return { content: [{ type: 'text', text: 'MAGENTO_ROOT not set.' }], isError: true };
+        const searchPath = args.path || '.';
+        const include = args.include || '*.php';
+        const maxResults = Math.min(args.maxResults || 50, 200);
+        const grepArgs = ['-rn'];
+        if (args.ignoreCase) grepArgs.push('-i');
+        if (args.context) grepArgs.push('-C', String(args.context));
+        // Support multiple include patterns (e.g., "*.{php,xml}")
+        for (const pat of include.split(',').map(p => p.trim())) {
+          grepArgs.push('--include=' + pat);
+        }
+        grepArgs.push('--', args.pattern, searchPath);
+        let output;
+        try {
+          output = execFileSync('grep', grepArgs, {
+            cwd: root, encoding: 'utf-8', timeout: 30000,
+            maxBuffer: 10 * 1024 * 1024,
+            stdio: ['pipe', 'pipe', 'pipe']
+          });
+        } catch (err) {
+          // grep returns exit code 1 when no matches found
+          output = err.stdout || '';
+        }
+        const lines = output.trim().split('\n').filter(Boolean);
+        const total = lines.length;
+        const truncated = lines.slice(0, maxResults);
+        let text = `## grep: \`${args.pattern}\`\n`;
+        text += `Found **${total}** matches${total > maxResults ? ` (showing first ${maxResults})` : ''}\n\n`;
+        for (const line of truncated) {
+          text += line + '\n';
         }
         return { content: [{ type: 'text', text }] };
       }
