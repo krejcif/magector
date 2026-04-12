@@ -9,6 +9,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 ### Fixed
 - **`magento_grep` brace expansion in `include` parameter** — patterns like `*.{php,xml,graphqls}` were broken by naive comma-split, producing invalid `--include=*.{php` flags for GNU grep. New `expandIncludePattern()` helper correctly splits on commas outside braces first, then expands brace alternatives. Both standalone and batch handlers are fixed.
 
+## [2.14.2] - 2026-04-12
+
+### Fixed
+- **`astSearch()` .semgrepignore placed in wrong directory** — was created in the scan target directory (e.g., `vendor/magento/module-sales/`), but semgrep resolves `.semgrepignore` from the git repo root, not the scan path. This caused semgrep to silently ignore all `vendor/` files when scanning subdirectories inside a git repo, returning 0 results. Now creates `.semgrepignore` at `MAGENTO_ROOT` (the git root).
+
 ## [2.14.0] - 2026-04-12
 
 ### Added

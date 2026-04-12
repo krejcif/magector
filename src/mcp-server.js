@@ -3670,16 +3670,16 @@ async function astSearch(pattern, searchPath, lang, maxResults) {
   logToFile('INFO', `ast_search: pattern="${pattern}" path="${searchPath || '.'}" lang=${semgrepLang} limit=${limit}`);
   const astStart = Date.now();
 
-  // Create a temporary empty .semgrepignore in the target directory if none exists.
   // Semgrep's default ignore list includes "vendor/" which is exactly what we need to scan.
-  // An empty .semgrepignore overrides the defaults: https://semgrep.dev/docs/ignoring-files-folders-code/
-  const semgrepIgnorePath = path.join(targetPath, '.semgrepignore');
+  // Semgrep resolves .semgrepignore from the git repo root, NOT the scan directory.
+  // An empty .semgrepignore at root overrides the defaults: https://semgrep.dev/docs/ignoring-files-folders-code/
+  const semgrepIgnorePath = path.join(root, '.semgrepignore');
   let createdSemgrepIgnore = false;
   if (!existsSync(semgrepIgnorePath)) {
     try {
       writeFileSync(semgrepIgnorePath, '# Magector: scan vendor/ and all project files\n');
       createdSemgrepIgnore = true;
-      logToFile('INFO', `ast_search: created temporary .semgrepignore at ${targetPath}`);
+      logToFile('INFO', `ast_search: created temporary .semgrepignore at ${root}`);
     } catch (err) {
       logToFile('WARN', `ast_search: failed to create .semgrepignore: ${err.message}`);
     }
