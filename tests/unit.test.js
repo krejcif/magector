@@ -4315,6 +4315,8 @@ async function main() {
   await testGrepFilesOnly();
   await testAstSearch();
   await testReadMethodNameHint();
+  testHasNullGuard();
+  testEnrichChainRegex();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
@@ -4333,3 +4335,66 @@ main().catch((e) => {
   console.error('Test runner error:', e);
   process.exit(1);
 });
+
+// ─── hasNullGuard Tests ──────────────────────────────────────────
+
+function testHasNullGuard() {
+  console.log('\n── hasNullGuard ──');
+
+  function mockHasNullGuard(lines, matchLineIdx, receiverExpr, guardRadius = 6) {
+    const start = Math.max(0, matchLineIdx - guardRadius);
+    const end = Math.min(lines.length - 1, matchLineIdx + guardRadius);
+    const window = lines.slice(start, end + 1).join('\n');
+    if (window.includes('?->')) return true;
+    if (/\?\?|\?:/.test(window)) return true;
+    if (receiverExpr) {
+      const esc = receiverExpr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp('(?:is_null\\s*\\(\\s*' + esc + '|' + esc + '\\s*(?:===|!==)\\s*null|!\\s*' + esc + '\\s*[,)]|isset\\s*\\(\\s*' + esc + ')', 'i').test(window)) return true;
+    }
+    return false;
+  }
+
+  const unsafeLines = ['    public function execute($order) {', '        $m = $order->getPayment()->getMethod();', '        return $m;', '    }'];
+  assert(!mockHasNullGuard(unsafeLines, 1, '$order'), 'hasNullGuard: no guard for direct chain');
+
+  const safeExplicit = ['    public function execute($order) {', '        $payment = $order->getPayment();', '        if ($payment !== null) {', '            $m = $payment->getMethod();', '        }', '    }'];
+  assert(mockHasNullGuard(safeExplicit, 3, '$payment'), 'hasNullGuard: !== null detected');
+
+  const safeNullsafe = ['    $m = $order->getPayment()?->getMethod();'];
+  assert(mockHasNullGuard(safeNullsafe, 0, '$order'), 'hasNullGuard: ?-> detected');
+
+  const safeIsNull = ['    if (!is_null($payment)) {', '        return $payment->getMethod();', '    }'];
+  assert(mockHasNullGuard(safeIsNull, 1, '$payment'), 'hasNullGuard: is_null() detected');
+}
+
+// ─── enrichMethodChains regex Tests ─────────────────────────────
+
+function testEnrichChainRegex() {
+  console.log('\n── enrichMethodChains regex ──');
+
+  const chainRegex = /(\$\w+)\s*->\s*(\w+)\s*\([^)]{0,60}\)\s*->\s*(\w+)\s*\(/g;
+
+  const unsafeCode = '        $m = $order->getPayment()->getMethod();';
+  const matches = [];
+  let m;
+  while ((m = chainRegex.exec(unsafeCode)) !== null) matches.push({ recv: m[1], first: m[2], second: m[3] });
+  assertEq(matches.length, 1, 'enrich regex: finds 1 chain');
+  assertEq(matches[0].recv, '$order', 'enrich regex: receiver is $order');
+  assertEq(matches[0].first, 'getPayment', 'enrich regex: firstMethod is getPayment');
+  assertEq(matches[0].second, 'getMethod', 'enrich regex: secondMethod is getMethod');
+
+  // With args in first call — receiver must be direct $var (not property access)
+  chainRegex.lastIndex = 0;
+  const withArgs = '        $item = $repo->load($id)->getSku();';
+  const m2 = [];
+  while ((m = chainRegex.exec(withArgs)) !== null) m2.push(m[2]);
+  assertEq(m2.length, 1, 'enrich regex: finds chain with args in first call');
+  assertEq(m2[0], 'load', 'enrich regex: firstMethod is load');
+
+  // No chain - just single call
+  chainRegex.lastIndex = 0;
+  const single = '        $val = $order->getPayment();';
+  const m3 = [];
+  while ((m = chainRegex.exec(single)) !== null) m3.push(m);
+  assertEq(m3.length, 0, 'enrich regex: no match for single call');
+}

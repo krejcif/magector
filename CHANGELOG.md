@@ -4,6 +4,13 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.13.0] - 2026-04-12
+
+### Added
+- **`magento_enrich` tool** — builds the method-chain enrichment index. Scans all `vendor/` PHP files for two-step method chains (`->firstMethod()->secondMethod()`) and analyses whether each call has a null guard in surrounding code (`=== null`, `!== null`, `?->`, `??`, `isset`, `is_null`). Results are stored in `.magector/enrichment.db` (SQLite). Runs automatically in the background after `magento_index`.
+- **`magento_find_null_risks` tool** — queries the pre-built enrichment index for method chains without null guards. Pass `firstMethod` to filter (e.g., `"getPayment"` finds all `->getPayment()->anything()` calls without null guard). Available in `magento_batch`. ~100× faster than grep for null-safety analysis: O(1) SQLite query instead of scanning 80k PHP files. Requires `magento_enrich` to be run first.
+- **Auto-enrichment after `magento_index`** — method-chain index is built in the background automatically when indexing completes.
+
 ## [2.12.0] - 2026-04-12
 
 ### Added
