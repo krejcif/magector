@@ -1900,7 +1900,7 @@ const ERROR_PATTERNS = [
       '',
       '**2. Condition threshold mismatch**',
       '   Check which subtotal attribute the condition uses: base_subtotal, subtotal_incl_tax,',
-      '   drmax_free_shipping_price (custom). Each calculates differently (with/without tax, discounts).',
+      '   custom_free_shipping_price (custom). Each calculates differently (with/without tax, discounts).',
       '',
       '**3. Custom condition type**',
       '   Container attributes (SubtotalWithDiscountInclTax) aggregate per shop type.',
