@@ -150,6 +150,44 @@ const FORMAT_CACHE_PATH = path.join(config.magentoRoot, '.magector', 'format-ok.
 const PRIMARY_LOCK_PATH = path.join(config.magentoRoot, '.magector', 'primary.lock');
 
 /**
+ * Expand brace patterns in include globs for GNU grep compatibility.
+ * GNU grep --include does NOT support brace expansion (that's a shell feature).
+ * Transforms "*.{php,xml,graphqls}" → ["*.php", "*.xml", "*.graphqls"]
+ * Also handles comma-separated patterns: "*.php, *.xml" → ["*.php", "*.xml"]
+ * And mixed: "*.{php,xml}, *.phtml" → ["*.php", "*.xml", "*.phtml"]
+ */
+function expandIncludePattern(include) {
+  // Split on commas NOT inside braces
+  const parts = [];
+  let depth = 0, current = '';
+  for (const ch of include) {
+    if (ch === '{') depth++;
+    if (ch === '}') depth--;
+    if (ch === ',' && depth === 0) {
+      parts.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) parts.push(current.trim());
+  // Expand brace patterns in each part
+  const patterns = [];
+  const braceRegex = /^(.*?)\{([^}]+)\}(.*)$/;
+  for (const part of parts) {
+    const m = part.match(braceRegex);
+    if (m) {
+      for (const alt of m[2].split(',').map(a => a.trim())) {
+        patterns.push(m[1] + alt + m[3]);
+      }
+    } else {
+      patterns.push(part);
+    }
+  }
+  return patterns;
+}
+
+/**
  * Try to acquire the primary lock (O_EXCL = atomic create-or-fail).
  * Returns true if we are the primary instance, false if another instance holds the lock.
  */
@@ -6421,7 +6459,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const gArgs = batchFilesOnly ? ['-rl', '-E'] : ['-rn', '-E'];
                 if (a.ignoreCase) gArgs.push('-i');
                 if (!batchFilesOnly && batchCtx > 0) gArgs.push('-C', String(batchCtx));
-                for (const pat of include.split(',').map(p => p.trim())) gArgs.push('--include=' + pat);
+                for (const pat of expandIncludePattern(include)) gArgs.push('--include=' + pat);
                 gArgs.push('--', a.pattern, searchPath);
                 let out;
                 try {
@@ -6489,8 +6527,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const grepArgs = filesOnly ? ['-rl', '-E'] : ['-rn', '-E'];
         if (args.ignoreCase) grepArgs.push('-i');
         if (!filesOnly && ctxLines > 0) grepArgs.push('-C', String(ctxLines));
-        // Support multiple include patterns (e.g., "*.{php,xml}")
-        for (const pat of include.split(',').map(p => p.trim())) {
+        for (const pat of expandIncludePattern(include)) {
           grepArgs.push('--include=' + pat);
         }
         grepArgs.push('--', args.pattern, searchPath);

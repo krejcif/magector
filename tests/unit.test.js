@@ -4317,6 +4317,7 @@ async function main() {
   await testReadMethodNameHint();
   testHasNullGuard();
   testEnrichChainRegex();
+  testExpandIncludePattern();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
@@ -4402,6 +4403,73 @@ function testEnrichChainRegex() {
   const m3 = [];
   while ((m = chainRegex.exec(single)) !== null) m3.push(m);
   assertEq(m3.length, 0, 'enrich regex: no match for single call');
+}
+
+// ─── expandIncludePattern Tests ──────────────────────────────────
+
+function testExpandIncludePattern() {
+  console.log('\n── expandIncludePattern ──');
+
+  // Re-implement the function from mcp-server.js (not exported)
+  function expandIncludePattern(include) {
+    const parts = [];
+    let depth = 0, current = '';
+    for (const ch of include) {
+      if (ch === '{') depth++;
+      if (ch === '}') depth--;
+      if (ch === ',' && depth === 0) {
+        parts.push(current.trim());
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    if (current.trim()) parts.push(current.trim());
+    const patterns = [];
+    const braceRegex = /^(.*?)\{([^}]+)\}(.*)$/;
+    for (const part of parts) {
+      const m = part.match(braceRegex);
+      if (m) {
+        for (const alt of m[2].split(',').map(a => a.trim())) {
+          patterns.push(m[1] + alt + m[3]);
+        }
+      } else {
+        patterns.push(part);
+      }
+    }
+    return patterns;
+  }
+
+  // Simple pattern — no braces
+  const r1 = expandIncludePattern('*.php');
+  assertEq(r1.length, 1, 'expand: simple pattern returns 1');
+  assertEq(r1[0], '*.php', 'expand: simple pattern unchanged');
+
+  // Comma-separated patterns
+  const r2 = expandIncludePattern('*.php, *.xml');
+  assertEq(r2.length, 2, 'expand: comma-separated returns 2');
+  assertEq(r2[0], '*.php', 'expand: first comma pattern');
+  assertEq(r2[1], '*.xml', 'expand: second comma pattern');
+
+  // Brace expansion — the bug that was fixed
+  const r3 = expandIncludePattern('*.{php,xml,graphqls}');
+  assertEq(r3.length, 3, 'expand: brace with 3 alternatives');
+  assertEq(r3[0], '*.php', 'expand: brace first');
+  assertEq(r3[1], '*.xml', 'expand: brace second');
+  assertEq(r3[2], '*.graphqls', 'expand: brace third');
+
+  // Two alternatives
+  const r4 = expandIncludePattern('*.{php,xml}');
+  assertEq(r4.length, 2, 'expand: brace with 2 alternatives');
+  assertEq(r4[0], '*.php', 'expand: two-brace first');
+  assertEq(r4[1], '*.xml', 'expand: two-brace second');
+
+  // Mixed: brace + comma-separated
+  const r5 = expandIncludePattern('*.{php,xml}, *.phtml');
+  assertEq(r5.length, 3, 'expand: mixed brace + comma returns 3');
+  assertEq(r5[0], '*.php', 'expand: mixed first');
+  assertEq(r5[1], '*.xml', 'expand: mixed second');
+  assertEq(r5[2], '*.phtml', 'expand: mixed third');
 }
 
 main().catch((e) => {

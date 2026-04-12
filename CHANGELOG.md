@@ -4,6 +4,11 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.14.1] - 2026-04-12
+
+### Fixed
+- **`magento_grep` brace expansion in `include` parameter** — patterns like `*.{php,xml,graphqls}` were broken by naive comma-split, producing invalid `--include=*.{php` flags for GNU grep. New `expandIncludePattern()` helper correctly splits on commas outside braces first, then expands brace alternatives. Both standalone and batch handlers are fixed.
+
 ## [2.14.0] - 2026-04-12
 
 ### Added
