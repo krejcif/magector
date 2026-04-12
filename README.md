@@ -1204,6 +1204,67 @@ gantt
 
 ---
 
+## Troubleshooting
+
+All MCP server activity is logged to `.magector/magector.log` in the Magento project root. The log persists across MCP restarts and uses the format:
+
+```
+[2026-04-12T18:30:00.000Z] [LEVEL] message
+```
+
+### Log Levels
+
+| Level | Meaning |
+|-------|---------|
+| `INFO` | Normal operations: startup config, tool completion, search fallbacks, enrichment progress |
+| `WARN` | Recoverable issues: slow grep queries (>5s), missing enrichment.db, file read errors, serve process disconnects |
+| `ERR` | Failures: semgrep crashes, transaction rollbacks, serve process errors, tool execution errors |
+| `REQ` | Every tool call with full input parameters (JSON) |
+| `RES` | Tool completion with elapsed time in milliseconds |
+| `QUERY` | Rust serve process queries (search, feedback) |
+| `CACHE` | Search cache hits |
+| `INDEX` | Background reindex progress |
+| `SERVE` | Rust serve process stderr (watcher events, model loading) |
+| `FATAL` | Server startup failures |
+
+### Common Diagnostic Commands
+
+```bash
+# Recent errors
+grep '\[ERR\]\|\[FATAL\]' .magector/magector.log | tail -20
+
+# Tool timing (find slow tools)
+grep '\[RES\]' .magector/magector.log | tail -20
+
+# Enrichment/null-risk analysis
+grep 'enrich:\|null_risks:' .magector/magector.log | tail -20
+
+# AST search (semgrep) issues
+grep 'ast_search:' .magector/magector.log | tail -20
+
+# Batch query breakdown (per-tool timing)
+grep 'batch\[' .magector/magector.log | tail -20
+
+# Slow grep queries
+grep 'grep: slow\|grep: timed' .magector/magento.log | tail -20
+
+# Full startup sequence
+grep 'server starting\|Config:\|primary\|Serve process' .magector/magector.log | tail -30
+```
+
+### What Gets Logged (v2.14+)
+
+Every tool call logs `[REQ]` with input parameters and `[RES]` with elapsed time. Additionally:
+
+- **`magento_ast_search`** — semgrep pattern, target path, execution time, result count, semgrep errors
+- **`magento_enrich`** — file count, progress every 10k files, read errors, transaction failures, final summary
+- **`magento_find_null_risks`** — query parameters, result count, query timing, missing DB warnings
+- **`magento_batch`** — query list on entry, per-sub-tool timing and errors
+- **`magento_grep`** — slow query warnings (>5s), timeout detection
+- **`magento_read`** — file-not-found with error codes, failed method extractions
+
+---
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
