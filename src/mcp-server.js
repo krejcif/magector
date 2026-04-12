@@ -3425,6 +3425,66 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
   return result;
 }
 
+// ─── AST Search (semgrep) ───────────────────────────────────────
+
+async function astSearch(pattern, searchPath, lang, maxResults) {
+  const root = config.magentoRoot;
+  if (!root) throw new Error('MAGENTO_ROOT not set');
+
+  const targetPath = searchPath ? path.join(root, searchPath) : root;
+  const semgrepLang = lang || 'php';
+  const limit = Math.min(maxResults || 50, 200);
+
+  // Create a temporary empty .semgrepignore in the target directory if none exists.
+  // Semgrep's default ignore list includes "vendor/" which is exactly what we need to scan.
+  // An empty .semgrepignore overrides the defaults: https://semgrep.dev/docs/ignoring-files-folders-code/
+  const semgrepIgnorePath = path.join(targetPath, '.semgrepignore');
+  let createdSemgrepIgnore = false;
+  if (!existsSync(semgrepIgnorePath)) {
+    try { writeFileSync(semgrepIgnorePath, '# Magector: scan vendor/ and all project files\n'); createdSemgrepIgnore = true; } catch { /* best effort */ }
+  }
+
+  const semgrepArgs = [
+    '--pattern', pattern,
+    '--lang', semgrepLang,
+    '--json',
+    '--no-git-ignore',
+    targetPath
+  ];
+
+  let rawOutput;
+  try {
+    rawOutput = execFileSync('semgrep', semgrepArgs, {
+      encoding: 'utf-8',
+      timeout: 60000,
+      maxBuffer: 20 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, PATH: process.env.PATH + ':/home/swed/.local/bin' }
+    });
+  } catch (err) {
+    // semgrep exits non-zero when it has findings — stdout still contains valid JSON
+    rawOutput = err.stdout || '';
+    if (!rawOutput) throw new Error(`semgrep failed: ${(err.stderr || err.message || '').slice(0, 500)}`);
+  } finally {
+    if (createdSemgrepIgnore) { try { unlinkSync(semgrepIgnorePath); } catch { /* best effort */ } }
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawOutput);
+  } catch {
+    throw new Error(`Failed to parse semgrep output. First 300 chars: ${rawOutput.slice(0, 300)}`);
+  }
+
+  const findings = (parsed.results || []).slice(0, limit);
+  return findings.map(r => ({
+    file: r.path.replace(root + '/', ''),
+    line: r.start.line,
+    endLine: r.end.line,
+    snippet: (r.extra?.lines || '').trim()
+  }));
+}
+
 // ─── MCP Server ─────────────────────────────────────────────────
 
 const server = new Server(
@@ -4143,8 +4203,41 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           context: {
             type: 'number',
-            description: 'Lines of context around each match (default: 2). Like grep -C.',
-            default: 2
+            description: 'Lines of context around each match (default: 4). Like grep -C. Use 0 for broad scans with many matches, then batch-read specific files.',
+            default: 4
+          },
+          filesOnly: {
+            type: 'boolean',
+            description: 'Return only file paths (like grep -l). No content, no context. Use for discovery: first find which files match, then batch-read them with magento_read. Dramatically reduces tokens when pattern matches many files.',
+            default: false
+          }
+        },
+        required: ['pattern']
+      }
+    },
+    {
+      name: 'magento_ast_search',
+      description: 'Structural PHP code search using semgrep patterns. Unlike magento_grep (text-based), this understands PHP AST — matches code structure regardless of variable names, ignores comments/strings, understands operator precedence. Use when grep gives false positives or you need structural awareness. Pattern syntax: $X = any expression/variable, $Y = any identifier, ... = any arguments. Examples: "$ORDER->getPayment()->$M(...)" finds all method calls on payment regardless of variable name; "$X->getPayment()->$Y(...)" finds all two-step chains involving getPayment. ⚡ For multi-query workflows use magento_batch.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          pattern: {
+            type: 'string',
+            description: 'Semgrep PHP pattern. $X = any expr, $Y = any identifier, ... = any args. Examples: "$X->getPayment()->$Y(...)", "if ($X !== null) { ... $X->$Y(...) }", "$X = $Y->getPayment(); ... $X->$Z(...)"'
+          },
+          path: {
+            type: 'string',
+            description: 'Subdirectory to search (relative to MAGENTO_ROOT). Default: entire codebase. Example: "vendor/acme/"'
+          },
+          lang: {
+            type: 'string',
+            description: 'Language to search (default: php). Options: php, xml, js.',
+            default: 'php'
+          },
+          maxResults: {
+            type: 'number',
+            description: 'Maximum matches to return (default: 50, max: 200)',
+            default: 50
           }
         },
         required: ['pattern']
@@ -4216,7 +4309,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // These tools have filesystem/di.xml fallbacks — work without serve process
     'magento_find_class', 'magento_find_method', 'magento_find_plugin',
     'magento_find_observer', 'magento_find_di_wiring', 'magento_module_structure',
-    'magento_batch', 'magento_find_config', 'magento_find_callers', 'magento_grep', 'magento_read', 'magento_trace_api'];
+    'magento_batch', 'magento_find_config', 'magento_find_callers', 'magento_grep', 'magento_read', 'magento_trace_api', 'magento_ast_search'];
   if (warmupInProgress && !indexFreeTools.includes(name)) {
     logToFile('REQ', `${name} → blocked (warmup: loading index)`);
     return {
@@ -6078,10 +6171,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const searchPath = a.path || '.';
                 const include = a.include || '*.php';
                 const maxRes = Math.min(a.maxResults || 30, 100);
-                const batchCtx = a.context !== undefined ? a.context : 2;
+                const batchCtx = a.context !== undefined ? a.context : 4;
+                const batchFilesOnly = a.filesOnly || false;
                 const gArgs = ['-rn', '-E'];
+                if (batchFilesOnly) { gArgs[0] = '-rl'; gArgs.splice(1, 1); } // -rl = recursive + files-only, drop -n
                 if (a.ignoreCase) gArgs.push('-i');
-                if (batchCtx > 0) gArgs.push('-C', String(batchCtx));
+                if (!batchFilesOnly && batchCtx > 0) gArgs.push('-C', String(batchCtx));
                 for (const pat of include.split(',').map(p => p.trim())) gArgs.push('--include=' + pat);
                 gArgs.push('--', a.pattern, searchPath);
                 let out;
@@ -6089,8 +6184,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   out = execFileSync('grep', gArgs, { cwd: config.magentoRoot, encoding: 'utf-8', timeout: 15000, maxBuffer: 5 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] });
                 } catch (err) { out = err.stdout || ''; }
                 const gLines = out.trim().split('\n').filter(Boolean);
-                text = `Found ${gLines.length} matches${gLines.length > maxRes ? ` (showing ${maxRes})` : ''}:\n`;
-                for (const gl of gLines.slice(0, maxRes)) text += gl + '\n';
+                if (batchFilesOnly) {
+                  text = `Files matching \`${a.pattern}\` (${gLines.length}):\n`;
+                  for (const gl of gLines.slice(0, maxRes)) text += gl + '\n';
+                } else {
+                  text = `Found ${gLines.length} matches${gLines.length > maxRes ? ` (showing ${maxRes})` : ''}:\n`;
+                  for (const gl of gLines.slice(0, maxRes)) text += gl + '\n';
+                }
+                break;
+              }
+              case 'magento_ast_search': {
+                const astResults = await astSearch(a.pattern, a.path, a.lang, a.maxResults);
+                if (astResults.length === 0) {
+                  text = `No matches for pattern: \`${a.pattern}\``;
+                } else {
+                  text = `Found ${astResults.length} match(es) for \`${a.pattern}\`:\n\n`;
+                  for (const r of astResults) text += `${r.file}:${r.line}: ${r.snippet}\n`;
+                }
                 break;
               }
               default:
@@ -6115,10 +6225,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const searchPath = args.path || '.';
         const include = args.include || '*.php';
         const maxResults = Math.min(args.maxResults || 50, 200);
-        const ctxLines = args.context !== undefined ? args.context : 2;
-        const grepArgs = ['-rn', '-E'];
+        const ctxLines = args.context !== undefined ? args.context : 4;
+        const filesOnly = args.filesOnly || false;
+        const grepArgs = filesOnly ? ['-rl', '-E'] : ['-rn', '-E'];
         if (args.ignoreCase) grepArgs.push('-i');
-        if (ctxLines > 0) grepArgs.push('-C', String(ctxLines));
+        if (!filesOnly && ctxLines > 0) grepArgs.push('-C', String(ctxLines));
         // Support multiple include patterns (e.g., "*.{php,xml}")
         for (const pat of include.split(',').map(p => p.trim())) {
           grepArgs.push('--include=' + pat);
@@ -6138,8 +6249,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const lines = output.trim().split('\n').filter(Boolean);
         const total = lines.length;
         const truncated = lines.slice(0, maxResults);
-        let text = `## grep: \`${args.pattern}\`\n`;
-        text += `Found **${total}** matches${total > maxResults ? ` (showing first ${maxResults})` : ''}\n\n`;
+        let text = filesOnly
+          ? `## grep (files only): \`${args.pattern}\`\nFound **${total}** file(s)${total > maxResults ? ` (showing first ${maxResults})` : ''}. Use magento_read with methodName to read specific methods.\n\n`
+          : `## grep: \`${args.pattern}\`\nFound **${total}** matches${total > maxResults ? ` (showing first ${maxResults})` : ''}\n\n`;
         for (const line of truncated) {
           text += line + '\n';
         }
@@ -6324,7 +6436,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const numbered = sliced.map((line, i) => `${start + i + 1}\t${line}`).join('\n');
         let text = `## ${args.path}`;
         if (args.startLine || args.endLine) text += ` (lines ${start + 1}-${end})`;
+        // Hint: large file read without method extraction wastes tokens
+        if (!args.startLine && !args.endLine && allLines.length > 100) {
+          const methodMatches = content.match(/(?:public|protected|private)\s+(?:static\s+)?function\s+(\w+)/g) || [];
+          const methodNames = methodMatches.slice(0, 8).map(m => m.replace(/.*function\s+/, '')).join(', ');
+          text += `\n> 💡 **${allLines.length} lines** — add \`methodName\` to extract a single method (~10× fewer tokens). Methods: ${methodNames}${methodMatches.length > 8 ? ', ...' : ''}`;
+        }
         text += `\n\n${numbered}`;
+        return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_ast_search': {
+        const astResults = await astSearch(args.pattern, args.path, args.lang, args.maxResults);
+        if (astResults.length === 0) {
+          return { content: [{ type: 'text', text: `## magento_ast_search: \`${args.pattern}\`\n\nNo matches found.` }] };
+        }
+        let text = `## magento_ast_search: \`${args.pattern}\`\n`;
+        text += `Found **${astResults.length}** match(es)\n\n`;
+        for (const r of astResults) {
+          const lineInfo = r.endLine && r.endLine !== r.line ? `${r.line}-${r.endLine}` : String(r.line);
+          text += `**${r.file}:${lineInfo}**\n\`\`\`php\n${r.snippet}\n\`\`\`\n\n`;
+        }
         return { content: [{ type: 'text', text }] };
       }
 

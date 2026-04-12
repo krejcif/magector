@@ -1402,20 +1402,149 @@ async function testMagentoRead() {
 function testGrepDefaultContext() {
   console.log('\n── grep default context ──');
 
-  // Verify the default context value is 2
+  // Default context is now 4 (increased from 2 for better null-guard visibility)
   const defaultCtx = undefined; // simulates args.context not provided
-  const ctxLines = defaultCtx !== undefined ? defaultCtx : 2;
-  assertEq(ctxLines, 2, 'grep default: context defaults to 2 when not provided');
+  const ctxLines = defaultCtx !== undefined ? defaultCtx : 4;
+  assertEq(ctxLines, 4, 'grep default: context defaults to 4 when not provided');
 
-  // Verify explicit 0 is respected
+  // Verify explicit 0 is respected (useful for broad scans)
   const explicitZero = 0;
-  const ctxZero = explicitZero !== undefined ? explicitZero : 2;
+  const ctxZero = explicitZero !== undefined ? explicitZero : 4;
   assertEq(ctxZero, 0, 'grep default: explicit 0 is respected');
 
   // Verify explicit value is respected
   const explicit5 = 5;
-  const ctx5 = explicit5 !== undefined ? explicit5 : 2;
+  const ctx5 = explicit5 !== undefined ? explicit5 : 4;
   assertEq(ctx5, 5, 'grep default: explicit 5 is respected');
+}
+
+// ─── grep filesOnly Tests ────────────────────────────────────────
+
+async function testGrepFilesOnly() {
+  console.log('\n── grep filesOnly ──');
+
+  const { execFileSync } = await import('child_process');
+  const tmpDir = path.join(__dirname, 'tmp_filesonly_test');
+  mkdirSync(path.join(tmpDir, 'vendor', 'acme', 'module-a', 'Model'), { recursive: true });
+  mkdirSync(path.join(tmpDir, 'vendor', 'acme', 'module-b', 'Model'), { recursive: true });
+
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-a/Model/Foo.php'),
+    '<?php\nclass Foo { public function bar() { return $this->baz->getMethod(); } }');
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-b/Model/Bar.php'),
+    '<?php\nclass Bar { public function run() { return $this->svc->getMethod(); } }');
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-b/Model/Baz.php'),
+    '<?php\nclass Baz { public function nope() { return 42; } }');
+
+  // filesOnly (-rl) returns only file paths, not content
+  let filesOutput;
+  try {
+    filesOutput = execFileSync('grep', ['-rl', '--include=*.php', '--', 'getMethod()', '.'],
+      { cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch (err) { filesOutput = err.stdout || ''; }
+  const matchedFiles = filesOutput.trim().split('\n').filter(Boolean);
+  assertEq(matchedFiles.length, 2, 'filesOnly: returns 2 files with getMethod()');
+  assert(matchedFiles.every(f => f.endsWith('.php')), 'filesOnly: each result is a file path');
+  assert(!matchedFiles.some(f => f.includes('Baz.php')), 'filesOnly: non-matching file excluded');
+
+  // filesOnly output has no line numbers or content
+  assert(!filesOutput.includes('getMethod'), 'filesOnly: output contains no code content');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
+// ─── magento_ast_search Tests ────────────────────────────────────
+
+async function testAstSearch() {
+  console.log('\n── magento_ast_search (semgrep) ──');
+
+  const { execFileSync } = await import('child_process');
+  // Use /tmp to avoid being inside the magector git repo (semgrep uses git root for .semgrepignore lookup)
+  const tmpDir = '/tmp/magector_ast_test_' + Date.now();
+  mkdirSync(path.join(tmpDir, 'vendor', 'acme', 'module-test'), { recursive: true });
+  // Empty .semgrepignore overrides semgrep's default ignore list (which includes vendor/)
+  writeFileSync(path.join(tmpDir, '.semgrepignore'), '# Magector test: scan all\n');
+
+  // File with unsafe chain (no null guard)
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-test/Unsafe.php'), [
+    '<?php',
+    'class Unsafe {',
+    '    public function execute($order) {',
+    '        $method = $order->getPayment()->getMethod();',
+    '        return $method;',
+    '    }',
+    '}'
+  ].join('\n'));
+
+  // File with safe chain (null guard present)
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-test/Safe.php'), [
+    '<?php',
+    'class Safe {',
+    '    public function execute($order) {',
+    '        $payment = $order->getPayment();',
+    '        if ($payment !== null) {',
+    '            return $payment->getMethod();',
+    '        }',
+    '        return null;',
+    '    }',
+    '}'
+  ].join('\n'));
+
+  // semgrep should find the unsafe chain pattern in both-method-chain case
+  let semgrepOut;
+  try {
+    semgrepOut = execFileSync('semgrep', [
+      '--pattern', '$X->getPayment()->$Y(...)',
+      '--lang', 'php',
+      '--json',
+      '--no-git-ignore',
+      tmpDir
+    ], { encoding: 'utf-8', timeout: 30000, maxBuffer: 5 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'],
+         env: { ...process.env, PATH: process.env.PATH + ':/home/swed/.local/bin' } });
+  } catch (err) { semgrepOut = err.stdout || ''; }
+
+  let parsed;
+  try { parsed = JSON.parse(semgrepOut); } catch { parsed = { results: [] }; }
+
+  assert(parsed.results !== undefined, 'ast_search: semgrep returns results array');
+  assert(parsed.results.length >= 1, 'ast_search: finds at least 1 match for ->getPayment()->$Y(...)');
+  assert(parsed.results.some(r => r.path.includes('Unsafe.php')), 'ast_search: match found in Unsafe.php');
+  // The safe version splits the chain, so it may or may not match depending on semgrep version
+  assert(parsed.results.every(r => r.start && r.end), 'ast_search: each result has location info');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
+// ─── magento_read methodName hint Tests ─────────────────────────
+
+async function testReadMethodNameHint() {
+  console.log('\n── magento_read methodName hint ──');
+
+  const tmpDir = path.join(__dirname, 'tmp_read_hint_test');
+  mkdirSync(path.join(tmpDir, 'vendor', 'acme'), { recursive: true });
+
+  // Build a file with > 100 lines
+  const methods = [];
+  for (let i = 0; i < 5; i++) {
+    methods.push(`    public function method${i}()\n    {\n        return ${i};\n    }`);
+  }
+  const bigFile = ['<?php', 'namespace Acme\\Test;', 'class BigService', '{', ...methods, '}'].join('\n');
+  // Pad to > 100 lines
+  const padded = bigFile + '\n' + '// padding\n'.repeat(90);
+  const filePath = path.join(tmpDir, 'vendor/acme/BigService.php');
+  writeFileSync(filePath, padded);
+
+  const content = readFileSync(filePath, 'utf-8');
+  const lines = content.split('\n');
+  assert(lines.length > 100, 'read hint: test file has >100 lines');
+
+  // Simulate hint logic from mcp-server.js
+  const methodMatches = content.match(/(?:public|protected|private)\s+(?:static\s+)?function\s+(\w+)/g) || [];
+  assert(methodMatches.length >= 5, 'read hint: detects 5 methods');
+  const methodNames = methodMatches.slice(0, 8).map(m => m.replace(/.*function\s+/, ''));
+  assert(methodNames.includes('method0'), 'read hint: method0 in extracted names');
+  assert(methodNames.includes('method4'), 'read hint: method4 in extracted names');
+
+  rmSync(tmpDir, { recursive: true, force: true });
 }
 
 // ─── buildTraceSummary Tests ────────────────────────────────────
@@ -4183,6 +4312,9 @@ async function main() {
   await testMagentoGrep();
   await testMagentoRead();
   testGrepDefaultContext();
+  await testGrepFilesOnly();
+  await testAstSearch();
+  await testReadMethodNameHint();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);

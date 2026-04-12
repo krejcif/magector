@@ -4,6 +4,16 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.12.0] - 2026-04-12
+
+### Added
+- **`magento_ast_search` tool** — structural PHP code search using [semgrep](https://semgrep.dev). Unlike `magento_grep` (text-based), this understands PHP AST: matches code structure regardless of variable names, ignores matches inside comments and strings. Pattern syntax: `$X` = any expression, `$Y` = any identifier, `...` = any arguments. Example: `$ORDER->getPayment()->$M(...)` finds all two-step method chains on payment objects, regardless of variable name. Available standalone and in `magento_batch`. Requires `semgrep` installed (`pip install semgrep`).
+- **`magento_grep` `filesOnly` parameter** — returns only matching file paths (like `grep -l`), no content or line numbers. Use for discovery: first find which files match, then batch-read specific files with `magento_read`. Dramatically reduces tokens when a pattern matches many files.
+
+### Changed
+- **`magento_grep` default context increased from 2 → 4 lines** — agents can now see null-guard checks (`!== null`, `is_null(`) in the surrounding code without needing a follow-up file read. Set `context: 0` for broad scans with 30+ matches.
+- **`magento_read` now hints when reading large files without `methodName`** — if a file has >100 lines and no `methodName` param is provided, the response appends a tip listing available methods and recommending targeted extraction (~10× fewer tokens).
+
 ## [2.9.0] - 2026-04-10
 
 ### Added
