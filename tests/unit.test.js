@@ -4331,11 +4331,6 @@ async function main() {
   process.exit(failed > 0 ? 1 : 0);
 }
 
-main().catch((e) => {
-  console.error('Test runner error:', e);
-  process.exit(1);
-});
-
 // ─── hasNullGuard Tests ──────────────────────────────────────────
 
 function testHasNullGuard() {
@@ -4344,8 +4339,10 @@ function testHasNullGuard() {
   function mockHasNullGuard(lines, matchLineIdx, receiverExpr, guardRadius = 6) {
     const start = Math.max(0, matchLineIdx - guardRadius);
     const end = Math.min(lines.length - 1, matchLineIdx + guardRadius);
+    const matchLine = lines[matchLineIdx] || '';
     const window = lines.slice(start, end + 1).join('\n');
-    if (window.includes('?->')) return true;
+    // ?-> only counts if it's on the same line as the chain
+    if (matchLine.includes('?->')) return true;
     if (/\?\?|\?:/.test(window)) return true;
     if (receiverExpr) {
       const esc = receiverExpr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -4365,6 +4362,14 @@ function testHasNullGuard() {
 
   const safeIsNull = ['    if (!is_null($payment)) {', '        return $payment->getMethod();', '    }'];
   assert(mockHasNullGuard(safeIsNull, 1, '$payment'), 'hasNullGuard: is_null() detected');
+
+  // P2 regression: ?-> on a DIFFERENT variable in the window must NOT count as a guard
+  const falsePositiveLines = [
+    '    $name = $customer?->getName();',
+    '    $method = $order->getPayment()->getMethod();',
+    '    return $method;'
+  ];
+  assert(!mockHasNullGuard(falsePositiveLines, 1, '$order'), 'hasNullGuard: ?-> on different variable is not a guard');
 }
 
 // ─── enrichMethodChains regex Tests ─────────────────────────────
@@ -4398,3 +4403,8 @@ function testEnrichChainRegex() {
   while ((m = chainRegex.exec(single)) !== null) m3.push(m);
   assertEq(m3.length, 0, 'enrich regex: no match for single call');
 }
+
+main().catch((e) => {
+  console.error('Test runner error:', e);
+  process.exit(1);
+});

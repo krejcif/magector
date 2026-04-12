@@ -4,6 +4,18 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.13.1] - 2026-04-12
+
+### Fixed
+- **`enrichMethodChains` transaction safety** — enrichment DB writes are now wrapped in BEGIN/COMMIT/ROLLBACK. Previously, a crash mid-insert could leave partial data (DELETE completed but not all INSERTs).
+- **`hasNullGuard` false positive on `?->`** — nullsafe operator (`?->`) on a different variable in surrounding code no longer marks unrelated chains as safe. Now only checks the matched line itself.
+- **Batch `magento_grep` `filesOnly` dropped `-E` flag** — batch handler used splice mutation that removed the extended-regex flag. Aligned with standalone handler's clean ternary approach.
+
+### Changed
+- **`enrichMethodChains` line counting O(n) per match → O(log n)** — replaced repeated `content.slice().split()` with binary search on a pre-built line-offset index.
+- **Removed unused `options` parameter** from `enrichMethodChains()`.
+- **Test file structure** — moved `testHasNullGuard` and `testEnrichChainRegex` before `main()` for consistency with other tests. Added regression test for `?->` false positive.
+
 ## [2.13.0] - 2026-04-12
 
 ### Added

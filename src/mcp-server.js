@@ -3439,9 +3439,11 @@ const ENRICHMENT_DB_PATH = (root) => path.join(root, '.magector', 'enrichment.db
 function hasNullGuard(lines, matchLineIdx, receiverExpr, guardRadius = 6) {
   const start = Math.max(0, matchLineIdx - guardRadius);
   const end = Math.min(lines.length - 1, matchLineIdx + guardRadius);
+  const matchLine = lines[matchLineIdx] || '';
   const window = lines.slice(start, end + 1).join('\n');
 
-  if (window.includes('?->')) return true;
+  // ?-> only counts if it's on the same line as the chain (avoid false positives from unrelated variables)
+  if (matchLine.includes('?->')) return true;
   if (/\?\?|\?:/.test(window)) return true;
 
   if (receiverExpr) {
@@ -3455,7 +3457,7 @@ function hasNullGuard(lines, matchLineIdx, receiverExpr, guardRadius = 6) {
  * Scan vendor/ PHP files for ->first()->second() chains and store null-safety
  * analysis in enrichment.db. Called by magento_enrich and after magento_index.
  */
-async function enrichMethodChains(root, options = {}) {
+async function enrichMethodChains(root) {
   const dbPath = ENRICHMENT_DB_PATH(root);
 
   // Use node:sqlite (built-in, no deps)
@@ -3497,36 +3499,63 @@ async function enrichMethodChains(root, options = {}) {
   );
   const deleteFile = db.prepare('DELETE FROM method_chains WHERE file = ?');
 
-  // Process files in batches for memory efficiency
-  for (const phpFile of phpFiles) {
-    let content;
-    try { content = readFileSync(phpFile, 'utf-8'); } catch { continue; }
-    if (!content.includes('->')) continue;
-
-    const relPath = phpFile.replace(root + '/', '');
-    const lines = content.split('\n');
-    const rows = [];
-
-    chainRegex.lastIndex = 0;
-    let m;
-    while ((m = chainRegex.exec(content)) !== null) {
-      const lineNum = content.slice(0, m.index).split('\n').length;
-      rows.push({
-        file: relPath, line: lineNum,
-        chain: `->${m[2]}()->${m[3]}()`,
-        firstMethod: m[2], secondMethod: m[3],
-        hasNullGuard: hasNullGuard(lines, lineNum - 1, m[1]) ? 1 : 0
-      });
-      chains++;
+  // Build line-offset index for O(1) line number lookups
+  function buildLineIndex(content) {
+    const offsets = [0];
+    let idx = 0;
+    while ((idx = content.indexOf('\n', idx)) !== -1) {
+      idx++;
+      offsets.push(idx);
     }
+    return offsets;
+  }
 
-    if (rows.length > 0) {
-      deleteFile.run(relPath);
-      for (const r of rows) {
-        insertStmt.run(r.file, r.line, r.chain, r.firstMethod, r.secondMethod, r.hasNullGuard, now);
+  function lineFromOffset(offsets, charIndex) {
+    let lo = 0, hi = offsets.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (offsets[mid] <= charIndex) lo = mid; else hi = mid - 1;
+    }
+    return lo + 1; // 1-based
+  }
+
+  db.exec('BEGIN');
+  try {
+    for (const phpFile of phpFiles) {
+      let content;
+      try { content = readFileSync(phpFile, 'utf-8'); } catch { continue; }
+      if (!content.includes('->')) continue;
+
+      const relPath = phpFile.replace(root + '/', '');
+      const lines = content.split('\n');
+      const lineOffsets = buildLineIndex(content);
+      const rows = [];
+
+      chainRegex.lastIndex = 0;
+      let m;
+      while ((m = chainRegex.exec(content)) !== null) {
+        const lineNum = lineFromOffset(lineOffsets, m.index);
+        rows.push({
+          file: relPath, line: lineNum,
+          chain: `->${m[2]}()->${m[3]}()`,
+          firstMethod: m[2], secondMethod: m[3],
+          hasNullGuard: hasNullGuard(lines, lineNum - 1, m[1]) ? 1 : 0
+        });
+        chains++;
       }
+
+      if (rows.length > 0) {
+        deleteFile.run(relPath);
+        for (const r of rows) {
+          insertStmt.run(r.file, r.line, r.chain, r.firstMethod, r.secondMethod, r.hasNullGuard, now);
+        }
+      }
+      scanned++;
     }
-    scanned++;
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
   }
 
   db.close();
@@ -4736,7 +4765,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const root = args.path || config.magentoRoot;
         const output = rustIndex(root);
         // Auto-enrich after indexing: runs in background, doesn't block response
-        enrichMethodChains(root, { verbose: true }).then(({ scanned, chains }) => {
+        enrichMethodChains(root).then(({ scanned, chains }) => {
           logToFile('INFO', `Auto-enrich complete: ${scanned} files, ${chains} chains`);
         }).catch(err => {
           logToFile('WARN', `Auto-enrich failed: ${err.message}`);
@@ -6342,8 +6371,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const maxRes = Math.min(a.maxResults || 30, 100);
                 const batchCtx = a.context !== undefined ? a.context : 4;
                 const batchFilesOnly = a.filesOnly || false;
-                const gArgs = ['-rn', '-E'];
-                if (batchFilesOnly) { gArgs[0] = '-rl'; gArgs.splice(1, 1); } // -rl = recursive + files-only, drop -n
+                const gArgs = batchFilesOnly ? ['-rl', '-E'] : ['-rn', '-E'];
                 if (a.ignoreCase) gArgs.push('-i');
                 if (!batchFilesOnly && batchCtx > 0) gArgs.push('-C', String(batchCtx));
                 for (const pat of include.split(',').map(p => p.trim())) gArgs.push('--include=' + pat);
@@ -6647,7 +6675,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!root) return { content: [{ type: 'text', text: 'MAGENTO_ROOT not set.' }], isError: true };
         let text = `## magento_enrich\n\nScanning vendor/ PHP files for method chains...\n`;
         try {
-          const { scanned, chains } = await enrichMethodChains(root, { verbose: true });
+          const { scanned, chains } = await enrichMethodChains(root);
           text += `\n✅ **Done**\n- Files scanned: ${scanned}\n- Method chains indexed: ${chains}\n- Null-risk index saved to: \`.magector/enrichment.db\`\n\nUse \`magento_find_null_risks\` to query unsafe chains.`;
         } catch (err) {
           text += `\n❌ Error: ${err.message}`;
