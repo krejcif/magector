@@ -2,10 +2,10 @@
 
 **Technology-aware MCP server for Magento 2 and Adobe Commerce with intelligent indexing and search.**
 
-Magector is a Model Context Protocol (MCP) server that deeply understands Magento 2 and Adobe Commerce. It builds a semantic vector index of your entire codebase — 18,000+ files across hundreds of modules — and exposes 34 tools that let AI assistants search, navigate, and understand the code with domain-specific intelligence. Instead of grepping for keywords, your AI asks *"how are checkout totals calculated?"* and gets ranked, relevant results in under 50ms, enriched with Magento pattern detection (plugins, observers, controllers, DI preferences, layout XML, and 20+ more).
+Magector is a Model Context Protocol (MCP) server that deeply understands Magento 2 and Adobe Commerce. It builds a semantic vector index of your entire codebase — 18,000+ files across hundreds of modules — and exposes 45 tools that let AI assistants search, navigate, and understand the code with domain-specific intelligence. Instead of grepping for keywords, your AI asks *"how are checkout totals calculated?"* and gets ranked, relevant results in under 50ms, enriched with Magento pattern detection (plugins, observers, controllers, DI preferences, layout XML, and 20+ more).
 
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
-[![Node.js](https://img.shields.io/badge/node-18+-green.svg)](https://nodejs.org)
+[![Node.js](https://img.shields.io/badge/node-22.5+-green.svg)](https://nodejs.org)
 [![Magento](https://img.shields.io/badge/magento-2.4.x-blue.svg)](https://magento.com)
 [![Adobe Commerce](https://img.shields.io/badge/adobe%20commerce-supported-blue.svg)](https://business.adobe.com/products/magento/magento-commerce.html)
 [![Accuracy](https://img.shields.io/badge/accuracy-99.2%25-brightgreen.svg)](#validation)
@@ -58,7 +58,7 @@ The result: your AI assistant calls one MCP tool and gets ranked, pattern-enrich
 - **Complexity analysis** -- cyclomatic complexity, function count, and hotspot detection across modules
 - **Fast** -- 10-45ms queries via persistent serve process, batched ONNX embedding with adaptive thread scaling
 - **LLM description enrichment** -- generate natural-language descriptions of di.xml files using Claude, stored in SQLite, and prepend them to embedding text so descriptions influence vector search ranking (not just post-retrieval display)
-- **MCP server** -- 34 tools integrating with Claude Code, Cursor, and any MCP-compatible AI tool
+- **MCP server** -- 45 tools integrating with Claude Code, Cursor, and any MCP-compatible AI tool
 - **Clean architecture** -- Rust core handles all indexing/search, Node.js MCP server delegates to it
 
 ---
@@ -70,7 +70,7 @@ flowchart LR
   subgraph node ["Node.js Layer"]
     direction TB
     G["CLI<br/>init · index · search · describe"]
-    E["MCP Server<br/>34 tools · LRU cache"]
+    E["MCP Server<br/>45 tools · LRU cache"]
     F["Persistent Serve Process"]
     G --> F
     E --> F
@@ -129,7 +129,8 @@ flowchart LR
 | JS parsing | `tree-sitter-javascript` | AMD/ES6 module detection |
 | Pattern detection | Custom Rust | 20+ Magento-specific patterns |
 | CLI | `clap` | Command-line interface (index, search, serve, validate) |
-| Descriptions | `rusqlite` (bundled SQLite) | LLM-generated di.xml descriptions stored in SQLite, prepended to embeddings |
+| Descriptions | `rusqlite` (bundled SQLite) | LLM-generated di.xml descriptions stored in `.magector/sqlite.db`, prepended to embeddings |
+| Null-safety index | `node:sqlite` (Node.js 22.5+ built-in) | Method-chain enrichment index in `.magector/enrichment.db` — O(1) null-risk queries |
 | SONA | Custom Rust | Feedback learning with MicroLoRA + EWC++ |
 | MCP server | `@modelcontextprotocol/sdk` | AI tool integration with structured JSON output |
 
@@ -139,7 +140,8 @@ flowchart LR
 
 ### Prerequisites
 
-- [Node.js 18+](https://nodejs.org)
+- [Node.js 22.5+](https://nodejs.org) — required for built-in `node:sqlite` (used by `magento_enrich` / `magento_find_null_risks`)
+- [semgrep](https://semgrep.dev) (optional) — required for `magento_ast_search`: `pip install semgrep`
 
 ### 1. Initialize in Your Project
 
@@ -369,7 +371,7 @@ npx magector index --force
 
 ## MCP Server Tools
 
-The MCP server exposes 34 tools for AI-assisted Magento 2 and Adobe Commerce development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
+The MCP server exposes 45 tools for AI-assisted Magento 2 and Adobe Commerce development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
 
 ### Output Format
 
@@ -470,9 +472,23 @@ Auto-detects entry type from pattern (`/V1/...` → API, `snake_case` → event,
 | Tool | Description |
 |------|-------------|
 | `magento_module_structure` | Show complete module structure -- controllers, models, blocks, plugins, observers, configs |
-| `magento_index` | Trigger re-indexing of the codebase |
-| `magento_describe` | Generate LLM descriptions for di.xml files (requires `ANTHROPIC_API_KEY`), stored in SQLite, auto-reindexes affected files |
+| `magento_index` | Trigger re-indexing of the codebase (also kicks off background enrichment) |
+| `magento_describe` | Generate LLM descriptions for di.xml files (requires `ANTHROPIC_API_KEY`), stored in `.magector/sqlite.db`, auto-reindexes affected files |
 | `magento_stats` | View index statistics |
+| `magento_batch` | Execute multiple tool queries in parallel in one MCP roundtrip. Supports all search, find, grep, read, and null-risk tools. Use to avoid N×3-5s roundtrip overhead. |
+| `magento_grep` | Exact text/regex search across PHP/XML/PHTML files (`grep -rn -E` internally). Supports `filesOnly` mode (like `grep -l`), `context` lines, `ignoreCase`, `include` patterns. **(v2.9)** |
+| `magento_read` | Read a specific file with optional `methodName` extraction (~10× fewer tokens than reading the whole file) and `startLine`/`endLine` range. **(v2.10)** |
+| `magento_trace_api` | Trace REST/GraphQL API endpoint from URL to implementation: webapi.xml → service interface → DI preference → method body. One call replaces 4-5 grep+read steps. **(v2.11)** |
+| `magento_find_trigger` | Find database triggers across the codebase |
+| `magento_find_table_usage` | Find all PHP code referencing a specific database table |
+
+### Null-Safety Analysis (v2.12–v2.13)
+
+| Tool | Description |
+|------|-------------|
+| `magento_ast_search` | Structural PHP code search using [semgrep](https://semgrep.dev). Understands PHP AST — matches by structure regardless of variable names, ignores comments/strings. Pattern syntax: `$X` = any expression, `$Y` = any identifier, `...` = any args. Example: `$X->getPayment()->$Y(...)`. Requires `semgrep`. **(v2.12)** |
+| `magento_enrich` | Build the method-chain enrichment index. Scans all `vendor/` PHP files for `->firstMethod()->secondMethod()` chains and detects null guards in surrounding code. Stores results in `.magector/enrichment.db` (SQLite, `node:sqlite`). Runs automatically after `magento_index`. **(v2.13)** |
+| `magento_find_null_risks` | Query the enrichment index for method chains without null guards. O(1) SQLite query instead of file scanning. Pass `firstMethod` to filter (e.g., `"getPayment"` → all `->getPayment()->anything()` without null guard). Requires `magento_enrich`. **(v2.13)** |
 
 ### Search Enhancements (v2.1)
 
@@ -656,7 +672,7 @@ cd rust-core && cargo run --release -- validate -m ./magento2 --skip-index
 magector/
 ├── src/                          # Node.js source
 │   ├── cli.js                    # CLI entry point (npx magector <command>)
-│   ├── mcp-server.js             # MCP server (34 tools, structured JSON output)
+│   ├── mcp-server.js             # MCP server (45 tools, structured JSON output)
 │   ├── binary.js                 # Platform binary resolver
 │   ├── model.js                  # ONNX model resolver/downloader
 │   ├── init.js                   # Full init command (index + IDE config)
