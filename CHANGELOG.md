@@ -4,6 +4,18 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.14.0] - 2026-04-12
+
+### Added
+- **Comprehensive diagnostic logging** — all new v2.12/v2.13 functions now have structured log entries for debugging production issues:
+  - `astSearch()`: logs pattern, path, lang, semgrep execution time, result count, semgrep errors, and `.semgrepignore` lifecycle
+  - `enrichMethodChains()`: logs start, file count, progress every 10k files, per-file read errors (first 5), transaction failures, and final summary with timing
+  - `queryNullRisks()`: logs missing enrichment.db, unavailable node:sqlite, query parameters, result count, and query timing
+  - `magento_batch`: logs query list on entry, per-tool timing and errors for each sub-query
+  - `magento_grep`: logs slow queries (>5s) and timeouts
+  - `magento_read`: logs file-not-found errors and failed method extractions
+  - Auto-enrich after `magento_index`: logs start event (previously only logged completion)
+
 ## [2.13.1] - 2026-04-12
 
 ### Fixed

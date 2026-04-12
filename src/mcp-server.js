@@ -3459,12 +3459,15 @@ function hasNullGuard(lines, matchLineIdx, receiverExpr, guardRadius = 6) {
  */
 async function enrichMethodChains(root) {
   const dbPath = ENRICHMENT_DB_PATH(root);
+  logToFile('INFO', `enrich: starting method-chain scan, db=${dbPath}`);
+  const enrichStart = Date.now();
 
   // Use node:sqlite (built-in, no deps)
   let DatabaseSync;
   try {
     ({ DatabaseSync } = await import('node:sqlite'));
   } catch {
+    logToFile('ERR', 'enrich: node:sqlite not available — requires Node.js 22.5+');
     throw new Error('node:sqlite not available — requires Node.js 22.5+');
   }
 
@@ -3491,8 +3494,10 @@ async function enrichMethodChains(root) {
   const now = Date.now();
 
   const phpFiles = await glob('vendor/**/*.php', { cwd: root, absolute: true, nodir: true });
+  logToFile('INFO', `enrich: found ${phpFiles.length} PHP files in vendor/`);
   let scanned = 0;
   let chains = 0;
+  let readErrors = 0;
 
   const insertStmt = db.prepare(
     'INSERT INTO method_chains (file, line, chain, first_method, second_method, has_null_guard, updated_at) VALUES (?,?,?,?,?,?,?)'
@@ -3519,11 +3524,18 @@ async function enrichMethodChains(root) {
     return lo + 1; // 1-based
   }
 
+  // Progress logging every 10k files
+  const progressInterval = 10000;
+
   db.exec('BEGIN');
   try {
     for (const phpFile of phpFiles) {
       let content;
-      try { content = readFileSync(phpFile, 'utf-8'); } catch { continue; }
+      try { content = readFileSync(phpFile, 'utf-8'); } catch (err) {
+        readErrors++;
+        if (readErrors <= 5) logToFile('WARN', `enrich: cannot read ${phpFile}: ${err.code || err.message}`);
+        continue;
+      }
       if (!content.includes('->')) continue;
 
       const relPath = phpFile.replace(root + '/', '');
@@ -3551,14 +3563,20 @@ async function enrichMethodChains(root) {
         }
       }
       scanned++;
+      if (scanned % progressInterval === 0) {
+        logToFile('INFO', `enrich: progress ${scanned}/${phpFiles.length} files, ${chains} chains so far (${Date.now() - enrichStart}ms)`);
+      }
     }
     db.exec('COMMIT');
   } catch (err) {
+    logToFile('ERR', `enrich: transaction failed at file ${scanned}/${phpFiles.length}: ${err.message}`);
     db.exec('ROLLBACK');
     throw err;
   }
 
   db.close();
+  const enrichElapsed = Date.now() - enrichStart;
+  logToFile('INFO', `enrich: complete — ${scanned} files scanned, ${chains} chains indexed, ${readErrors} read errors, ${enrichElapsed}ms`);
   return { scanned, chains };
 }
 
@@ -3567,15 +3585,21 @@ async function enrichMethodChains(root) {
  */
 async function queryNullRisks(root, firstMethod, limit = 100) {
   const dbPath = ENRICHMENT_DB_PATH(root);
-  if (!existsSync(dbPath)) return null;
+  if (!existsSync(dbPath)) {
+    logToFile('WARN', `null_risks: enrichment.db not found at ${dbPath} — run magento_enrich first`);
+    return null;
+  }
 
   let DatabaseSync;
   try {
     ({ DatabaseSync } = await import('node:sqlite'));
-  } catch {
+  } catch (err) {
+    logToFile('ERR', `null_risks: node:sqlite not available: ${err.message}`);
     return null;
   }
 
+  const queryStart = Date.now();
+  logToFile('INFO', `null_risks: querying firstMethod=${firstMethod || '(all)'} limit=${limit}`);
   const db = new DatabaseSync(dbPath, { open: true });
   let rows;
   try {
@@ -3591,6 +3615,7 @@ async function queryNullRisks(root, firstMethod, limit = 100) {
   } finally {
     db.close();
   }
+  logToFile('INFO', `null_risks: ${rows.length} unsafe chain(s) found in ${Date.now() - queryStart}ms`);
   return rows;
 }
 
@@ -3604,13 +3629,22 @@ async function astSearch(pattern, searchPath, lang, maxResults) {
   const semgrepLang = lang || 'php';
   const limit = Math.min(maxResults || 50, 200);
 
+  logToFile('INFO', `ast_search: pattern="${pattern}" path="${searchPath || '.'}" lang=${semgrepLang} limit=${limit}`);
+  const astStart = Date.now();
+
   // Create a temporary empty .semgrepignore in the target directory if none exists.
   // Semgrep's default ignore list includes "vendor/" which is exactly what we need to scan.
   // An empty .semgrepignore overrides the defaults: https://semgrep.dev/docs/ignoring-files-folders-code/
   const semgrepIgnorePath = path.join(targetPath, '.semgrepignore');
   let createdSemgrepIgnore = false;
   if (!existsSync(semgrepIgnorePath)) {
-    try { writeFileSync(semgrepIgnorePath, '# Magector: scan vendor/ and all project files\n'); createdSemgrepIgnore = true; } catch { /* best effort */ }
+    try {
+      writeFileSync(semgrepIgnorePath, '# Magector: scan vendor/ and all project files\n');
+      createdSemgrepIgnore = true;
+      logToFile('INFO', `ast_search: created temporary .semgrepignore at ${targetPath}`);
+    } catch (err) {
+      logToFile('WARN', `ast_search: failed to create .semgrepignore: ${err.message}`);
+    }
   }
 
   const semgrepArgs = [
@@ -3633,7 +3667,11 @@ async function astSearch(pattern, searchPath, lang, maxResults) {
   } catch (err) {
     // semgrep exits non-zero when it has findings — stdout still contains valid JSON
     rawOutput = err.stdout || '';
-    if (!rawOutput) throw new Error(`semgrep failed: ${(err.stderr || err.message || '').slice(0, 500)}`);
+    if (!rawOutput) {
+      const errMsg = (err.stderr || err.message || '').slice(0, 500);
+      logToFile('ERR', `ast_search: semgrep failed after ${Date.now() - astStart}ms: ${errMsg}`);
+      throw new Error(`semgrep failed: ${errMsg}`);
+    }
   } finally {
     if (createdSemgrepIgnore) { try { unlinkSync(semgrepIgnorePath); } catch { /* best effort */ } }
   }
@@ -3642,10 +3680,16 @@ async function astSearch(pattern, searchPath, lang, maxResults) {
   try {
     parsed = JSON.parse(rawOutput);
   } catch {
+    logToFile('ERR', `ast_search: failed to parse semgrep JSON output (${rawOutput.length} bytes)`);
     throw new Error(`Failed to parse semgrep output. First 300 chars: ${rawOutput.slice(0, 300)}`);
   }
 
   const findings = (parsed.results || []).slice(0, limit);
+  const astElapsed = Date.now() - astStart;
+  logToFile('INFO', `ast_search: ${findings.length} match(es) in ${astElapsed}ms (semgrep returned ${(parsed.results || []).length} total)`);
+  if (parsed.errors && parsed.errors.length > 0) {
+    logToFile('WARN', `ast_search: semgrep reported ${parsed.errors.length} error(s): ${parsed.errors.slice(0, 3).map(e => e.message || e.type || JSON.stringify(e)).join('; ')}`);
+  }
   return findings.map(r => ({
     file: r.path.replace(root + '/', ''),
     line: r.start.line,
@@ -4765,6 +4809,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const root = args.path || config.magentoRoot;
         const output = rustIndex(root);
         // Auto-enrich after indexing: runs in background, doesn't block response
+        logToFile('INFO', 'Auto-enrich: starting in background after index');
         enrichMethodChains(root).then(({ scanned, chains }) => {
           logToFile('INFO', `Auto-enrich complete: ${scanned} files, ${chains} chains`);
         }).catch(err => {
@@ -6112,8 +6157,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (queries.length > 10) {
           return { content: [{ type: 'text', text: 'Maximum 10 queries per batch.' }], isError: true };
         }
+        logToFile('INFO', `batch: ${queries.length} queries: ${queries.map(q => q.tool).join(', ')}`);
         // Run batch queries in parallel using existing standalone functions
         const batchResults = await Promise.all(queries.map(async (q, idx) => {
+          const batchItemStart = Date.now();
           try {
             const a = q.args || {};
             let text = '';
@@ -6416,8 +6463,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               default:
                 text = `Unsupported batch tool: ${q.tool}`;
             }
+            logToFile('INFO', `batch[${idx}]: ${q.tool} completed (${Date.now() - batchItemStart}ms)`);
             return { idx, tool: q.tool, text };
           } catch (err) {
+            logToFile('ERR', `batch[${idx}]: ${q.tool} failed (${Date.now() - batchItemStart}ms): ${err.message}`);
             return { idx, tool: q.tool, text: `Error: ${err.message}` };
           }
         }));
@@ -6446,6 +6495,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         grepArgs.push('--', args.pattern, searchPath);
         let output;
+        const grepStart = Date.now();
         try {
           output = execFileSync('grep', grepArgs, {
             cwd: root, encoding: 'utf-8', timeout: 30000,
@@ -6455,9 +6505,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         } catch (err) {
           // grep returns exit code 1 when no matches found
           output = err.stdout || '';
+          if (err.killed) logToFile('WARN', `grep: timed out after 30s for pattern "${args.pattern}"`);
         }
+        const grepElapsed = Date.now() - grepStart;
         const lines = output.trim().split('\n').filter(Boolean);
         const total = lines.length;
+        if (grepElapsed > 5000) logToFile('WARN', `grep: slow query "${args.pattern}" — ${total} matches in ${grepElapsed}ms`);
         const truncated = lines.slice(0, maxResults);
         let text = filesOnly
           ? `## grep (files only): \`${args.pattern}\`\nFound **${total}** file(s)${total > maxResults ? ` (showing first ${maxResults})` : ''}. Use magento_read with methodName to read specific methods.\n\n`
@@ -6619,6 +6672,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const filePath = path.join(root, args.path);
         let content;
         try { content = readFileSync(filePath, 'utf-8'); } catch (err) {
+          logToFile('WARN', `read: file not found: ${args.path} (${err.code || err.message})`);
           return { content: [{ type: 'text', text: `File not found: ${args.path}` }], isError: true };
         }
 
@@ -6626,6 +6680,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (args.methodName) {
           const body = readFullMethodBody(filePath, args.methodName);
           if (!body) {
+            logToFile('WARN', `read: method "${args.methodName}" not found in ${args.path}`);
             return { content: [{ type: 'text', text: `## ${args.path}\n\nMethod \`${args.methodName}\` not found in file.` }] };
           }
           // Find line number of the method
