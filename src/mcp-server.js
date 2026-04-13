@@ -3584,109 +3584,32 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
 // Enrichment logic has been moved to the Rust serve process (enrich / enrich_query commands).
 // Use serveQuery('enrich', { magento_root }) and serveQuery('enrich_query', { first_method, limit }).
 
-// ─── AST Search (semgrep) ───────────────────────────────────────
+// ─── AST Search (tree-sitter via Rust serve) ────────────────────
 
-async function astSearch(pattern, searchPath, lang, maxResults) {
+async function astSearch(patternName, searchPath, maxResults) {
   const root = config.magentoRoot;
   if (!root) throw new Error('MAGENTO_ROOT not set');
 
-  const targetPath = searchPath ? safePath(root, searchPath) : path.resolve(root);
-  if (!targetPath) {
-    logToFile('WARN', `ast_search: rejected path traversal attempt: "${searchPath}"`);
-    throw new Error(`Path escapes project root: ${searchPath}`);
-  }
-  const semgrepLang = lang || 'php';
+  const safeSp = searchPath ? safeRelPath(root, searchPath) : '.';
+  if (searchPath && !safeSp) throw new Error(`Path escapes project root: ${searchPath}`);
+
   const limit = Math.min(maxResults || 50, 200);
+  logToFile('INFO', `ast_search: pattern="${patternName}" path="${safeSp}" limit=${limit}`);
+  const start = Date.now();
 
-  logToFile('INFO', `ast_search: pattern="${pattern}" path="${searchPath || '.'}" lang=${semgrepLang} limit=${limit}`);
-  const astStart = Date.now();
+  const resp = await serveQuery('ast_query', { pattern: patternName, path: safeSp, limit }, 60000);
+  if (!resp.ok) throw new Error(resp.error || 'ast_query failed');
 
-  // Semgrep's default ignore list includes "vendor/" which is exactly what we need to scan.
-  // Semgrep resolves .semgrepignore from the git repo root, NOT the scan directory.
-  // An empty .semgrepignore at root overrides the defaults: https://semgrep.dev/docs/ignoring-files-folders-code/
-  const semgrepIgnorePath = path.join(root, '.semgrepignore');
-  let createdSemgrepIgnore = false;
-  if (!existsSync(semgrepIgnorePath)) {
-    try {
-      writeFileSync(semgrepIgnorePath, '# Magector: scan vendor/ and all project files\n');
-      createdSemgrepIgnore = true;
-      logToFile('INFO', `ast_search: created temporary .semgrepignore at ${root}`);
-    } catch (err) {
-      logToFile('WARN', `ast_search: failed to create .semgrepignore: ${err.message}`);
-    }
-  }
-
-  const semgrepArgs = [
-    '--pattern', pattern,
-    '--lang', semgrepLang,
-    '--json',
-    '--no-git-ignore',
-    targetPath
-  ];
-
-  let rawOutput;
-  try {
-    rawOutput = execFileSync('semgrep', semgrepArgs, {
-      encoding: 'utf-8',
-      timeout: 60000,
-      maxBuffer: 20 * 1024 * 1024,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, PATH: process.env.PATH + ':/home/swed/.local/bin' }
-    });
-  } catch (err) {
-    // semgrep exits non-zero when it has findings — stdout still contains valid JSON
-    rawOutput = err.stdout || '';
-    if (!rawOutput) {
-      const errMsg = (err.stderr || err.message || '').slice(0, 500);
-      logToFile('ERR', `ast_search: semgrep failed after ${Date.now() - astStart}ms: ${errMsg}`);
-      throw new Error(`semgrep failed: ${errMsg}`);
-    }
-  } finally {
-    if (createdSemgrepIgnore) { try { unlinkSync(semgrepIgnorePath); } catch { /* best effort */ } }
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(rawOutput);
-  } catch {
-    logToFile('ERR', `ast_search: failed to parse semgrep JSON output (${rawOutput.length} bytes)`);
-    throw new Error(`Failed to parse semgrep output. First 300 chars: ${rawOutput.slice(0, 300)}`);
-  }
-
-  const findings = (parsed.results || []).slice(0, limit);
-  const astElapsed = Date.now() - astStart;
-  logToFile('INFO', `ast_search: ${findings.length} match(es) in ${astElapsed}ms (semgrep returned ${(parsed.results || []).length} total)`);
-  if (parsed.errors && parsed.errors.length > 0) {
-    logToFile('WARN', `ast_search: semgrep reported ${parsed.errors.length} error(s): ${parsed.errors.slice(0, 3).map(e => e.message || e.type || JSON.stringify(e)).join('; ')}`);
-  }
-  return findings.map(r => {
-    // semgrep >=1.100 may return "requires login" in r.extra.lines for unlicensed installs.
-    // Fall back to r.extra.message which contains the matched expression (always available).
-    const rawLines = r.extra?.lines || '';
-    const snippet = (rawLines && rawLines !== 'requires login')
-      ? rawLines.trim()
-      : (r.extra?.message || '').trim();
-    return {
-      file: r.path.replace(root + '/', ''),
-      line: r.start.line,
-      endLine: r.end.line,
-      snippet
-    };
-  });
+  const elapsed = Date.now() - start;
+  const results = resp.data || [];
+  logToFile('INFO', `ast_search: ${results.length} match(es) in ${elapsed}ms`);
+  return results;
 }
 
 // ─── DataObject set-null Anti-pattern Detection ─────────────────
 
 async function findDataObjectIssues(searchPath, maxResults) {
-  // Detects DataObject::setX(null) anti-pattern:
-  //   setX(null) stores ['x' => null] in _data — key EXISTS with null value.
-  //   hasX() / hasData('x') calls array_key_exists() → returns true even for null.
-  //   This causes false-positive guard conditions: hasX() passes, getX() returns null.
-  //   Correct way to fully clear: unsetData('x') removes the key entirely.
-  const allResults = await astSearch('$X->$SETTER(null)', searchPath, 'php', 500);
-  const setterNullRegex = /->set[A-Z]\w+\s*\(\s*null\s*\)/;
-  const limit = Math.min(maxResults || 100, 500);
-  return allResults.filter(r => setterNullRegex.test(r.snippet)).slice(0, limit);
+  return astSearch('dataobject-set-null', searchPath, maxResults || 100);
 }
 
 // ─── MCP Server ─────────────────────────────────────────────────
@@ -4421,22 +4344,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_ast_search',
-      description: 'Structural PHP code search using semgrep patterns. Unlike magento_grep (text-based), this understands PHP AST — matches code structure regardless of variable names, ignores comments/strings, understands operator precedence. Use when grep gives false positives or you need structural awareness. Pattern syntax: $X = any expression/variable, $Y = any identifier, ... = any arguments. Examples: "$ORDER->getPayment()->$M(...)" finds all method calls on payment regardless of variable name; "$X->getPayment()->$Y(...)" finds all two-step chains involving getPayment. ⚡ For multi-query workflows use magento_batch.',
+      description: 'Structural PHP code search using tree-sitter AST queries. Unlike magento_grep (text-based), this understands PHP AST — matches code structure regardless of variable names, ignores comments/strings. Available named patterns: "dataobject-set-null" (finds ->setX(null) anti-pattern calls), "unchecked-method-chain" (finds ->a()->b() chains without null guards). Uses Rust tree-sitter for fast, accurate parsing. ⚡ For multi-query workflows use magento_batch.',
       inputSchema: {
         type: 'object',
         properties: {
           pattern: {
             type: 'string',
-            description: 'Semgrep PHP pattern. $X = any expr, $Y = any identifier, ... = any args. Examples: "$X->getPayment()->$Y(...)", "if ($X !== null) { ... $X->$Y(...) }", "$X = $Y->getPayment(); ... $X->$Z(...)"'
+            enum: ['dataobject-set-null', 'unchecked-method-chain'],
+            description: 'Named AST query pattern. "dataobject-set-null": finds ->setX(null) calls on DataObjects. "unchecked-method-chain": finds ->a()->b() chains without null guards.'
           },
           path: {
             type: 'string',
             description: 'Subdirectory to search (relative to MAGENTO_ROOT). Default: entire codebase. Example: "vendor/acme/"'
-          },
-          lang: {
-            type: 'string',
-            description: 'Language to search (default: php). Options: php, xml, js.',
-            default: 'php'
           },
           maxResults: {
             type: 'number',
@@ -6461,7 +6380,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 break;
               }
               case 'magento_ast_search': {
-                const astResults = await astSearch(a.pattern, a.path, a.lang, a.maxResults);
+                const astResults = await astSearch(a.pattern, a.path, a.maxResults);
                 if (astResults.length === 0) {
                   text = `No matches for pattern: \`${a.pattern}\``;
                 } else {
@@ -6756,7 +6675,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'magento_ast_search': {
-        const astResults = await astSearch(args.pattern, args.path, args.lang, args.maxResults);
+        const astResults = await astSearch(args.pattern, args.path, args.maxResults);
         if (astResults.length === 0) {
           return { content: [{ type: 'text', text: `## magento_ast_search: \`${args.pattern}\`\n\nNo matches found.` }] };
         }
