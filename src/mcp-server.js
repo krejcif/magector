@@ -6360,22 +6360,64 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const maxRes = Math.min(a.maxResults || 30, 100);
                 const batchCtx = a.context !== undefined ? a.context : 4;
                 const batchFilesOnly = a.filesOnly || false;
-                const gArgs = batchFilesOnly ? ['-rl', '-E'] : ['-rn', '-E'];
-                if (a.ignoreCase) gArgs.push('-i');
-                if (!batchFilesOnly && batchCtx > 0) gArgs.push('-C', String(batchCtx));
-                for (const pat of expandIncludePattern(include)) gArgs.push('--include=' + pat);
-                gArgs.push('--', a.pattern, searchPath);
-                let out;
-                try {
-                  out = execFileSync('grep', gArgs, { cwd: config.magentoRoot, encoding: 'utf-8', timeout: 15000, maxBuffer: 5 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] });
-                } catch (err) { out = err.stdout || ''; }
-                const gLines = out.trim().split('\n').filter(Boolean);
-                if (batchFilesOnly) {
-                  text = `Files matching \`${a.pattern}\` (${gLines.length}):\n`;
-                  for (const gl of gLines.slice(0, maxRes)) text += gl + '\n';
-                } else {
-                  text = `Found ${gLines.length} matches${gLines.length > maxRes ? ` (showing ${maxRes})` : ''}:\n`;
-                  for (const gl of gLines.slice(0, maxRes)) text += gl + '\n';
+
+                // Try Rust serve grep first
+                const batchQueryFn = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
+                let batchGrepDone = false;
+                if (batchQueryFn) {
+                  try {
+                    const bResp = await batchQueryFn('grep', {
+                      pattern: a.pattern,
+                      magento_root: config.magentoRoot,
+                      path: searchPath,
+                      include,
+                      context: batchCtx,
+                      max_results: maxRes,
+                      files_only: batchFilesOnly,
+                      ignore_case: a.ignoreCase || false
+                    }, 15000);
+                    if (bResp.ok && bResp.data) {
+                      const bMatches = bResp.data.matches || [];
+                      const bTotal = bResp.data.total || bMatches.length;
+                      if (batchFilesOnly) {
+                        text = `Files matching \`${a.pattern}\` (${bTotal}):\n`;
+                        for (const m of bMatches) text += (m.file || m) + '\n';
+                      } else {
+                        text = `Found ${bTotal} matches${bTotal > maxRes ? ` (showing ${maxRes})` : ''}:\n`;
+                        for (const m of bMatches) {
+                          if (m.is_context) {
+                            text += `${m.file}-${m.line}-${m.text}\n`;
+                          } else {
+                            text += `${m.file}:${m.line}:${m.text}\n`;
+                          }
+                        }
+                      }
+                      batchGrepDone = true;
+                    }
+                  } catch (bErr) {
+                    logToFile('WARN', `batch grep: serve query failed, falling back to external grep: ${bErr.message}`);
+                  }
+                }
+
+                // Fallback: external GNU grep (cold-start path or serve error)
+                if (!batchGrepDone) {
+                  const gArgs = batchFilesOnly ? ['-rl', '-E'] : ['-rn', '-E'];
+                  if (a.ignoreCase) gArgs.push('-i');
+                  if (!batchFilesOnly && batchCtx > 0) gArgs.push('-C', String(batchCtx));
+                  for (const pat of expandIncludePattern(include)) gArgs.push('--include=' + pat);
+                  gArgs.push('--', a.pattern, searchPath);
+                  let out;
+                  try {
+                    out = execFileSync('grep', gArgs, { cwd: config.magentoRoot, encoding: 'utf-8', timeout: 15000, maxBuffer: 5 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] });
+                  } catch (err) { out = err.stdout || ''; }
+                  const gLines = out.trim().split('\n').filter(Boolean);
+                  if (batchFilesOnly) {
+                    text = `Files matching \`${a.pattern}\` (${gLines.length}):\n`;
+                    for (const gl of gLines.slice(0, maxRes)) text += gl + '\n';
+                  } else {
+                    text = `Found ${gLines.length} matches${gLines.length > maxRes ? ` (showing ${maxRes})` : ''}:\n`;
+                    for (const gl of gLines.slice(0, maxRes)) text += gl + '\n';
+                  }
                 }
                 break;
               }
@@ -6446,6 +6488,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const maxResults = Math.min(args.maxResults || 50, 200);
         const ctxLines = args.context !== undefined ? args.context : 4;
         const filesOnly = args.filesOnly || false;
+        const grepStart = Date.now();
+
+        // Try Rust serve grep first
+        const queryFn = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
+        let output = null;
+        if (queryFn) {
+          try {
+            const resp = await queryFn('grep', {
+              pattern: args.pattern,
+              magento_root: root,
+              path: searchPath,
+              include,
+              context: ctxLines,
+              max_results: maxResults,
+              files_only: filesOnly,
+              ignore_case: args.ignoreCase || false
+            }, 30000);
+            if (resp.ok && resp.data) {
+              const matches = resp.data.matches || [];
+              const total = resp.data.total || matches.length;
+              const grepElapsed = Date.now() - grepStart;
+              if (grepElapsed > 5000) logToFile('WARN', `grep: slow query "${args.pattern}" — ${total} matches in ${grepElapsed}ms`);
+
+              if (filesOnly) {
+                let text = `## grep (files only): \`${args.pattern}\`\nFound **${total}** file(s)${total > maxResults ? ` (showing first ${maxResults})` : ''}. Use magento_read with methodName to read specific methods.\n\n`;
+                for (const m of matches) text += (m.file || m) + '\n';
+                return { content: [{ type: 'text', text }] };
+              } else {
+                let text = `## grep: \`${args.pattern}\`\nFound **${total}** matches${total > maxResults ? ` (showing first ${maxResults})` : ''}\n\n`;
+                for (const m of matches) {
+                  if (m.is_context) {
+                    text += `${m.file}-${m.line}-${m.text}\n`;
+                  } else {
+                    text += `${m.file}:${m.line}:${m.text}\n`;
+                  }
+                }
+                return { content: [{ type: 'text', text }] };
+              }
+            }
+          } catch (err) {
+            logToFile('WARN', `grep: serve query failed, falling back to external grep: ${err.message}`);
+          }
+        }
+
+        // Fallback: external GNU grep (cold-start path or serve error)
         const grepArgs = filesOnly ? ['-rl', '-E'] : ['-rn', '-E'];
         if (args.ignoreCase) grepArgs.push('-i');
         if (!filesOnly && ctxLines > 0) grepArgs.push('-C', String(ctxLines));
@@ -6453,8 +6540,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           grepArgs.push('--include=' + pat);
         }
         grepArgs.push('--', args.pattern, searchPath);
-        let output;
-        const grepStart = Date.now();
         try {
           output = execFileSync('grep', grepArgs, {
             cwd: root, encoding: 'utf-8', timeout: 30000,
