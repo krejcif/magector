@@ -59,16 +59,6 @@ struct ContentBlock {
     text: String,
 }
 
-#[derive(Deserialize)]
-struct ApiError {
-    error: Option<ApiErrorDetail>,
-}
-
-#[derive(Deserialize)]
-struct ApiErrorDetail {
-    message: Option<String>,
-}
-
 // ─── Description types ──────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,7 +203,7 @@ fn now_timestamp() -> u64 {
 
 /// Generate a description for a single di.xml file via the Anthropic Messages API.
 fn generate_description(
-    client: &reqwest::blocking::Client,
+    agent: &ureq::Agent,
     api_key: &str,
     model: &str,
     path: &str,
@@ -237,51 +227,43 @@ fn generate_description(
     let max_retries = 3;
 
     loop {
-        let resp = client
+        let result = agent
             .post(ANTHROPIC_API_URL)
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&request)
-            .send()
-            .context("Failed to send request to Anthropic API")?;
+            .send_json(&request);
 
-        let status = resp.status();
+        match result {
+            Ok(mut resp) => {
+                let api_resp: ApiResponse = resp.body_mut().read_json()
+                    .context("Failed to parse API response")?;
+                let text = api_resp
+                    .content
+                    .first()
+                    .map(|b| b.text.trim().to_string())
+                    .unwrap_or_default();
+                return Ok(text);
+            }
+            Err(ureq::Error::StatusCode(status)) => {
+                let should_retry = status == 429 || (500..600).contains(&status);
 
-        if status.is_success() {
-            let api_resp: ApiResponse = resp.json().context("Failed to parse API response")?;
-            let text = api_resp
-                .content
-                .first()
-                .map(|b| b.text.trim().to_string())
-                .unwrap_or_default();
-            return Ok(text);
+                if should_retry && retries < max_retries {
+                    retries += 1;
+                    let wait = std::time::Duration::from_secs(1 << retries); // 2s, 4s, 8s
+                    eprintln!(
+                        "  API {} (attempt {}/{}), retrying in {}s...",
+                        status, retries, max_retries, wait.as_secs()
+                    );
+                    std::thread::sleep(wait);
+                    continue;
+                }
+
+                anyhow::bail!("Anthropic API error: HTTP {}", status);
+            }
+            Err(e) => {
+                anyhow::bail!("Failed to send request to Anthropic API: {}", e);
+            }
         }
-
-        // Retry on 429 (rate limit) or 5xx (server error)
-        let should_retry = status.as_u16() == 429 || status.is_server_error();
-
-        if should_retry && retries < max_retries {
-            retries += 1;
-            let body = resp.text().unwrap_or_default();
-            let wait = std::time::Duration::from_secs(1 << retries); // 2s, 4s, 8s
-            eprintln!(
-                "  API {} (attempt {}/{}), retrying in {}s...",
-                status, retries, max_retries, wait.as_secs()
-            );
-            let _ = body; // consume
-            std::thread::sleep(wait);
-            continue;
-        }
-
-        // Non-retryable error or exhausted retries
-        let body = resp.text().unwrap_or_default();
-        let msg = serde_json::from_str::<ApiError>(&body)
-            .ok()
-            .and_then(|e| e.error)
-            .and_then(|e| e.message)
-            .unwrap_or_else(|| format!("HTTP {}", status));
-        anyhow::bail!("Anthropic API error: {}", msg);
     }
 }
 
@@ -342,9 +324,10 @@ pub fn describe_di_xml_files(
     eprintln!("{} files to process, {} skipped (unchanged)", to_process.len(), skipped);
     eprintln!("Using model: {}", model);
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()?;
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(60)))
+        .build();
+    let agent: ureq::Agent = config.into();
 
     let pb = ProgressBar::new(to_process.len() as u64);
     pb.set_style(
@@ -361,7 +344,7 @@ pub fn describe_di_xml_files(
     for (rel_path, content, hash) in &to_process {
         pb.set_message(rel_path.clone());
 
-        match generate_description(&client, api_key, model, rel_path, content) {
+        match generate_description(&agent, api_key, model, rel_path, content) {
             Ok(description) => {
                 if let Err(e) = db.upsert(rel_path, hash, &description, model, now_timestamp()) {
                     eprintln!("\nWarning: failed to save description: {}", e);

@@ -89,7 +89,7 @@ impl Embedder {
     /// Download the default model
     fn download_model(cache_dir: &Path) -> Result<()> {
         use std::fs;
-        use std::io::Write;
+        use std::io::{Read, Write};
 
         fs::create_dir_all(cache_dir)?;
 
@@ -99,9 +99,11 @@ impl Embedder {
         tracing::info!("Downloading embedding model...");
 
         // Download model
-        let model_bytes = reqwest::blocking::get(model_url)
-            .context("Failed to download model")?
-            .bytes()
+        let mut model_resp = ureq::get(model_url).call()
+            .map_err(|e| anyhow::anyhow!("Failed to download model: {}", e))?;
+        let mut model_bytes = Vec::new();
+        model_resp.body_mut().as_reader()
+            .read_to_end(&mut model_bytes)
             .context("Failed to read model bytes")?;
 
         let model_path = cache_dir.join("all-MiniLM-L6-v2.onnx");
@@ -109,9 +111,11 @@ impl Embedder {
         file.write_all(&model_bytes)?;
 
         // Download tokenizer
-        let tokenizer_bytes = reqwest::blocking::get(tokenizer_url)
-            .context("Failed to download tokenizer")?
-            .bytes()
+        let mut tokenizer_resp = ureq::get(tokenizer_url).call()
+            .map_err(|e| anyhow::anyhow!("Failed to download tokenizer: {}", e))?;
+        let mut tokenizer_bytes = Vec::new();
+        tokenizer_resp.body_mut().as_reader()
+            .read_to_end(&mut tokenizer_bytes)
             .context("Failed to read tokenizer bytes")?;
 
         let tokenizer_path = cache_dir.join("tokenizer.json");
