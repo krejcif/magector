@@ -4492,41 +4492,54 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
  * Returns null when not re-indexing.
  */
 function getReindexWarning() {
-  if (!reindexInProgress || !reindexStartTime) return null;
-  const elapsedSec = Math.round((Date.now() - reindexStartTime) / 1000);
-  const elapsedStr = elapsedSec >= 60
-    ? `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s`
-    : `${elapsedSec}s`;
+  // Primary instance: use in-memory state (accurate phase + ETA)
+  if (reindexInProgress && reindexStartTime) {
+    const elapsedSec = Math.round((Date.now() - reindexStartTime) / 1000);
+    const elapsedStr = elapsedSec >= 60
+      ? `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s`
+      : `${elapsedSec}s`;
 
-  let phaseStr, etaStr;
-  if (reindexPhase <= 0) {
-    phaseStr = 'initializing';
-    etaStr = 'est. ~40–70 min total';
-  } else if (reindexPhase === 1) {
-    const filesStr = reindexTotalFiles > 0 ? ` (${reindexTotalFiles.toLocaleString('en')} files)` : '';
-    phaseStr = `phase 1/3: AST parsing${filesStr}`;
-    etaStr = 'est. ~1–3 min for this phase, then ~40–60 min for embeddings';
-  } else if (reindexPhase === 2) {
-    const itemsStr = reindexItemsToEmbed > 0 ? ` (${reindexItemsToEmbed.toLocaleString('en')} items)` : '';
-    phaseStr = `phase 2/3: generating embeddings${itemsStr}`;
-    if (reindexPhase2Start && reindexItemsToEmbed > 0) {
-      // Empirical rate: ~87k items ≈ 45 min on 8-core ONNX. Scale linearly.
-      const estimatedTotalSec = Math.round((reindexItemsToEmbed / 87000) * 45 * 60);
-      const phase2Elapsed = (Date.now() - reindexPhase2Start) / 1000;
-      const remainingSec = Math.max(estimatedTotalSec - phase2Elapsed, 0);
-      etaStr = remainingSec > 60
-        ? `est. ~${Math.round(remainingSec / 60)} min remaining`
-        : 'almost done with embeddings';
+    let phaseStr, etaStr;
+    if (reindexPhase <= 0) {
+      phaseStr = 'initializing';
+      etaStr = 'est. ~40–70 min total';
+    } else if (reindexPhase === 1) {
+      const filesStr = reindexTotalFiles > 0 ? ` (${reindexTotalFiles.toLocaleString('en')} files)` : '';
+      phaseStr = `phase 1/3: AST parsing${filesStr}`;
+      etaStr = 'est. ~1–3 min for this phase, then ~40–60 min for embeddings';
+    } else if (reindexPhase === 2) {
+      const itemsStr = reindexItemsToEmbed > 0 ? ` (${reindexItemsToEmbed.toLocaleString('en')} items)` : '';
+      phaseStr = `phase 2/3: generating embeddings${itemsStr}`;
+      if (reindexPhase2Start && reindexItemsToEmbed > 0) {
+        // Empirical rate: ~87k items ≈ 45 min on 8-core ONNX. Scale linearly.
+        const estimatedTotalSec = Math.round((reindexItemsToEmbed / 87000) * 45 * 60);
+        const phase2Elapsed = (Date.now() - reindexPhase2Start) / 1000;
+        const remainingSec = Math.max(estimatedTotalSec - phase2Elapsed, 0);
+        etaStr = remainingSec > 60
+          ? `est. ~${Math.round(remainingSec / 60)} min remaining`
+          : 'almost done with embeddings';
+      } else {
+        etaStr = 'est. 30–60 min for this phase';
+      }
     } else {
-      etaStr = 'est. 30–60 min for this phase';
+      phaseStr = 'phase 3/3: building HNSW vector index';
+      etaStr = 'est. ~5–10 min remaining';
     }
-  } else {
-    phaseStr = 'phase 3/3: building HNSW vector index';
-    etaStr = 'est. ~5–10 min remaining';
+
+    return `> ⏳ **Re-indexing in progress** — ${elapsedStr} elapsed, ${phaseStr}. ${etaStr}.\n` +
+           `> Results below use the **previous index** — valid, but may miss recently added files.\n\n`;
   }
 
-  return `> ⏳ **Re-indexing in progress** — ${elapsedStr} elapsed, ${phaseStr}. ${etaStr}.\n` +
-         `> Results below use the **previous index** — valid, but may miss recently added files.\n\n`;
+  // Secondary instance: detect via PID file (no phase info available)
+  try {
+    const externalPid = getRunningReindexPid();
+    if (externalPid) {
+      return `> ⏳ **Re-indexing in progress** (PID ${externalPid}) — semantic search may return empty results until complete.\n` +
+             `> Grep and filesystem-based tools work normally. Check \`.magector/magector.log\` for progress.\n\n`;
+    }
+  } catch { /* ignore */ }
+
+  return null;
 }
 
 const _callToolHandler = async (request) => {
