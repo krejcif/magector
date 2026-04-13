@@ -4,6 +4,11 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.16.3] - 2026-04-13
+
+### Fixed
+- **Stale empty cache after re-index** — after a background re-index, `magento_search` could return 0 results due to `[]` entries cached during the period when the index was unavailable. The search cache is now explicitly cleared when the serve process signals ready (both when the primary process starts its own serve process and when a secondary connects via socket proxy). Previously the cache was only cleared at re-index start, leaving a window where empty results could be re-cached during the serve warmup period.
+
 ## [2.16.2] - 2026-04-13
 
 ### Added

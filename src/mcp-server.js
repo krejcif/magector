@@ -817,6 +817,8 @@ function startServeProcess() {
       // First line is ready signal
       if (parsed.ready) {
         serveReady = true;
+        // Clear stale cache entries — they may contain [] from when index was unavailable
+        searchCache.clear();
         logToFile('INFO', `Serve process ready (PID ${proc.pid})`);
         if (serveReadyResolve) { serveReadyResolve(true); serveReadyResolve = null; }
         // Now that serve is up, persist primary lock state to data.db
@@ -952,6 +954,7 @@ function tryConnectSocket() {
 
       isSocketClient = true;
       serveReady = true;
+      searchCache.clear(); // clear stale [] entries from before socket was available
       logToFile('INFO', 'Connected to existing serve process via socket proxy');
       resolve(true);
     });
