@@ -10,6 +10,7 @@ pub mod validation;
 pub mod vectordb;
 pub mod watcher;
 pub mod sona;
+pub mod datadb;
 pub mod describe;
 
 pub use ast::{PhpAstAnalyzer, PhpAstMetadata, JsAstAnalyzer, JsAstMetadata};
