@@ -4,6 +4,14 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.15.0] - 2026-04-13
+
+### Added
+- **`magento_find_dataobject_issues`** — new tool that detects `setX(null)` anti-pattern on Magento `DataObject` subclasses. Calling `setX(null)` stores `['x' => null]` in `_data`, so `hasX()` (which uses `array_key_exists`) returns `true` even for null — creating silent false-positive guard conditions downstream. The correct way to fully clear a field is `unsetData('x')`. Uses semgrep internally with post-filtering for setter name pattern. Supports `path` and `maxResults` parameters. Available in `magento_batch`.
+
+### Fixed
+- **`astSearch()` snippet fallback for semgrep >=1.100** — newer semgrep versions return `"requires login"` in `r.extra.lines` for unlicensed installs. The snippet now falls back to `r.extra.message` (always available) when `lines` is empty or `"requires login"`. This restores correct code snippets in `magento_ast_search` and `magento_find_dataobject_issues` output.
+
 ## [2.14.1] - 2026-04-12
 
 ### Fixed

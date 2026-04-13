@@ -3728,12 +3728,34 @@ async function astSearch(pattern, searchPath, lang, maxResults) {
   if (parsed.errors && parsed.errors.length > 0) {
     logToFile('WARN', `ast_search: semgrep reported ${parsed.errors.length} error(s): ${parsed.errors.slice(0, 3).map(e => e.message || e.type || JSON.stringify(e)).join('; ')}`);
   }
-  return findings.map(r => ({
-    file: r.path.replace(root + '/', ''),
-    line: r.start.line,
-    endLine: r.end.line,
-    snippet: (r.extra?.lines || '').trim()
-  }));
+  return findings.map(r => {
+    // semgrep >=1.100 may return "requires login" in r.extra.lines for unlicensed installs.
+    // Fall back to r.extra.message which contains the matched expression (always available).
+    const rawLines = r.extra?.lines || '';
+    const snippet = (rawLines && rawLines !== 'requires login')
+      ? rawLines.trim()
+      : (r.extra?.message || '').trim();
+    return {
+      file: r.path.replace(root + '/', ''),
+      line: r.start.line,
+      endLine: r.end.line,
+      snippet
+    };
+  });
+}
+
+// ─── DataObject set-null Anti-pattern Detection ─────────────────
+
+async function findDataObjectIssues(searchPath, maxResults) {
+  // Detects DataObject::setX(null) anti-pattern:
+  //   setX(null) stores ['x' => null] in _data — key EXISTS with null value.
+  //   hasX() / hasData('x') calls array_key_exists() → returns true even for null.
+  //   This causes false-positive guard conditions: hasX() passes, getX() returns null.
+  //   Correct way to fully clear: unsetData('x') removes the key entirely.
+  const allResults = await astSearch('$X->$SETTER(null)', searchPath, 'php', 500);
+  const setterNullRegex = /->set[A-Z]\w+\s*\(\s*null\s*\)/;
+  const limit = Math.min(maxResults || 100, 500);
+  return allResults.filter(r => setterNullRegex.test(r.snippet)).slice(0, limit);
 }
 
 // ─── MCP Server ─────────────────────────────────────────────────
@@ -4495,6 +4517,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
+      name: 'magento_find_dataobject_issues',
+      description: 'Detect DataObject::setX(null) anti-pattern calls. In Magento, classes extending DataObject store values in a _data array. Calling setX(null) stores the key with a null value — so hasX()/hasData(\'x\') (which use array_key_exists) return true even though the value is null. Downstream guard conditions silently pass, but getX() returns null. The correct way to clear is unsetData(\'x\'). Use this during field-lifecycle audits or when debugging "value persists but shouldn\'t" bugs. ⚡ For multi-query workflows use magento_batch.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Subdirectory to search (relative to MAGENTO_ROOT). Default: entire codebase. Example: "vendor/acme/"'
+          },
+          maxResults: {
+            type: 'number',
+            description: 'Maximum matches to return (default: 100, max: 500)',
+            default: 100
+          }
+        }
+      }
+    },
+    {
       name: 'magento_enrich',
       description: 'Build the method-chain enrichment index. Scans all vendor/ PHP files for two-step method chains (->firstMethod()->secondMethod()) and analyses whether each call has a null guard in surrounding code. Results stored in .magector/enrichment.db. Run this once after magento_index, then use magento_find_null_risks for instant O(1) null-safety queries instead of 20+ grep calls. Also runs automatically after magento_index completes.',
       inputSchema: { type: 'object', properties: {} }
@@ -4583,7 +4623,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // These tools have filesystem/di.xml fallbacks — work without serve process
     'magento_find_class', 'magento_find_method', 'magento_find_plugin',
     'magento_find_observer', 'magento_find_di_wiring', 'magento_module_structure',
-    'magento_batch', 'magento_find_config', 'magento_find_callers', 'magento_grep', 'magento_read', 'magento_trace_api', 'magento_ast_search', 'magento_find_null_risks'];
+    'magento_batch', 'magento_find_config', 'magento_find_callers', 'magento_grep', 'magento_read', 'magento_trace_api', 'magento_ast_search', 'magento_find_null_risks', 'magento_find_dataobject_issues'];
   if (warmupInProgress && !indexFreeTools.includes(name)) {
     logToFile('REQ', `${name} → blocked (warmup: loading index)`);
     return {
@@ -6485,6 +6525,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 }
                 break;
               }
+              case 'magento_find_dataobject_issues': {
+                const doResults = await findDataObjectIssues(a.path, a.maxResults);
+                if (doResults.length === 0) {
+                  text = 'No DataObject setX(null) anti-pattern calls found.';
+                } else {
+                  text = `Found ${doResults.length} setX(null) call(s) — review for DataObject anti-pattern:\n\n`;
+                  for (const r of doResults) text += `${r.file}:${r.line}: ${r.snippet}\n`;
+                }
+                break;
+              }
               case 'magento_find_null_risks': {
                 const bRoot = config.magentoRoot;
                 const bLimit = Math.min(a.limit || 100, 500);
@@ -6760,6 +6810,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           text += `**${r.file}:${lineInfo}**\n\`\`\`php\n${r.snippet}\n\`\`\`\n\n`;
         }
         return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_find_dataobject_issues': {
+        const doResults = await findDataObjectIssues(args.path, args.maxResults);
+        if (doResults.length === 0) {
+          return { content: [{ type: 'text', text: '## magento_find_dataobject_issues\n\nNo `setX(null)` calls found.' }] };
+        }
+        let doText = `## magento_find_dataobject_issues\n`;
+        doText += `Found **${doResults.length}** \`setX(null)\` call(s)\n\n`;
+        doText += `> ⚠️ **DataObject anti-pattern**: \`setX(null)\` stores \`['x' => null]\` in \`_data\` — \`hasX()\` returns \`true\` via \`array_key_exists\` even for \`null\`. `;
+        doText += `Downstream \`hasX()\` guards silently pass while \`getX()\` returns \`null\`. `;
+        doText += `**Fix**: use \`unsetData('x')\` to remove the key entirely.\n\n`;
+        for (const r of doResults) {
+          const lineInfo = r.endLine && r.endLine !== r.line ? `${r.line}-${r.endLine}` : String(r.line);
+          doText += `**${r.file}:${lineInfo}**\n\`\`\`php\n${r.snippet}\n\`\`\`\n\n`;
+        }
+        return { content: [{ type: 'text', text: doText }] };
       }
 
       case 'magento_enrich': {

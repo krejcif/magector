@@ -1514,6 +1514,82 @@ async function testAstSearch() {
   rmSync(tmpDir, { recursive: true, force: true });
 }
 
+// ─── magento_find_dataobject_issues Tests ────────────────────────
+
+async function testFindDataObjectIssues() {
+  console.log('\n── magento_find_dataobject_issues (DataObject set-null anti-pattern) ──');
+
+  const { execFileSync } = await import('child_process');
+  // Use /tmp to avoid being inside the magector git repo (.semgrepignore lookup)
+  const tmpDir = '/tmp/magector_dataobj_test_' + Date.now();
+  mkdirSync(path.join(tmpDir, 'vendor', 'acme', 'module-quote'), { recursive: true });
+  writeFileSync(path.join(tmpDir, '.semgrepignore'), '# Magector test: scan all\n');
+
+  // File with DataObject anti-pattern: setX(null) calls
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-quote/Address.php'), [
+    '<?php',
+    'class Address extends \\Magento\\Framework\\DataObject {',
+    '    public function resetDiscount() {',
+    '        $this->setCouponCode(null);',   // ← anti-pattern
+    '        $this->setDiscountAmount(null);', // ← anti-pattern
+    '    }',
+    '    public function clearActive() {',
+    '        $this->setActive(false);',       // ← NOT null — should NOT be detected
+    '        $this->unsetData(\'coupon_code\');', // ← correct — should NOT be detected
+    '    }',
+    '}'
+  ].join('\n'));
+
+  // File without anti-pattern (null passed to non-setter method)
+  writeFileSync(path.join(tmpDir, 'vendor/acme/module-quote/Safe.php'), [
+    '<?php',
+    'class Safe {',
+    '    public function process($order) {',
+    '        $order->getPayment()->setMethod(null);', // ← anti-pattern: setMethod(null)
+    '        $order->process(null);',                  // ← NOT setter — should NOT be detected
+    '    }',
+    '}'
+  ].join('\n'));
+
+  // Run semgrep directly with broad pattern, then filter
+  let semgrepOut;
+  try {
+    semgrepOut = execFileSync('semgrep', [
+      '--pattern', '$X->$SETTER(null)',
+      '--lang', 'php',
+      '--json',
+      '--no-git-ignore',
+      tmpDir
+    ], { encoding: 'utf-8', timeout: 30000, maxBuffer: 5 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'],
+         env: { ...process.env, PATH: process.env.PATH + ':/home/swed/.local/bin' } });
+  } catch (err) { semgrepOut = err.stdout || ''; }
+
+  let parsed;
+  try { parsed = JSON.parse(semgrepOut); } catch { parsed = { results: [] }; }
+
+  // semgrep >=1.100 may return "requires login" in extra.lines — fall back to extra.message
+  const getSnippet = r => {
+    const lines = r.extra?.lines || '';
+    return (lines && lines !== 'requires login') ? lines : (r.extra?.message || '');
+  };
+
+  // Post-filter: only ->setX(null) where X starts with uppercase (DataObject setter pattern)
+  const setterNullRegex = /->set[A-Z]\w+\s*\(\s*null\s*\)/;
+  const filtered = (parsed.results || []).filter(r => setterNullRegex.test(getSnippet(r)));
+
+  assert(parsed.results !== undefined, 'find_dataobject_issues: semgrep returns results array');
+  // Should find setCouponCode(null), setDiscountAmount(null), setMethod(null) — 3 hits
+  assert(filtered.length >= 2, `find_dataobject_issues: finds at least 2 setX(null) calls, got ${filtered.length}`);
+  // Should find hits in Address.php
+  assert(filtered.some(r => r.path.includes('Address.php')), 'find_dataobject_issues: match found in Address.php');
+  // process(null) should NOT be in filtered results
+  assert(!filtered.some(r => getSnippet(r).includes('->process(null)')), 'find_dataobject_issues: process(null) not included (not a setter)');
+  // setActive(false) should NOT be in filtered results (not null)
+  assert(!filtered.some(r => getSnippet(r).includes('setActive(false)')), 'find_dataobject_issues: setActive(false) not included (not null)');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
 // ─── magento_read methodName hint Tests ─────────────────────────
 
 async function testReadMethodNameHint() {
@@ -4314,6 +4390,7 @@ async function main() {
   testGrepDefaultContext();
   await testGrepFilesOnly();
   await testAstSearch();
+  await testFindDataObjectIssues();
   await testReadMethodNameHint();
   testHasNullGuard();
   testEnrichChainRegex();

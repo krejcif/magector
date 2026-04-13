@@ -2,7 +2,7 @@
 
 **Technology-aware MCP server for Magento 2 and Adobe Commerce with intelligent indexing and search.**
 
-Magector is a Model Context Protocol (MCP) server that deeply understands Magento 2 and Adobe Commerce. It builds a semantic vector index of your entire codebase — 18,000+ files across hundreds of modules — and exposes 45 tools that let AI assistants search, navigate, and understand the code with domain-specific intelligence. Instead of grepping for keywords, your AI asks *"how are checkout totals calculated?"* and gets ranked, relevant results in under 50ms, enriched with Magento pattern detection (plugins, observers, controllers, DI preferences, layout XML, and 20+ more).
+Magector is a Model Context Protocol (MCP) server that deeply understands Magento 2 and Adobe Commerce. It builds a semantic vector index of your entire codebase — 18,000+ files across hundreds of modules — and exposes 46 tools that let AI assistants search, navigate, and understand the code with domain-specific intelligence. Instead of grepping for keywords, your AI asks *"how are checkout totals calculated?"* and gets ranked, relevant results in under 50ms, enriched with Magento pattern detection (plugins, observers, controllers, DI preferences, layout XML, and 20+ more).
 
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
 [![Node.js](https://img.shields.io/badge/node-22.5+-green.svg)](https://nodejs.org)
@@ -58,7 +58,7 @@ The result: your AI assistant calls one MCP tool and gets ranked, pattern-enrich
 - **Complexity analysis** -- cyclomatic complexity, function count, and hotspot detection across modules
 - **Fast** -- 10-45ms queries via persistent serve process, batched ONNX embedding with adaptive thread scaling
 - **LLM description enrichment** -- generate natural-language descriptions of di.xml files using Claude, stored in SQLite, and prepend them to embedding text so descriptions influence vector search ranking (not just post-retrieval display)
-- **MCP server** -- 45 tools integrating with Claude Code, Cursor, and any MCP-compatible AI tool
+- **MCP server** -- 46 tools integrating with Claude Code, Cursor, and any MCP-compatible AI tool
 - **Clean architecture** -- Rust core handles all indexing/search, Node.js MCP server delegates to it
 
 ---
@@ -70,7 +70,7 @@ flowchart LR
   subgraph node ["Node.js Layer"]
     direction TB
     G["CLI<br/>init · index · search · describe"]
-    E["MCP Server<br/>45 tools · LRU cache"]
+    E["MCP Server<br/>46 tools · LRU cache"]
     F["Persistent Serve Process"]
     G --> F
     E --> F
@@ -371,7 +371,7 @@ npx magector index --force
 
 ## MCP Server Tools
 
-The MCP server exposes 45 tools for AI-assisted Magento 2 and Adobe Commerce development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
+The MCP server exposes 46 tools for AI-assisted Magento 2 and Adobe Commerce development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
 
 ### Output Format
 
@@ -482,13 +482,14 @@ Auto-detects entry type from pattern (`/V1/...` → API, `snake_case` → event,
 | `magento_find_trigger` | Find database triggers across the codebase |
 | `magento_find_table_usage` | Find all PHP code referencing a specific database table |
 
-### Null-Safety Analysis (v2.12–v2.13)
+### Null-Safety Analysis (v2.12–v2.15)
 
 | Tool | Description |
 |------|-------------|
 | `magento_ast_search` | Structural PHP code search using [semgrep](https://semgrep.dev). Understands PHP AST — matches by structure regardless of variable names, ignores comments/strings. Pattern syntax: `$X` = any expression, `$Y` = any identifier, `...` = any args. Example: `$X->getPayment()->$Y(...)`. Requires `semgrep`. **(v2.12)** |
 | `magento_enrich` | Build the method-chain enrichment index. Scans all `vendor/` PHP files for `->firstMethod()->secondMethod()` chains and detects null guards in surrounding code. Stores results in `.magector/enrichment.db` (SQLite, `node:sqlite`). Runs automatically after `magento_index`. **(v2.13)** |
 | `magento_find_null_risks` | Query the enrichment index for method chains without null guards. O(1) SQLite query instead of file scanning. Pass `firstMethod` to filter (e.g., `"getPayment"` → all `->getPayment()->anything()` without null guard). Requires `magento_enrich`. **(v2.13)** |
+| `magento_find_dataobject_issues` | Detect `setX(null)` anti-pattern on Magento `DataObject` subclasses. `setX(null)` stores `['x' => null]` in `_data` — `hasX()` (via `array_key_exists`) returns `true` even when the value is `null`, creating false-positive guard conditions. Use during field-lifecycle audits or when debugging "value persists but shouldn't" bugs. Requires `semgrep`. **(v2.15)** |
 
 ### Search Enhancements (v2.1)
 
@@ -672,7 +673,7 @@ cd rust-core && cargo run --release -- validate -m ./magento2 --skip-index
 magector/
 ├── src/                          # Node.js source
 │   ├── cli.js                    # CLI entry point (npx magector <command>)
-│   ├── mcp-server.js             # MCP server (45 tools, structured JSON output)
+│   ├── mcp-server.js             # MCP server (46 tools, structured JSON output)
 │   ├── binary.js                 # Platform binary resolver
 │   ├── model.js                  # ONNX model resolver/downloader
 │   ├── init.js                   # Full init command (index + IDE config)
