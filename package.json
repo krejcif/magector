@@ -1,6 +1,6 @@
 {
   "name": "magector",
-  "version": "2.16.0",
+  "version": "2.16.1",
   "description": "Semantic code search for Magento 2 — index, search, MCP server",
   "type": "module",
   "main": "src/mcp-server.js",
