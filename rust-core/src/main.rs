@@ -1155,7 +1155,238 @@ fn handle_serve_request(
             }
         }
 
+        // ─── Grep: in-process text search ─────────────────────────────────
+        "grep" => {
+            handle_grep_command(req)
+        }
+
         _ => format!(r#"{{"ok":false,"error":"Unknown command: {}"}}"#, command),
+    }
+}
+
+/// Expand brace patterns like `*.{php,xml}` into multiple glob patterns.
+/// Returns the original pattern in a vec if no braces are found.
+fn expand_brace_pattern(pattern: &str) -> Vec<String> {
+    if let Some(open) = pattern.find('{') {
+        if let Some(close) = pattern[open..].find('}') {
+            let close = open + close;
+            let prefix = &pattern[..open];
+            let suffix = &pattern[close + 1..];
+            let alternatives = &pattern[open + 1..close];
+            return alternatives
+                .split(',')
+                .map(|alt| format!("{}{}{}", prefix, alt.trim(), suffix))
+                .collect();
+        }
+    }
+    vec![pattern.to_string()]
+}
+
+/// Check if a filename matches an include glob pattern.
+/// Supports `*` wildcards and brace expansion `*.{php,xml}`.
+fn matches_include_pattern(filename: &str, include: &str) -> bool {
+    let patterns = expand_brace_pattern(include);
+    patterns.iter().any(|pat| glob_match_simple(filename, pat))
+}
+
+/// Simple glob matching for filenames (not paths).
+/// Supports `*` (any chars) and `?` (single char).
+fn glob_match_simple(text: &str, pattern: &str) -> bool {
+    let mut t = text.as_bytes();
+    let mut p = pattern.as_bytes();
+    let mut star_p: Option<&[u8]> = None;
+    let mut star_t: Option<&[u8]> = None;
+
+    loop {
+        if p.is_empty() && t.is_empty() {
+            return true;
+        }
+        if !p.is_empty() && p[0] == b'*' {
+            star_p = Some(&p[1..]);
+            star_t = Some(t);
+            p = &p[1..];
+            continue;
+        }
+        if !t.is_empty() && !p.is_empty() && (p[0] == b'?' || p[0].to_ascii_lowercase() == t[0].to_ascii_lowercase()) {
+            t = &t[1..];
+            p = &p[1..];
+            continue;
+        }
+        if let (Some(sp), Some(st)) = (star_p, star_t) {
+            if st.is_empty() {
+                return false;
+            }
+            p = sp;
+            star_t = Some(&st[1..]);
+            t = &st[1..];
+            continue;
+        }
+        return false;
+    }
+}
+
+/// Handle the "grep" serve command: in-process text search using regex + walkdir.
+fn handle_grep_command(req: &serde_json::Value) -> String {
+    use walkdir::WalkDir;
+
+    let pattern_str = match req.get("pattern").and_then(|v| v.as_str()) {
+        Some(p) if !p.is_empty() => p,
+        _ => return r#"{"ok":false,"error":"Missing or empty 'pattern' field"}"#.to_string(),
+    };
+    let mg_root = match req.get("magento_root").and_then(|v| v.as_str()) {
+        Some(r) if !r.is_empty() => r,
+        _ => return r#"{"ok":false,"error":"Missing 'magento_root' field"}"#.to_string(),
+    };
+    let search_path = req.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+    let include = req.get("include").and_then(|v| v.as_str()).unwrap_or("*.php");
+    let context_lines = req.get("context").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
+    let max_results = {
+        let mr = req.get("max_results").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+        mr.min(200)
+    };
+    let files_only = req.get("files_only").and_then(|v| v.as_bool()).unwrap_or(false);
+    let ignore_case = req.get("ignore_case").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    // Build regex
+    let regex_pattern = if ignore_case {
+        format!("(?i){}", pattern_str)
+    } else {
+        pattern_str.to_string()
+    };
+    let re = match regex::Regex::new(&regex_pattern) {
+        Ok(r) => r,
+        Err(e) => {
+            let err_msg = format!("Invalid regex pattern: {}", e);
+            let escaped = serde_json::to_string(&err_msg).unwrap_or_else(|_| "\"regex error\"".to_string());
+            return format!(r#"{{"ok":false,"error":{}}}"#, escaped);
+        }
+    };
+
+    let root = std::path::Path::new(mg_root);
+    let target = root.join(search_path);
+    if !target.exists() {
+        return format!(
+            r#"{{"ok":false,"error":"Search path does not exist: {}"}}"#,
+            target.display()
+        );
+    }
+
+    let mg_root_prefix = format!("{}/", mg_root);
+    let mut matches_output: Vec<serde_json::Value> = Vec::new();
+    let mut matched_files: Vec<String> = Vec::new();
+    let mut hit_limit = false;
+
+    'file_walk: for entry in WalkDir::new(&target)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let file_path = entry.path();
+        let file_name = match file_path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        // Filter by include pattern
+        if !matches_include_pattern(file_name, include) {
+            continue;
+        }
+
+        // Read file content
+        let content = match std::fs::read_to_string(file_path) {
+            Ok(c) => c,
+            Err(_) => continue, // Skip binary / unreadable files
+        };
+
+        let lines: Vec<&str> = content.lines().collect();
+        let mut file_has_match = false;
+
+        // Find all matching line numbers first
+        let mut match_line_indices: Vec<usize> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if re.is_match(line) {
+                match_line_indices.push(i);
+            }
+        }
+
+        if match_line_indices.is_empty() {
+            continue;
+        }
+
+        // Relative path for output
+        let rel_path = file_path
+            .to_string_lossy()
+            .strip_prefix(&mg_root_prefix)
+            .unwrap_or(&file_path.to_string_lossy())
+            .to_string();
+
+        if files_only {
+            matched_files.push(rel_path);
+            if matched_files.len() >= max_results {
+                break 'file_walk;
+            }
+            continue;
+        }
+
+        // Build context ranges for each match, merging overlaps
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        for &idx in &match_line_indices {
+            let start = idx.saturating_sub(context_lines);
+            let end = (idx + context_lines).min(lines.len().saturating_sub(1));
+            if let Some(last) = ranges.last_mut() {
+                if start <= last.1 + 1 {
+                    // Merge overlapping ranges
+                    last.1 = end;
+                    continue;
+                }
+            }
+            ranges.push((start, end));
+        }
+
+        let match_set: std::collections::HashSet<usize> =
+            match_line_indices.iter().copied().collect();
+
+        for (range_start, range_end) in &ranges {
+            for i in *range_start..=*range_end {
+                let is_match_line = match_set.contains(&i);
+                matches_output.push(serde_json::json!({
+                    "file": rel_path,
+                    "line": i + 1,
+                    "text": lines[i],
+                    "is_context": !is_match_line,
+                }));
+                if !file_has_match && is_match_line {
+                    file_has_match = true;
+                }
+                if matches_output.len() >= max_results {
+                    hit_limit = true;
+                    break 'file_walk;
+                }
+            }
+        }
+    }
+
+    if files_only {
+        let total = matched_files.len();
+        match serde_json::to_string(&matched_files) {
+            Ok(json) => format!(
+                r#"{{"ok":true,"data":{{"files":{},"total":{}}}}}"#,
+                json, total
+            ),
+            Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
+        }
+    } else {
+        let total = matches_output.len();
+        match serde_json::to_string(&matches_output) {
+            Ok(json) => format!(
+                r#"{{"ok":true,"data":{{"matches":{},"total":{},"truncated":{}}}}}"#,
+                json, total, hit_limit
+            ),
+            Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
+        }
     }
 }
 
@@ -1245,4 +1476,336 @@ fn download_magento(target: &PathBuf, version: Option<&str>) -> Result<()> {
     println!("  XML files: {}", xml_count);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod grep_tests {
+    use super::*;
+    use tempfile::TempDir;
+    use std::fs;
+
+    /// Create a temp directory with test PHP and XML files.
+    fn setup_test_dir() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Create vendor/module/ structure
+        let module_dir = root.join("vendor").join("acme").join("module-cart");
+        fs::create_dir_all(&module_dir).unwrap();
+
+        fs::write(
+            module_dir.join("Cart.php"),
+            r#"<?php
+namespace Acme\Cart;
+
+class Cart
+{
+    public function setCouponCode($code)
+    {
+        $this->couponCode = $code;
+        return $this;
+    }
+
+    public function getCouponCode()
+    {
+        return $this->couponCode;
+    }
+
+    public function clearCart()
+    {
+        $this->setCouponCode(null);
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        fs::write(
+            module_dir.join("Helper.php"),
+            r#"<?php
+namespace Acme\Cart;
+
+class Helper
+{
+    public function applyCoupon($cart, $code)
+    {
+        $cart->setCouponCode($code);
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        fs::write(
+            module_dir.join("config.xml"),
+            r#"<?xml version="1.0"?>
+<config>
+    <module name="Acme_Cart" />
+    <setCouponCode enabled="true" />
+</config>
+"#,
+        )
+        .unwrap();
+
+        // A file that won't match the default *.php include
+        fs::write(
+            module_dir.join("readme.txt"),
+            "This file mentions setCouponCode but is a txt file.\n",
+        )
+        .unwrap();
+
+        dir
+    }
+
+    fn make_grep_request(dir: &TempDir, overrides: serde_json::Value) -> serde_json::Value {
+        let mut req = serde_json::json!({
+            "command": "grep",
+            "pattern": "setCouponCode",
+            "magento_root": dir.path().to_string_lossy(),
+            "path": "vendor/acme/module-cart",
+            "include": "*.php",
+            "context": 2,
+            "max_results": 50,
+            "files_only": false,
+            "ignore_case": false,
+        });
+        if let serde_json::Value::Object(map) = overrides {
+            for (k, v) in map {
+                req[k] = v;
+            }
+        }
+        req
+    }
+
+    #[test]
+    fn test_grep_basic_match() {
+        let dir = setup_test_dir();
+        let req = make_grep_request(&dir, serde_json::json!({}));
+        let response_str = handle_grep_command(&req);
+        let resp: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+        assert_eq!(resp["ok"], true, "Response: {}", response_str);
+        let matches = resp["data"]["matches"].as_array().unwrap();
+        assert!(!matches.is_empty(), "Should find matches for setCouponCode");
+
+        // Should find matches in both Cart.php and Helper.php
+        let files: std::collections::HashSet<&str> = matches
+            .iter()
+            .filter(|m| m["is_context"] == false)
+            .filter_map(|m| m["file"].as_str())
+            .collect();
+        assert!(
+            files.iter().any(|f| f.contains("Cart.php")),
+            "Should match in Cart.php"
+        );
+        assert!(
+            files.iter().any(|f| f.contains("Helper.php")),
+            "Should match in Helper.php"
+        );
+    }
+
+    #[test]
+    fn test_grep_context_lines() {
+        let dir = setup_test_dir();
+        let req = make_grep_request(&dir, serde_json::json!({"context": 1}));
+        let response_str = handle_grep_command(&req);
+        let resp: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+        assert_eq!(resp["ok"], true);
+        let matches = resp["data"]["matches"].as_array().unwrap();
+
+        // Should have both context (is_context=true) and match (is_context=false) lines
+        let has_context = matches.iter().any(|m| m["is_context"] == true);
+        let has_match = matches.iter().any(|m| m["is_context"] == false);
+        assert!(has_context, "Should have context lines");
+        assert!(has_match, "Should have match lines");
+    }
+
+    #[test]
+    fn test_grep_files_only() {
+        let dir = setup_test_dir();
+        let req = make_grep_request(&dir, serde_json::json!({"files_only": true}));
+        let response_str = handle_grep_command(&req);
+        let resp: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+        assert_eq!(resp["ok"], true);
+        let files = resp["data"]["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2, "Should find 2 PHP files with setCouponCode");
+
+        // Should not contain config.xml (include is *.php)
+        for f in files {
+            assert!(
+                f.as_str().unwrap().ends_with(".php"),
+                "files_only should only return PHP files"
+            );
+        }
+    }
+
+    #[test]
+    fn test_grep_include_filter_xml() {
+        let dir = setup_test_dir();
+        let req = make_grep_request(&dir, serde_json::json!({"include": "*.xml"}));
+        let response_str = handle_grep_command(&req);
+        let resp: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+        assert_eq!(resp["ok"], true);
+        let matches = resp["data"]["matches"].as_array().unwrap();
+        // Should only find matches in config.xml
+        let files: std::collections::HashSet<&str> = matches
+            .iter()
+            .filter(|m| m["is_context"] == false)
+            .filter_map(|m| m["file"].as_str())
+            .collect();
+        assert_eq!(files.len(), 1, "Should match only config.xml");
+        assert!(
+            files.iter().next().unwrap().contains("config.xml"),
+            "Should be config.xml"
+        );
+    }
+
+    #[test]
+    fn test_grep_include_brace_expansion() {
+        let dir = setup_test_dir();
+        let req = make_grep_request(
+            &dir,
+            serde_json::json!({"include": "*.{php,xml}", "files_only": true}),
+        );
+        let response_str = handle_grep_command(&req);
+        let resp: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+        assert_eq!(resp["ok"], true);
+        let files = resp["data"]["files"].as_array().unwrap();
+        // Should find both PHP files and XML file
+        assert_eq!(files.len(), 3, "Should find 3 files (2 PHP + 1 XML)");
+    }
+
+    #[test]
+    fn test_grep_ignore_case() {
+        let dir = setup_test_dir();
+        let req = make_grep_request(
+            &dir,
+            serde_json::json!({"pattern": "setcouponcode", "ignore_case": true, "files_only": true}),
+        );
+        let response_str = handle_grep_command(&req);
+        let resp: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+        assert_eq!(resp["ok"], true);
+        let files = resp["data"]["files"].as_array().unwrap();
+        assert!(
+            files.len() >= 2,
+            "Case-insensitive search should still find matches"
+        );
+    }
+
+    #[test]
+    fn test_grep_max_results_limit() {
+        let dir = setup_test_dir();
+        let req = make_grep_request(
+            &dir,
+            serde_json::json!({"max_results": 3, "context": 0}),
+        );
+        let response_str = handle_grep_command(&req);
+        let resp: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+        assert_eq!(resp["ok"], true);
+        let matches = resp["data"]["matches"].as_array().unwrap();
+        assert!(
+            matches.len() <= 3,
+            "Should respect max_results limit"
+        );
+    }
+
+    #[test]
+    fn test_grep_no_matches() {
+        let dir = setup_test_dir();
+        let req = make_grep_request(
+            &dir,
+            serde_json::json!({"pattern": "thisWillNeverMatchAnything12345"}),
+        );
+        let response_str = handle_grep_command(&req);
+        let resp: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+        assert_eq!(resp["ok"], true);
+        let matches = resp["data"]["matches"].as_array().unwrap();
+        assert!(matches.is_empty(), "Should have no matches");
+    }
+
+    #[test]
+    fn test_grep_missing_pattern() {
+        let req = serde_json::json!({"command": "grep", "magento_root": "/tmp"});
+        let response_str = handle_grep_command(&req);
+        let resp: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+        assert_eq!(resp["ok"], false);
+        assert!(resp["error"].as_str().unwrap().contains("pattern"));
+    }
+
+    #[test]
+    fn test_grep_missing_magento_root() {
+        let req = serde_json::json!({"command": "grep", "pattern": "test"});
+        let response_str = handle_grep_command(&req);
+        let resp: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+        assert_eq!(resp["ok"], false);
+        assert!(resp["error"].as_str().unwrap().contains("magento_root"));
+    }
+
+    #[test]
+    fn test_grep_invalid_regex() {
+        let req = serde_json::json!({
+            "command": "grep",
+            "pattern": "[invalid(regex",
+            "magento_root": "/tmp",
+        });
+        let response_str = handle_grep_command(&req);
+        let resp: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+        assert_eq!(resp["ok"], false);
+        assert!(resp["error"].as_str().unwrap().contains("regex"));
+    }
+
+    #[test]
+    fn test_grep_txt_excluded_by_default() {
+        let dir = setup_test_dir();
+        let req = make_grep_request(
+            &dir,
+            serde_json::json!({"files_only": true}),
+        );
+        let response_str = handle_grep_command(&req);
+        let resp: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+
+        assert_eq!(resp["ok"], true);
+        let files = resp["data"]["files"].as_array().unwrap();
+        for f in files {
+            assert!(
+                !f.as_str().unwrap().ends_with(".txt"),
+                "txt files should not match with default *.php include"
+            );
+        }
+    }
+
+    // Helper function tests
+    #[test]
+    fn test_expand_brace_pattern() {
+        assert_eq!(
+            expand_brace_pattern("*.{php,xml}"),
+            vec!["*.php", "*.xml"]
+        );
+        assert_eq!(
+            expand_brace_pattern("*.{php,xml,phtml}"),
+            vec!["*.php", "*.xml", "*.phtml"]
+        );
+        assert_eq!(
+            expand_brace_pattern("*.php"),
+            vec!["*.php"]
+        );
+    }
+
+    #[test]
+    fn test_glob_match_simple() {
+        assert!(glob_match_simple("Cart.php", "*.php"));
+        assert!(!glob_match_simple("Cart.php", "*.xml"));
+        assert!(glob_match_simple("Cart.php", "Cart.*"));
+        assert!(glob_match_simple("Cart.php", "C*.php"));
+        assert!(glob_match_simple("a.b.c", "*.b.*"));
+        assert!(glob_match_simple("test", "????"));
+        assert!(!glob_match_simple("test", "???"));
+    }
 }
