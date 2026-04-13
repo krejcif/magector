@@ -4,6 +4,23 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.16.0] - 2026-04-13
+
+### Changed
+- **Unified SQLite database** — three separate files (`sqlite.db`, `enrichment.db`, and meta files) consolidated into single `.magector/data.db`. New `datadb.rs` Rust module handles all metadata: LLM descriptions, method-chain enrichment, process state, and cache. Enrichment logic moved from Node.js to Rust serve process, eliminating `node:sqlite` dependency (Node.js 18+ sufficient again).
+- **Tree-sitter queries replace semgrep** — `magento_ast_search` now uses tree-sitter S-expression queries executed in Rust instead of spawning external `semgrep` subprocess. Named patterns (`dataobject-set-null`, `unchecked-method-chain`) stored as `.scm` files in `rust-core/queries/`. Zero external dependency. Pattern arg changed from free-text to enum.
+- **Rust grep-searcher replaces GNU grep subprocess** — `magento_grep` delegates to in-process Rust text search (using `regex` + `walkdir`) via new `grep` serve command. Cross-platform (Windows works without GNU grep). Falls back to external GNU grep during cold-start.
+- **Embedding model: bge-small-en-v1.5** — replaces all-MiniLM-L6-v2 (+4 MTEB points: 58 → 62.2, same 384 dimensions). Existing indexes require re-indexing.
+- **bincode 2.0** — serialization upgraded from bincode 1.3. Better forward-compatibility via explicit `Configuration`. Index format version bumped → auto re-index.
+- **ureq replaces reqwest** — synchronous HTTP client for model download. ~850 KB smaller binary, no async runtime overhead.
+- **Consolidated `.magector/` layout** — directory now contains 4 files: `data.db`, `index.db`, `serve.sock`, `magector.log`. PID files, format cache, and primary lock stored in SQLite state tables with file fallback for cold-start.
+
+### Removed
+- `node:sqlite` dependency — Node.js 18+ sufficient (was 22.5+)
+- `semgrep` external dependency — tree-sitter handles all AST queries
+- External GNU `grep` requirement (kept as cold-start fallback)
+- `reqwest` Rust dependency (~265 fewer lines in Cargo.lock)
+
 ## [2.15.1] - 2026-04-13
 
 ### Security
