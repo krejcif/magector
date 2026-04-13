@@ -2,7 +2,8 @@
 //!
 //! Provides accurate parsing for PHP and JavaScript files
 
-use tree_sitter::{Language, Parser, Node};
+use tree_sitter::{Language, Parser, Node, Query, QueryCursor};
+use streaming_iterator::StreamingIterator;
 
 /// Get PHP language for tree-sitter
 fn get_php_language() -> Language {
@@ -86,6 +87,17 @@ pub struct PluginMethod {
     pub target_method: String,
 }
 
+/// Result of running a tree-sitter query against PHP source code.
+#[derive(Debug, Clone)]
+pub struct AstQueryMatch {
+    pub file: String,
+    pub line: usize,
+    pub end_line: usize,
+    pub snippet: String,
+    /// Captured text for each named capture, keyed by capture name.
+    pub captures: Vec<(String, String)>,
+}
+
 impl PhpAstAnalyzer {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let language = get_php_language();
@@ -121,6 +133,57 @@ impl PhpAstAnalyzer {
         self.detect_magento_patterns(&mut metadata);
 
         metadata
+    }
+
+    /// Run a tree-sitter query against PHP source code.
+    /// Returns matches with line numbers, snippets, and named captures.
+    pub fn run_query(&mut self, source: &str, query_source: &str) -> Result<Vec<AstQueryMatch>, String> {
+        let tree = self.parser.parse(source, None)
+            .ok_or("Failed to parse PHP")?;
+        let lang = get_php_language();
+        let query = Query::new(&lang, query_source)
+            .map_err(|e| format!("Invalid query: {:?}", e))?;
+        let mut cursor = QueryCursor::new();
+        let capture_names: Vec<&str> = query.capture_names().to_vec();
+
+        let mut results = Vec::new();
+        let root = tree.root_node();
+        let src_bytes = source.as_bytes();
+
+        // QueryMatches implements StreamingIterator, not Iterator
+        let mut matches = cursor.matches(&query, root, src_bytes);
+        while let Some(m) = matches.next() {
+            // Use the first capture as the match location
+            if let Some(capture) = m.captures.first() {
+                let node = capture.node;
+                let start = node.start_position();
+                let end = node.end_position();
+                // Get the full line(s) containing the match
+                let lines: Vec<&str> = source.lines().collect();
+                let snippet_lines: Vec<&str> = lines[start.row..=end.row.min(lines.len() - 1)].to_vec();
+
+                // Collect all named captures
+                let mut captures = Vec::new();
+                for cap in m.captures {
+                    let cap_name = capture_names.get(cap.index as usize)
+                        .copied()
+                        .unwrap_or("unknown");
+                    let cap_text = cap.node.utf8_text(src_bytes)
+                        .unwrap_or("")
+                        .to_string();
+                    captures.push((cap_name.to_string(), cap_text));
+                }
+
+                results.push(AstQueryMatch {
+                    file: String::new(), // caller fills in
+                    line: start.row + 1,
+                    end_line: end.row + 1,
+                    snippet: snippet_lines.join("\n").trim().to_string(),
+                    captures,
+                });
+            }
+        }
+        Ok(results)
     }
 
     fn walk_tree(&self, node: &Node, source: &[u8], metadata: &mut PhpAstMetadata) {
@@ -912,5 +975,90 @@ define([
         let meta = analyzer.analyze(source);
         assert_eq!(meta.module_type, Some("amd".to_string()));
         assert!(meta.define_deps.contains(&"jquery".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod query_tests {
+    use super::*;
+
+    #[test]
+    fn test_dataobject_set_null_query() {
+        let mut analyzer = PhpAstAnalyzer::new().unwrap();
+        let source = r#"<?php
+class Foo {
+    public function bar() {
+        $this->setName(null);       // should match
+        $this->setBar('value');     // should NOT match (not null)
+        $obj->setCouponCode(null);  // should match
+        $this->getData();           // should NOT match
+    }
+}"#;
+        let query = include_str!("../queries/dataobject-set-null.scm");
+        let results = analyzer.run_query(source, query).unwrap();
+        // The query matches ALL member_call_expression with null arg.
+        // Post-filter to setX pattern (uppercase after "set").
+        let filtered: Vec<_> = results.iter().filter(|r| {
+            r.captures.iter().any(|(name, text)| {
+                name == "method_name" && text.len() > 3
+                    && text.starts_with("set")
+                    && text.as_bytes()[3].is_ascii_uppercase()
+            })
+        }).collect();
+        assert_eq!(filtered.len(), 2, "Expected 2 setX(null) matches, got {}: {:?}",
+            filtered.len(),
+            filtered.iter().map(|r| &r.snippet).collect::<Vec<_>>());
+        assert!(filtered[0].snippet.contains("setName(null)"));
+        assert!(filtered[1].snippet.contains("setCouponCode(null)"));
+    }
+
+    #[test]
+    fn test_unchecked_method_chain_query() {
+        let mut analyzer = PhpAstAnalyzer::new().unwrap();
+        let source = r#"<?php
+class Foo {
+    private $dep;
+    public function bar() {
+        $this->dep->doSomething();   // should match
+        $this->dep->doAnother();     // should match
+        $this->directCall();          // should NOT match
+    }
+}"#;
+        let query = include_str!("../queries/unchecked-method-chain.scm");
+        let results = analyzer.run_query(source, query).unwrap();
+        assert_eq!(results.len(), 2, "Expected 2 chain matches, got {}: {:?}",
+            results.len(),
+            results.iter().map(|r| &r.snippet).collect::<Vec<_>>());
+        // Verify captures contain expected names
+        let first = &results[0];
+        let cap_names: Vec<&str> = first.captures.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(cap_names.contains(&"root_var"), "Missing root_var capture");
+        assert!(cap_names.contains(&"property"), "Missing property capture");
+        assert!(cap_names.contains(&"called_method"), "Missing called_method capture");
+    }
+
+    #[test]
+    fn test_invalid_query() {
+        let mut analyzer = PhpAstAnalyzer::new().unwrap();
+        let source = "<?php echo 1;";
+        let result = analyzer.run_query(source, "(nonexistent_node) @x");
+        assert!(result.is_err() || result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_query_line_numbers() {
+        let mut analyzer = PhpAstAnalyzer::new().unwrap();
+        let source = r#"<?php
+// line 2
+// line 3
+$x->setFoo(null);
+// line 5
+$y->setBar(null);
+"#;
+        let query = include_str!("../queries/dataobject-set-null.scm");
+        let results = analyzer.run_query(source, query).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].line, 4);
+        assert_eq!(results[1].line, 6);
     }
 }

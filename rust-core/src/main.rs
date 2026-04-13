@@ -1067,6 +1067,94 @@ fn handle_serve_request(
             }
         }
 
+        "ast_query" => {
+            let pattern_name = req.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            let mg_root = match req.get("magento_root").and_then(|v| v.as_str()) {
+                Some(r) if !r.is_empty() => r,
+                _ => return r#"{"ok":false,"error":"Missing 'magento_root' field"}"#.to_string(),
+            };
+            let search_path = req.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+            let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+
+            let query_source = match pattern_name {
+                "dataobject-set-null" => include_str!("../queries/dataobject-set-null.scm"),
+                "unchecked-method-chain" => include_str!("../queries/unchecked-method-chain.scm"),
+                _ => return format!(
+                    r#"{{"ok":false,"error":"Unknown pattern: '{}'. Available: dataobject-set-null, unchecked-method-chain"}}"#,
+                    pattern_name
+                ),
+            };
+
+            let root = std::path::Path::new(mg_root);
+            let target = root.join(search_path);
+            let glob_pattern = format!("{}/**/*.php", target.display());
+
+            let php_files: Vec<_> = match glob::glob(&glob_pattern) {
+                Ok(paths) => paths.filter_map(|p| p.ok()).collect(),
+                Err(e) => return format!(r#"{{"ok":false,"error":"Glob error: {}"}}"#, e),
+            };
+
+            let mut analyzer = match magector_core::PhpAstAnalyzer::new() {
+                Ok(a) => a,
+                Err(e) => return format!(r#"{{"ok":false,"error":"Analyzer init error: {}"}}"#, e),
+            };
+
+            let is_setter_pattern = pattern_name == "dataobject-set-null";
+            let mg_root_prefix = format!("{}/", mg_root);
+            let mut all_results: Vec<serde_json::Value> = Vec::new();
+
+            'outer: for php_file in &php_files {
+                let content = match std::fs::read_to_string(php_file) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+
+                let rel_path = php_file.to_string_lossy()
+                    .strip_prefix(&mg_root_prefix)
+                    .unwrap_or(&php_file.to_string_lossy())
+                    .to_string();
+
+                let matches = match analyzer.run_query(&content, query_source) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+
+                for m in matches {
+                    // Post-filter for dataobject-set-null: only setX where X starts uppercase
+                    if is_setter_pattern {
+                        let is_setter = m.captures.iter().any(|(name, text)| {
+                            name == "method_name"
+                                && text.len() > 3
+                                && text.starts_with("set")
+                                && text.as_bytes()[3].is_ascii_uppercase()
+                        });
+                        if !is_setter {
+                            continue;
+                        }
+                    }
+
+                    all_results.push(serde_json::json!({
+                        "file": rel_path,
+                        "line": m.line,
+                        "endLine": m.end_line,
+                        "snippet": m.snippet,
+                    }));
+
+                    if all_results.len() >= limit {
+                        break 'outer;
+                    }
+                }
+            }
+
+            match serde_json::to_string(&all_results) {
+                Ok(json) => format!(
+                    r#"{{"ok":true,"data":{},"total":{},"scanned":{}}}"#,
+                    json, all_results.len(), php_files.len()
+                ),
+                Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
+            }
+        }
+
         _ => format!(r#"{{"ok":false,"error":"Unknown command: {}"}}"#, command),
     }
 }

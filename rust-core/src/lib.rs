@@ -13,7 +13,7 @@ pub mod sona;
 pub mod datadb;
 pub mod describe;
 
-pub use ast::{PhpAstAnalyzer, PhpAstMetadata, JsAstAnalyzer, JsAstMetadata};
+pub use ast::{PhpAstAnalyzer, PhpAstMetadata, AstQueryMatch, JsAstAnalyzer, JsAstMetadata};
 pub use embedder::{Embedder, EMBEDDING_DIM};
 pub use indexer::{IndexStats, Indexer};
 pub use magento::{detect_file_type, MagentoFileType, XmlAnalyzer};
