@@ -4396,6 +4396,7 @@ async function main() {
   testEnrichChainRegex();
   testExpandIncludePattern();
   testSafePath();
+  testGetReindexWarning();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
@@ -4622,6 +4623,83 @@ function testSafePath() {
   assert(!isSafeVersion(''), 'isSafeVersion: rejects empty string');
   assert(!isSafeVersion(null), 'isSafeVersion: rejects null');
   assert(!isSafeVersion('1.2'), 'isSafeVersion: rejects incomplete semver');
+}
+
+function testGetReindexWarning() {
+  console.log('\n── getReindexWarning ──');
+
+  // Inline the function from mcp-server.js (not exported)
+  function getReindexWarning(reindexInProgress, reindexStartTime, reindexPhase, reindexTotalFiles, reindexItemsToEmbed, reindexPhase2Start) {
+    if (!reindexInProgress || !reindexStartTime) return null;
+    const elapsedSec = Math.round((Date.now() - reindexStartTime) / 1000);
+    const elapsedStr = elapsedSec >= 60
+      ? `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s`
+      : `${elapsedSec}s`;
+
+    let phaseStr, etaStr;
+    if (reindexPhase <= 0) {
+      phaseStr = 'initializing';
+      etaStr = 'est. ~40–70 min total';
+    } else if (reindexPhase === 1) {
+      const filesStr = reindexTotalFiles > 0 ? ` (${reindexTotalFiles.toLocaleString('en')} files)` : '';
+      phaseStr = `phase 1/3: AST parsing${filesStr}`;
+      etaStr = 'est. ~1–3 min for this phase, then ~40–60 min for embeddings';
+    } else if (reindexPhase === 2) {
+      const itemsStr = reindexItemsToEmbed > 0 ? ` (${reindexItemsToEmbed.toLocaleString('en')} items)` : '';
+      phaseStr = `phase 2/3: generating embeddings${itemsStr}`;
+      if (reindexPhase2Start && reindexItemsToEmbed > 0) {
+        const estimatedTotalSec = Math.round((reindexItemsToEmbed / 87000) * 45 * 60);
+        const phase2Elapsed = (Date.now() - reindexPhase2Start) / 1000;
+        const remainingSec = Math.max(estimatedTotalSec - phase2Elapsed, 0);
+        etaStr = remainingSec > 60
+          ? `est. ~${Math.round(remainingSec / 60)} min remaining`
+          : 'almost done with embeddings';
+      } else {
+        etaStr = 'est. 30–60 min for this phase';
+      }
+    } else {
+      phaseStr = 'phase 3/3: building HNSW vector index';
+      etaStr = 'est. ~5–10 min remaining';
+    }
+
+    return `> ⏳ **Re-indexing in progress** — ${elapsedStr} elapsed, ${phaseStr}. ${etaStr}.\n` +
+           `> Results below use the **previous index** — valid, but may miss recently added files.\n\n`;
+  }
+
+  const now = Date.now();
+
+  // Not re-indexing → null
+  assertEq(getReindexWarning(false, null, 0, 0, 0, null), null, 'not indexing → null');
+  assertEq(getReindexWarning(true, null, 0, 0, 0, null), null, 'no start time → null');
+
+  // Phase 0 (initializing)
+  const w0 = getReindexWarning(true, now - 5000, 0, 0, 0, null);
+  assert(w0 !== null, 'phase 0 returns warning');
+  assert(w0.includes('initializing'), 'phase 0 shows initializing');
+  assert(w0.includes('⏳'), 'warning has emoji');
+  assert(w0.includes('previous index'), 'warning mentions previous index');
+
+  // Phase 1 (AST) with file count
+  const w1 = getReindexWarning(true, now - 60000, 1, 87458, 0, null);
+  assert(w1.includes('phase 1/3'), 'phase 1 label');
+  assert(w1.includes('87,458'), 'file count formatted with comma');
+  assert(w1.includes('1m'), 'elapsed time shown in minutes');
+
+  // Phase 2 (embeddings) with estimate
+  const w2 = getReindexWarning(true, now - 600000, 2, 87000, 87000, now - 600000);
+  assert(w2.includes('phase 2/3'), 'phase 2 label');
+  assert(w2.includes('87,000'), 'items count shown');
+  // 45 min total, 10 min elapsed → ~35 min remaining
+  assert(w2.includes('35 min') || w2.includes('34 min') || w2.includes('36 min'), 'ETA estimate for phase 2');
+
+  // Phase 2 without known items count
+  const w2b = getReindexWarning(true, now - 120000, 2, 0, 0, null);
+  assert(w2b.includes('est. 30–60 min'), 'phase 2 fallback estimate');
+
+  // Phase 3 (HNSW)
+  const w3 = getReindexWarning(true, now - 3000000, 3, 87000, 87000, now - 3000000);
+  assert(w3.includes('phase 3/3'), 'phase 3 label');
+  assert(w3.includes('5–10 min'), 'phase 3 estimate');
 }
 
 main().catch((e) => {

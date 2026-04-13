@@ -4,6 +4,11 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.16.2] - 2026-04-13
+
+### Added
+- **Re-index progress notification** — all tool responses now include a banner when a background re-index is running. The banner shows elapsed time, current phase (1/3 AST parsing, 2/3 embeddings, 3/3 HNSW build), file/item count, and an estimated time remaining. Derived from real-time parsing of the Rust indexer log output (`Found N files`, `PHASE 1/2/3`, `Items to embed: N`). Previous index remains active during re-index so results stay valid; the banner clarifies they may miss recently added files.
+
 ## [2.16.1] - 2026-04-13
 
 ### Fixed

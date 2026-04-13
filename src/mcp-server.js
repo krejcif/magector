@@ -423,6 +423,13 @@ let reindexInProgress = false;
 let reindexProcess = null;
 let warmupInProgress = true; // true until checkDbFormat + serve process ready
 
+// Re-index progress tracking (updated from INDEX log lines)
+let reindexStartTime = null;
+let reindexPhase = 0;      // 0=init, 1=AST, 2=embeddings, 3=HNSW
+let reindexTotalFiles = 0;
+let reindexItemsToEmbed = 0;
+let reindexPhase2Start = null;
+
 /**
  * Check if the database file is compatible with the current binary.
  * Uses a cached result to avoid running stats (30-60s) on every startup.
@@ -557,6 +564,11 @@ function startBackgroundReindex() {
   }
 
   reindexInProgress = true;
+  reindexStartTime = Date.now();
+  reindexPhase = 0;
+  reindexTotalFiles = 0;
+  reindexItemsToEmbed = 0;
+  reindexPhase2Start = null;
 
   const hadExistingDb = existsSync(config.dbPath);
   logToFile('WARN', `Starting background re-index to temp path. Old DB ${hadExistingDb ? 'preserved for queries' : 'not found'}.`);
@@ -590,18 +602,31 @@ function startBackgroundReindex() {
   // entries arrive in large chunks instead of in real time.
   const indexStdout = createInterface({ input: reindexProcess.stdout });
   const indexStderr = createInterface({ input: reindexProcess.stderr });
+  const parseIndexProgress = (text) => {
+    const m = text.match(/Found (\d[\d,]+) files to index/);
+    if (m) reindexTotalFiles = parseInt(m[1].replace(/,/g, ''), 10);
+    if (text.includes('PHASE 1') || text.includes('AST analyzer')) reindexPhase = 1;
+    if (text.includes('PHASE 2') || text.includes('semantic embedding') || text.includes('Generating semantic')) {
+      if (reindexPhase < 2) { reindexPhase = 2; reindexPhase2Start = Date.now(); }
+    }
+    if (text.includes('PHASE 3') || text.includes('Building HNSW') || text.includes('HNSW')) reindexPhase = 3;
+    const em = text.match(/Items to embed: (\d[\d,]+)/);
+    if (em) reindexItemsToEmbed = parseInt(em[1].replace(/,/g, ''), 10);
+  };
   indexStdout.on('line', (line) => {
     const text = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
-    if (text) logToFile('INDEX', text);
+    if (text) { logToFile('INDEX', text); parseIndexProgress(text); }
   });
   indexStderr.on('line', (line) => {
     const text = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
-    if (text) logToFile('INDEX', text);
+    if (text) { logToFile('INDEX', text); parseIndexProgress(text); }
   });
 
   reindexProcess.on('exit', (code) => {
     reindexInProgress = false;
     reindexProcess = null;
+    reindexStartTime = null;
+    reindexPhase = 0;
     removeReindexPidFile();
     if (code === 0) {
       // Atomic swap: old → .bak, new → current
@@ -4462,7 +4487,49 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   ]
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+/**
+ * Build a reindex warning string for tool responses during background re-index.
+ * Returns null when not re-indexing.
+ */
+function getReindexWarning() {
+  if (!reindexInProgress || !reindexStartTime) return null;
+  const elapsedSec = Math.round((Date.now() - reindexStartTime) / 1000);
+  const elapsedStr = elapsedSec >= 60
+    ? `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s`
+    : `${elapsedSec}s`;
+
+  let phaseStr, etaStr;
+  if (reindexPhase <= 0) {
+    phaseStr = 'initializing';
+    etaStr = 'est. ~40–70 min total';
+  } else if (reindexPhase === 1) {
+    const filesStr = reindexTotalFiles > 0 ? ` (${reindexTotalFiles.toLocaleString('en')} files)` : '';
+    phaseStr = `phase 1/3: AST parsing${filesStr}`;
+    etaStr = 'est. ~1–3 min for this phase, then ~40–60 min for embeddings';
+  } else if (reindexPhase === 2) {
+    const itemsStr = reindexItemsToEmbed > 0 ? ` (${reindexItemsToEmbed.toLocaleString('en')} items)` : '';
+    phaseStr = `phase 2/3: generating embeddings${itemsStr}`;
+    if (reindexPhase2Start && reindexItemsToEmbed > 0) {
+      // Empirical rate: ~87k items ≈ 45 min on 8-core ONNX. Scale linearly.
+      const estimatedTotalSec = Math.round((reindexItemsToEmbed / 87000) * 45 * 60);
+      const phase2Elapsed = (Date.now() - reindexPhase2Start) / 1000;
+      const remainingSec = Math.max(estimatedTotalSec - phase2Elapsed, 0);
+      etaStr = remainingSec > 60
+        ? `est. ~${Math.round(remainingSec / 60)} min remaining`
+        : 'almost done with embeddings';
+    } else {
+      etaStr = 'est. 30–60 min for this phase';
+    }
+  } else {
+    phaseStr = 'phase 3/3: building HNSW vector index';
+    etaStr = 'est. ~5–10 min remaining';
+  }
+
+  return `> ⏳ **Re-indexing in progress** — ${elapsedStr} elapsed, ${phaseStr}. ${etaStr}.\n` +
+         `> Results below use the **previous index** — valid, but may miss recently added files.\n\n`;
+}
+
+const _callToolHandler = async (request) => {
   const { name, arguments: args } = request.params;
   const reqStart = Date.now();
   logToFile('REQ', `${name}(${JSON.stringify(args || {})})`);
@@ -6928,6 +6995,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       serveQuery('feedback', { signals }).catch((err) => logToFile('WARN', `Feedback signal send failed: ${err.message}`));
     }
   }
+};
+
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const result = await _callToolHandler(request);
+  // Append re-index warning to non-error responses during background re-index
+  if (reindexInProgress && !result?.isError && result?.content?.[0]?.type === 'text') {
+    const warning = getReindexWarning();
+    if (warning) result.content[0].text = warning + result.content[0].text;
+  }
+  return result;
 });
 
 server.setRequestHandler(ListResourcesRequestSchema, async () => ({
