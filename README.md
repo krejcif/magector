@@ -5,7 +5,7 @@
 Magector is a Model Context Protocol (MCP) server that deeply understands Magento 2 and Adobe Commerce. It builds a semantic vector index of your entire codebase — 18,000+ files across hundreds of modules — and exposes 46 tools that let AI assistants search, navigate, and understand the code with domain-specific intelligence. Instead of grepping for keywords, your AI asks *"how are checkout totals calculated?"* and gets ranked, relevant results in under 50ms, enriched with Magento pattern detection (plugins, observers, controllers, DI preferences, layout XML, and 20+ more).
 
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
-[![Node.js](https://img.shields.io/badge/node-22.5+-green.svg)](https://nodejs.org)
+[![Node.js](https://img.shields.io/badge/node-18+-green.svg)](https://nodejs.org)
 [![Magento](https://img.shields.io/badge/magento-2.4.x-blue.svg)](https://magento.com)
 [![Adobe Commerce](https://img.shields.io/badge/adobe%20commerce-supported-blue.svg)](https://business.adobe.com/products/magento/magento-commerce.html)
 [![Accuracy](https://img.shields.io/badge/accuracy-99.2%25-brightgreen.svg)](#validation)
@@ -129,8 +129,7 @@ flowchart LR
 | JS parsing | `tree-sitter-javascript` | AMD/ES6 module detection |
 | Pattern detection | Custom Rust | 20+ Magento-specific patterns |
 | CLI | `clap` | Command-line interface (index, search, serve, validate) |
-| Descriptions | `rusqlite` (bundled SQLite) | LLM-generated di.xml descriptions stored in `.magector/sqlite.db`, prepended to embeddings |
-| Null-safety index | `node:sqlite` (Node.js 22.5+ built-in) | Method-chain enrichment index in `.magector/enrichment.db` — O(1) null-risk queries |
+| Unified metadata | rusqlite (bundled SQLite) | LLM descriptions, method-chain enrichment, process state, cache — all in .magector/data.db |
 | SONA | Custom Rust | Feedback learning with MicroLoRA + EWC++ |
 | MCP server | `@modelcontextprotocol/sdk` | AI tool integration with structured JSON output |
 
@@ -171,8 +170,7 @@ If you find a security issue, please open an issue on the GitHub repo and mark i
 
 ### Prerequisites
 
-- [Node.js 22.5+](https://nodejs.org) — required for built-in `node:sqlite` (used by `magento_enrich` / `magento_find_null_risks`)
-- [semgrep](https://semgrep.dev) (optional) — required for `magento_ast_search`: `pip install semgrep`
+- [Node.js 18+](https://nodejs.org)
 
 ### 1. Initialize in Your Project
 
@@ -246,7 +244,7 @@ Options:
   -v, --verbose                      Enable verbose output
 ```
 
-When `--descriptions-db` is provided (or auto-detected as `sqlite.db` next to the index), descriptions are prepended to the embedding text as `"Description: {text}\n\n"` before the raw file content. This places semantic terms within the 256-token ONNX window, significantly improving retrieval of di.xml files for natural-language queries.
+When `--descriptions-db` is provided (or auto-detected as `data.db` next to the index), descriptions are prepended to the embedding text as `"Description: {text}\n\n"` before the raw file content. This places semantic terms within the 256-token ONNX window, significantly improving retrieval of di.xml files for natural-language queries.
 
 #### `search`
 
@@ -266,7 +264,7 @@ magector-core describe [OPTIONS]
 
 Options:
   -m, --magento-root <PATH>   Path to Magento root directory
-  -o, --output <PATH>         Output SQLite database [default: ./.magector/sqlite.db]
+  -o, --output <PATH>         Output SQLite database [default: ./.magector/data.db]
       --force                 Re-describe all files (ignore cache)
 ```
 
@@ -504,7 +502,7 @@ Auto-detects entry type from pattern (`/V1/...` → API, `snake_case` → event,
 |------|-------------|
 | `magento_module_structure` | Show complete module structure -- controllers, models, blocks, plugins, observers, configs |
 | `magento_index` | Trigger re-indexing of the codebase (also kicks off background enrichment) |
-| `magento_describe` | Generate LLM descriptions for di.xml files (requires `ANTHROPIC_API_KEY`), stored in `.magector/sqlite.db`, auto-reindexes affected files |
+| `magento_describe` | Generate LLM descriptions for di.xml files (requires `ANTHROPIC_API_KEY`), stored in `.magector/data.db`, auto-reindexes affected files |
 | `magento_stats` | View index statistics |
 | `magento_batch` | Execute multiple tool queries in parallel in one MCP roundtrip. Supports all search, find, grep, read, and null-risk tools. Use to avoid N×3-5s roundtrip overhead. |
 | `magento_grep` | Exact text/regex search across PHP/XML/PHTML files (`grep -rn -E` internally). Supports `filesOnly` mode (like `grep -l`), `context` lines, `ignoreCase`, `include` patterns. **(v2.9)** |
@@ -517,10 +515,10 @@ Auto-detects entry type from pattern (`/V1/...` → API, `snake_case` → event,
 
 | Tool | Description |
 |------|-------------|
-| `magento_ast_search` | Structural PHP code search using [semgrep](https://semgrep.dev). Understands PHP AST — matches by structure regardless of variable names, ignores comments/strings. Pattern syntax: `$X` = any expression, `$Y` = any identifier, `...` = any args. Example: `$X->getPayment()->$Y(...)`. Requires `semgrep`. **(v2.12)** |
-| `magento_enrich` | Build the method-chain enrichment index. Scans all `vendor/` PHP files for `->firstMethod()->secondMethod()` chains and detects null guards in surrounding code. Stores results in `.magector/enrichment.db` (SQLite, `node:sqlite`). Runs automatically after `magento_index`. **(v2.13)** |
+| `magento_ast_search` | Structural PHP code search using tree-sitter. Named patterns: `dataobject-set-null` (detect setX(null) anti-pattern), `unchecked-method-chain` (detect $this->dep->method() chains). Pattern arg is an enum, not free-text. Executed in Rust serve process — no external dependency. **(v2.16)** |
+| `magento_enrich` | Build the method-chain enrichment index. Scans all `vendor/` PHP files for `->firstMethod()->secondMethod()` chains and detects null guards in surrounding code. Stores results in `.magector/data.db` (SQLite, via Rust serve). Runs automatically after `magento_index`. **(v2.13, moved to Rust v2.16)** |
 | `magento_find_null_risks` | Query the enrichment index for method chains without null guards. O(1) SQLite query instead of file scanning. Pass `firstMethod` to filter (e.g., `"getPayment"` → all `->getPayment()->anything()` without null guard). Requires `magento_enrich`. **(v2.13)** |
-| `magento_find_dataobject_issues` | Detect `setX(null)` anti-pattern on Magento `DataObject` subclasses. `setX(null)` stores `['x' => null]` in `_data` — `hasX()` (via `array_key_exists`) returns `true` even when the value is `null`, creating false-positive guard conditions. Use during field-lifecycle audits or when debugging "value persists but shouldn't" bugs. Requires `semgrep`. **(v2.15)** |
+| `magento_find_dataobject_issues` | Detect `setX(null)` anti-pattern on Magento `DataObject` subclasses. `setX(null)` stores `['x' => null]` in `_data` — `hasX()` (via `array_key_exists`) returns `true` even when the value is `null`, creating false-positive guard conditions. Use during field-lifecycle audits or when debugging "value persists but shouldn't" bugs. Uses tree-sitter. **(v2.15, tree-sitter v2.16)** |
 
 ### Search Enhancements (v2.1)
 
@@ -908,7 +906,7 @@ npx magector index /path/to/magento
 
 Or via the MCP tool: `magento_describe()` generates descriptions and auto-reindexes affected files in one step.
 
-**How it works:** Each di.xml file is sent to Claude Sonnet with a prompt optimized for semantic search retrieval. The resulting description (~70 words) is stored in a SQLite database (`.magector/sqlite.db`). During indexing, descriptions are prepended to the embedding text as `"Description: {text}\n\n"` before the raw file content, placing semantic terms (preferences, plugins, virtual types, subsystem names) within the ONNX model's 256-token window.
+**How it works:** Each di.xml file is sent to Claude Sonnet with a prompt optimized for semantic search retrieval. The resulting description (~70 words) is stored in a SQLite database (`.magector/data.db`). During indexing, descriptions are prepended to the embedding text as `"Description: {text}\n\n"` before the raw file content, placing semantic terms (preferences, plugins, virtual types, subsystem names) within the ONNX model's 256-token window.
 
 **Measured impact** (A/B experiment, 25 queries, Magento 2.4.7, 17,891 vectors, 371 described files):
 
@@ -1249,8 +1247,8 @@ All MCP server activity is logged to `.magector/magector.log` in the Magento pro
 | Level | Meaning |
 |-------|---------|
 | `INFO` | Normal operations: startup config, tool completion, search fallbacks, enrichment progress |
-| `WARN` | Recoverable issues: slow grep queries (>5s), missing enrichment.db, file read errors, serve process disconnects |
-| `ERR` | Failures: semgrep crashes, transaction rollbacks, serve process errors, tool execution errors |
+| `WARN` | Recoverable issues: slow grep queries (>5s), missing data.db, file read errors, serve process disconnects |
+| `ERR` | Failures: AST query errors, transaction rollbacks, serve process errors, tool execution errors |
 | `REQ` | Every tool call with full input parameters (JSON) |
 | `RES` | Tool completion with elapsed time in milliseconds |
 | `QUERY` | Rust serve process queries (search, feedback) |
@@ -1271,7 +1269,7 @@ grep '\[RES\]' .magector/magector.log | tail -20
 # Enrichment/null-risk analysis
 grep 'enrich:\|null_risks:' .magector/magector.log | tail -20
 
-# AST search (semgrep) issues
+# AST search (tree-sitter) issues
 grep 'ast_search:' .magector/magector.log | tail -20
 
 # Batch query breakdown (per-tool timing)
@@ -1288,7 +1286,7 @@ grep 'server starting\|Config:\|primary\|Serve process' .magector/magector.log |
 
 Every tool call logs `[REQ]` with input parameters and `[RES]` with elapsed time. Additionally:
 
-- **`magento_ast_search`** — semgrep pattern, target path, execution time, result count, semgrep errors
+- **`magento_ast_search`** — tree-sitter pattern, target path, execution time, result count, query errors
 - **`magento_enrich`** — file count, progress every 10k files, read errors, transaction failures, final summary
 - **`magento_find_null_risks`** — query parameters, result count, query timing, missing DB warnings
 - **`magento_batch`** — query list on entry, per-sub-tool timing and errors
