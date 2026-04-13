@@ -56,12 +56,14 @@ impl FileManifest {
     /// Returns None if the file doesn't exist or can't be parsed.
     pub fn load(path: &Path) -> Option<Self> {
         let data = std::fs::read(path).ok()?;
-        bincode::deserialize(&data).ok()
+        bincode::serde::decode_from_slice(&data, bincode::config::standard())
+            .map(|(val, _)| val)
+            .ok()
     }
 
     /// Save manifest to a sidecar file next to the index DB.
     pub fn save(&self, path: &Path) -> Result<()> {
-        let data = bincode::serialize(self)?;
+        let data = bincode::serde::encode_to_vec(self, bincode::config::standard())?;
         // Atomic write: write to temp, then rename
         let tmp = path.with_extension("manifest.tmp");
         std::fs::write(&tmp, &data)?;

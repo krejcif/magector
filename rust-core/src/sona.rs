@@ -325,7 +325,7 @@ impl SonaEngine {
 
         // Try V2 format first
         if bytes[0] == SONA_VERSION_V2 {
-            let state: SonaStateV2 = bincode::deserialize(&bytes[1..])?;
+            let (state, _): (SonaStateV2, _) = bincode::serde::decode_from_slice(&bytes[1..], bincode::config::standard())?;
             return Ok(Self {
                 learned: state.learned,
                 lora: state.lora,
@@ -334,7 +334,7 @@ impl SonaEngine {
         }
 
         // Fallback: V1 format (just LearnedWeights)
-        let learned: LearnedWeights = bincode::deserialize(&bytes)?;
+        let (learned, _): (LearnedWeights, _) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())?;
         Ok(Self {
             learned,
             lora: MicroLoRA::default(),
@@ -349,7 +349,7 @@ impl SonaEngine {
             ewc: self.ewc.clone(),
         };
         let mut bytes = vec![SONA_VERSION_V2];
-        bytes.extend(bincode::serialize(&state)?);
+        bytes.extend(bincode::serde::encode_to_vec(&state, bincode::config::standard())?);
         std::fs::write(path, bytes)?;
         Ok(())
     }

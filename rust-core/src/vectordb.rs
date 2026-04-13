@@ -66,7 +66,7 @@ struct PersistedState {
 }
 
 /// Version tag written before V2 payloads
-const PERSIST_VERSION_V2: u8 = 2;
+const PERSIST_VERSION_V2: u8 = 3;
 
 /// Persisted state V2 — includes tombstone set
 #[derive(Serialize, Deserialize)]
@@ -173,8 +173,8 @@ impl VectorDB {
 
         // Try V2 first: first byte == PERSIST_VERSION_V2
         if bytes[0] == PERSIST_VERSION_V2 {
-            match bincode::deserialize::<PersistedStateV2>(&bytes[1..]) {
-                Ok(state) => return Self::from_state_v2(state),
+            match bincode::serde::decode_from_slice::<PersistedStateV2, _>(&bytes[1..], bincode::config::standard()) {
+                Ok((state, _)) => return Self::from_state_v2(state),
                 Err(e) => {
                     tracing::warn!("V2 database format incompatible: {e}");
                     return Err(anyhow::anyhow!("Database format changed (schema mismatch). Re-index required."))
@@ -184,8 +184,8 @@ impl VectorDB {
         }
 
         // Fallback: V1 (no version byte)
-        match bincode::deserialize::<PersistedState>(&bytes) {
-            Ok(state) => Self::from_state(state),
+        match bincode::serde::decode_from_slice::<PersistedState, _>(&bytes, bincode::config::standard()) {
+            Ok((state, _)) => Self::from_state(state),
             Err(e) => {
                 tracing::warn!("V1 database format incompatible: {e}");
                 Err(anyhow::anyhow!("Database format changed (schema mismatch). Re-index required."))
@@ -209,9 +209,9 @@ impl VectorDB {
         }
 
         if bytes[0] == PERSIST_VERSION_V2 {
-            bincode::deserialize::<PersistedStateV2>(&bytes[1..]).is_ok()
+            bincode::serde::decode_from_slice::<PersistedStateV2, _>(&bytes[1..], bincode::config::standard()).is_ok()
         } else {
-            bincode::deserialize::<PersistedState>(&bytes).is_ok()
+            bincode::serde::decode_from_slice::<PersistedState, _>(&bytes, bincode::config::standard()).is_ok()
         }
     }
 
@@ -272,7 +272,7 @@ impl VectorDB {
         // Write version byte, then V2 payload
         use std::io::Write;
         writer.write_all(&[PERSIST_VERSION_V2])?;
-        bincode::serialize_into(writer, &state)
+        bincode::serde::encode_into_std_write(&state, &mut writer, bincode::config::standard())
             .context("Failed to serialize database")?;
 
         // Clean up legacy files from old versions
@@ -305,7 +305,7 @@ impl VectorDB {
             let mut writer = BufWriter::with_capacity(1 << 20, file);
             use std::io::Write;
             writer.write_all(&[PERSIST_VERSION_V2])?;
-            bincode::serialize_into(&mut writer, &state)
+            bincode::serde::encode_into_std_write(&state, &mut writer, bincode::config::standard())
                 .context("Failed to serialize database")?;
             writer.flush()?;
         }
