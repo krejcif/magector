@@ -3502,198 +3502,8 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
 }
 
 // ─── Method Chain Enrichment ────────────────────────────────────
-// Scans PHP files for two-step method chains (->first()->second()) and detects
-// null guards in surrounding code. Results stored in SQLite enrichment.db for
-// instant O(1) queries — eliminates 20+ grep calls for null-risk analyses.
-
-const ENRICHMENT_DB_PATH = (root) => path.join(root, '.magector', 'enrichment.db');
-
-/**
- * Detect null guard for a chained call in surrounding lines.
- * Checks ±guardRadius lines for: null checks, ?->, ??, isset()
- */
-function hasNullGuard(lines, matchLineIdx, receiverExpr, guardRadius = 6) {
-  const start = Math.max(0, matchLineIdx - guardRadius);
-  const end = Math.min(lines.length - 1, matchLineIdx + guardRadius);
-  const matchLine = lines[matchLineIdx] || '';
-  const window = lines.slice(start, end + 1).join('\n');
-
-  // ?-> only counts if it's on the same line as the chain (avoid false positives from unrelated variables)
-  if (matchLine.includes('?->')) return true;
-  if (/\?\?|\?:/.test(window)) return true;
-
-  if (receiverExpr) {
-    const esc = receiverExpr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    if (new RegExp(`(?:is_null\\s*\\(\\s*${esc}|${esc}\\s*(?:===|!==)\\s*null|!\\s*${esc}\\s*[,)]|isset\\s*\\(\\s*${esc})`, 'i').test(window)) return true;
-  }
-  return false;
-}
-
-/**
- * Scan vendor/ PHP files for ->first()->second() chains and store null-safety
- * analysis in enrichment.db. Called by magento_enrich and after magento_index.
- */
-async function enrichMethodChains(root) {
-  const dbPath = ENRICHMENT_DB_PATH(root);
-  logToFile('INFO', `enrich: starting method-chain scan, db=${dbPath}`);
-  const enrichStart = Date.now();
-
-  // Use node:sqlite (built-in, no deps)
-  let DatabaseSync;
-  try {
-    ({ DatabaseSync } = await import('node:sqlite'));
-  } catch {
-    logToFile('ERR', 'enrich: node:sqlite not available — requires Node.js 22.5+');
-    throw new Error('node:sqlite not available — requires Node.js 22.5+');
-  }
-
-  const db = new DatabaseSync(dbPath);
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS method_chains (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      file TEXT NOT NULL,
-      line INTEGER NOT NULL,
-      chain TEXT NOT NULL,
-      first_method TEXT NOT NULL,
-      second_method TEXT NOT NULL,
-      has_null_guard INTEGER NOT NULL DEFAULT 0,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_first_method ON method_chains (first_method);
-    CREATE INDEX IF NOT EXISTS idx_null_guard ON method_chains (has_null_guard, first_method);
-  `);
-
-  // Two-step chain: $var->firstMethod(...)->secondMethod(
-  // Captures: receiver ($var), firstMethod, secondMethod
-  const chainRegex = /(\$\w+)\s*->\s*(\w+)\s*\([^)]{0,60}\)\s*->\s*(\w+)\s*\(/g;
-  const now = Date.now();
-
-  const phpFiles = await glob('vendor/**/*.php', { cwd: root, absolute: true, nodir: true });
-  logToFile('INFO', `enrich: found ${phpFiles.length} PHP files in vendor/`);
-  let scanned = 0;
-  let chains = 0;
-  let readErrors = 0;
-
-  const insertStmt = db.prepare(
-    'INSERT INTO method_chains (file, line, chain, first_method, second_method, has_null_guard, updated_at) VALUES (?,?,?,?,?,?,?)'
-  );
-  const deleteFile = db.prepare('DELETE FROM method_chains WHERE file = ?');
-
-  // Build line-offset index for O(1) line number lookups
-  function buildLineIndex(content) {
-    const offsets = [0];
-    let idx = 0;
-    while ((idx = content.indexOf('\n', idx)) !== -1) {
-      idx++;
-      offsets.push(idx);
-    }
-    return offsets;
-  }
-
-  function lineFromOffset(offsets, charIndex) {
-    let lo = 0, hi = offsets.length - 1;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      if (offsets[mid] <= charIndex) lo = mid; else hi = mid - 1;
-    }
-    return lo + 1; // 1-based
-  }
-
-  // Progress logging every 10k files
-  const progressInterval = 10000;
-
-  db.exec('BEGIN');
-  try {
-    for (const phpFile of phpFiles) {
-      let content;
-      try { content = readFileSync(phpFile, 'utf-8'); } catch (err) {
-        readErrors++;
-        if (readErrors <= 5) logToFile('WARN', `enrich: cannot read ${phpFile}: ${err.code || err.message}`);
-        continue;
-      }
-      if (!content.includes('->')) continue;
-
-      const relPath = phpFile.replace(root + '/', '');
-      const lines = content.split('\n');
-      const lineOffsets = buildLineIndex(content);
-      const rows = [];
-
-      chainRegex.lastIndex = 0;
-      let m;
-      while ((m = chainRegex.exec(content)) !== null) {
-        const lineNum = lineFromOffset(lineOffsets, m.index);
-        rows.push({
-          file: relPath, line: lineNum,
-          chain: `->${m[2]}()->${m[3]}()`,
-          firstMethod: m[2], secondMethod: m[3],
-          hasNullGuard: hasNullGuard(lines, lineNum - 1, m[1]) ? 1 : 0
-        });
-        chains++;
-      }
-
-      if (rows.length > 0) {
-        deleteFile.run(relPath);
-        for (const r of rows) {
-          insertStmt.run(r.file, r.line, r.chain, r.firstMethod, r.secondMethod, r.hasNullGuard, now);
-        }
-      }
-      scanned++;
-      if (scanned % progressInterval === 0) {
-        logToFile('INFO', `enrich: progress ${scanned}/${phpFiles.length} files, ${chains} chains so far (${Date.now() - enrichStart}ms)`);
-      }
-    }
-    db.exec('COMMIT');
-  } catch (err) {
-    logToFile('ERR', `enrich: transaction failed at file ${scanned}/${phpFiles.length}: ${err.message}`);
-    db.exec('ROLLBACK');
-    throw err;
-  }
-
-  db.close();
-  const enrichElapsed = Date.now() - enrichStart;
-  logToFile('INFO', `enrich: complete — ${scanned} files scanned, ${chains} chains indexed, ${readErrors} read errors, ${enrichElapsed}ms`);
-  return { scanned, chains };
-}
-
-/**
- * Query enrichment.db for unsafe method chains (no null guard).
- */
-async function queryNullRisks(root, firstMethod, limit = 100) {
-  const dbPath = ENRICHMENT_DB_PATH(root);
-  if (!existsSync(dbPath)) {
-    logToFile('WARN', `null_risks: enrichment.db not found at ${dbPath} — run magento_enrich first`);
-    return null;
-  }
-
-  let DatabaseSync;
-  try {
-    ({ DatabaseSync } = await import('node:sqlite'));
-  } catch (err) {
-    logToFile('ERR', `null_risks: node:sqlite not available: ${err.message}`);
-    return null;
-  }
-
-  const queryStart = Date.now();
-  logToFile('INFO', `null_risks: querying firstMethod=${firstMethod || '(all)'} limit=${limit}`);
-  const db = new DatabaseSync(dbPath, { open: true });
-  let rows;
-  try {
-    if (firstMethod) {
-      rows = db.prepare(
-        'SELECT file, line, chain, second_method FROM method_chains WHERE has_null_guard = 0 AND first_method = ? ORDER BY file, line LIMIT ?'
-      ).all(firstMethod, limit);
-    } else {
-      rows = db.prepare(
-        'SELECT file, line, chain, first_method, second_method FROM method_chains WHERE has_null_guard = 0 ORDER BY first_method, file, line LIMIT ?'
-      ).all(limit);
-    }
-  } finally {
-    db.close();
-  }
-  logToFile('INFO', `null_risks: ${rows.length} unsafe chain(s) found in ${Date.now() - queryStart}ms`);
-  return rows;
-}
+// Enrichment logic has been moved to the Rust serve process (enrich / enrich_query commands).
+// Use serveQuery('enrich', { magento_root }) and serveQuery('enrich_query', { first_method, limit }).
 
 // ─── AST Search (semgrep) ───────────────────────────────────────
 
@@ -4578,7 +4388,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_enrich',
-      description: 'Build the method-chain enrichment index. Scans all vendor/ PHP files for two-step method chains (->firstMethod()->secondMethod()) and analyses whether each call has a null guard in surrounding code. Results stored in .magector/enrichment.db. Run this once after magento_index, then use magento_find_null_risks for instant O(1) null-safety queries instead of 20+ grep calls. Also runs automatically after magento_index completes.',
+      description: 'Build the method-chain enrichment index. Scans all vendor/ PHP files for two-step method chains (->firstMethod()->secondMethod()) and analyses whether each call has a null guard in surrounding code. Results stored in .magector/data.db. Run this once after magento_index, then use magento_find_null_risks for instant O(1) null-safety queries instead of 20+ grep calls. Also runs automatically after magento_index completes.',
       inputSchema: { type: 'object', properties: {} }
     },
     {
@@ -4928,10 +4738,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'magento_index': {
         const root = args.path || config.magentoRoot;
         const output = rustIndex(root);
-        // Auto-enrich after indexing: runs in background, doesn't block response
+        // Auto-enrich after indexing: runs in background via Rust serve, doesn't block response
         logToFile('INFO', 'Auto-enrich: starting in background after index');
-        enrichMethodChains(root).then(({ scanned, chains }) => {
-          logToFile('INFO', `Auto-enrich complete: ${scanned} files, ${chains} chains`);
+        serveQuery('enrich', { magento_root: root }, 120000).then(resp => {
+          if (resp.ok) {
+            logToFile('INFO', `Auto-enrich complete: ${resp.data.scanned} files, ${resp.data.chains} chains`);
+          } else {
+            logToFile('WARN', `Auto-enrich failed: ${resp.error}`);
+          }
         }).catch(err => {
           logToFile('WARN', `Auto-enrich failed: ${err.message}`);
         });
@@ -6588,15 +6402,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 break;
               }
               case 'magento_find_null_risks': {
-                const bRoot = config.magentoRoot;
                 const bLimit = Math.min(a.limit || 100, 500);
-                const bRows = bRoot ? await queryNullRisks(bRoot, a.firstMethod || null, bLimit) : null;
-                if (!bRows) { text = '⚠️ Run magento_enrich first.'; break; }
-                if (bRows.length === 0) { text = 'No unsafe chains found.'; break; }
-                text = `Found ${bRows.length} unsafe chain(s):\n`;
-                for (const r of bRows.slice(0, 50)) {
-                  const chain = r.chain || `->${r.first_method}()->${r.second_method}()`;
-                  text += `${r.file}:${r.line}: ${chain}\n`;
+                try {
+                  const bResp = await serveQuery('enrich_query', { first_method: a.firstMethod || null, limit: bLimit }, 30000);
+                  if (!bResp.ok) { text = `⚠️ ${bResp.error || 'Query failed'}`; break; }
+                  const bRows = bResp.data || [];
+                  if (bRows.length === 0) { text = 'No unsafe chains found.'; break; }
+                  text = `Found ${bRows.length} unsafe chain(s):\n`;
+                  for (const r of bRows.slice(0, 50)) {
+                    const chain = r.chain || `->${r.first_method}()->${r.second_method}()`;
+                    text += `${r.file}:${r.line}: ${chain}\n`;
+                  }
+                } catch (bErr) {
+                  text = '⚠️ Run magento_enrich first.';
                 }
                 break;
               }
@@ -6894,8 +6712,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!root) return { content: [{ type: 'text', text: 'MAGENTO_ROOT not set.' }], isError: true };
         let text = `## magento_enrich\n\nScanning vendor/ PHP files for method chains...\n`;
         try {
-          const { scanned, chains } = await enrichMethodChains(root);
-          text += `\n✅ **Done**\n- Files scanned: ${scanned}\n- Method chains indexed: ${chains}\n- Null-risk index saved to: \`.magector/enrichment.db\`\n\nUse \`magento_find_null_risks\` to query unsafe chains.`;
+          const resp = await serveQuery('enrich', { magento_root: root }, 120000);
+          if (resp.ok) {
+            text += `\n✅ **Done**\n- Files scanned: ${resp.data.scanned}\n- Method chains indexed: ${resp.data.chains}\n- Null-risk index saved to: \`.magector/data.db\``;
+          } else {
+            text += `\n❌ Error: ${resp.error}`;
+          }
         } catch (err) {
           text += `\n❌ Error: ${err.message}`;
         }
@@ -6906,32 +6728,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const root = config.magentoRoot;
         if (!root) return { content: [{ type: 'text', text: 'MAGENTO_ROOT not set.' }], isError: true };
         const limit = Math.min(args.limit || 100, 500);
-        const rows = await queryNullRisks(root, args.firstMethod || null, limit);
-        if (rows === null) {
-          return { content: [{ type: 'text', text: `## magento_find_null_risks\n\n⚠️ Enrichment index not found. Run \`magento_enrich\` first to build the method-chain index.` }] };
-        }
-        if (rows.length === 0) {
-          const filter = args.firstMethod ? ` for \`->${args.firstMethod}()\`` : '';
-          return { content: [{ type: 'text', text: `## magento_find_null_risks${filter}\n\nNo unsafe chains found. All detected chains have null guards.` }] };
-        }
-        const filter = args.firstMethod ? ` for \`->${args.firstMethod}()\`` : '';
-        let text = `## magento_find_null_risks${filter}\n\nFound **${rows.length}** chain(s) without null guard:\n\n`;
-        // Group by chain type for readability
-        const byChain = {};
-        for (const r of rows) {
-          const key = r.chain || `->${r.first_method}()->${r.second_method}()`;
-          if (!byChain[key]) byChain[key] = [];
-          byChain[key].push(r);
-        }
-        for (const [chain, sites] of Object.entries(byChain)) {
-          text += `### \`${chain}\` (${sites.length} site${sites.length > 1 ? 's' : ''})\n`;
-          for (const s of sites.slice(0, 20)) {
-            text += `- \`${s.file}:${s.line}\`\n`;
+        try {
+          const resp = await serveQuery('enrich_query', { first_method: args.firstMethod || null, limit }, 30000);
+          if (!resp.ok) {
+            return { content: [{ type: 'text', text: `## magento_find_null_risks\n\n⚠️ ${resp.error || 'Query failed'}` }] };
           }
-          if (sites.length > 20) text += `- ... and ${sites.length - 20} more\n`;
-          text += '\n';
+          const rows = resp.data || [];
+          if (rows.length === 0) {
+            const filter = args.firstMethod ? ` for \`->${args.firstMethod}()\`` : '';
+            return { content: [{ type: 'text', text: `## magento_find_null_risks${filter}\n\nNo unsafe chains found. All detected chains have null guards.` }] };
+          }
+          const filter = args.firstMethod ? ` for \`->${args.firstMethod}()\`` : '';
+          let text = `## magento_find_null_risks${filter}\n\nFound **${rows.length}** chain(s) without null guard:\n\n`;
+          // Group by chain type for readability
+          const byChain = {};
+          for (const r of rows) {
+            const key = r.chain || `->${r.first_method}()->${r.second_method}()`;
+            if (!byChain[key]) byChain[key] = [];
+            byChain[key].push(r);
+          }
+          for (const [chain, sites] of Object.entries(byChain)) {
+            text += `### \`${chain}\` (${sites.length} site${sites.length > 1 ? 's' : ''})\n`;
+            for (const s of sites.slice(0, 20)) {
+              text += `- \`${s.file}:${s.line}\`\n`;
+            }
+            if (sites.length > 20) text += `- ... and ${sites.length - 20} more\n`;
+            text += '\n';
+          }
+          return { content: [{ type: 'text', text }] };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `## magento_find_null_risks\n\n⚠️ Enrichment index not found. Run \`magento_enrich\` first.` }] };
         }
-        return { content: [{ type: 'text', text }] };
       }
 
       default:

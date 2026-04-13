@@ -11,6 +11,7 @@ use std::time::Duration;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use magector_core::{Indexer, VectorDB, Embedder, Validator, WatcherStatus, EMBEDDING_DIM};
+use magector_core::datadb::DataDb;
 
 const MAGENTO2_REPO: &str = "https://github.com/magento/magento2.git";
 const MAGENTO2_TAG: &str = "2.4.7"; // Latest stable version
@@ -500,6 +501,13 @@ fn run_serve(
     let vectors = indexer.stats().vectors_created;
     let indexer = Arc::new(Mutex::new(indexer));
 
+    // Open (or create) the unified DataDb alongside the index
+    let data_db_path = database.with_file_name("data.db");
+    let data_db = DataDb::open(&data_db_path)
+        .with_context(|| format!("Failed to open DataDb at {:?}", data_db_path))?;
+    let data_db = Arc::new(Mutex::new(data_db));
+    eprintln!("DataDb opened at {:?}", data_db_path);
+
     // Watcher status (shared with watcher thread)
     let watcher_status = Arc::new(Mutex::new(WatcherStatus {
         running: false,
@@ -562,12 +570,14 @@ fn run_serve(
                 let watcher_ref = &watcher_status;
                 let db_ref = database;
                 let desc_db_ref = &desc_db_path_for_serve;
+                let data_db_ref = &data_db;
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     handle_serve_request(
                         indexer_ref,
                         watcher_ref,
                         db_ref,
                         desc_db_ref,
+                        data_db_ref,
                         &req,
                     )
                 })) {
@@ -593,6 +603,7 @@ fn handle_serve_request(
     watcher_status: &Arc<Mutex<WatcherStatus>>,
     db_path: &PathBuf,
     desc_db_path: &PathBuf,
+    data_db: &Arc<Mutex<DataDb>>,
     req: &serde_json::Value,
 ) -> String {
     let command = req.get("command").and_then(|v| v.as_str()).unwrap_or("");
@@ -748,23 +759,196 @@ fn handle_serve_request(
         }
 
         "descriptions" => {
-            // Return all descriptions as JSON (for MCP server to consume)
-            if !desc_db_path.exists() {
-                return r#"{"ok":true,"data":{}}"#.to_string();
-            }
-            match magector_core::describe::DescriptionDb::open_readonly(desc_db_path) {
-                Ok(db) => {
-                    match db.all() {
-                        Ok(all) => {
-                            match serde_json::to_string(&all) {
-                                Ok(json) => format!(r#"{{"ok":true,"data":{}}}"#, json),
-                                Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
-                            }
-                        }
-                        Err(e) => format!(r#"{{"ok":false,"error":"DB read error: {}"}}"#, e),
+            // Return all descriptions as JSON — try DataDb first, fall back to legacy DescriptionDb
+            let ddb = data_db.lock().unwrap();
+            match ddb.desc_all() {
+                Ok(all) if !all.is_empty() => {
+                    match serde_json::to_string(&all) {
+                        Ok(json) => format!(r#"{{"ok":true,"data":{}}}"#, json),
+                        Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
                     }
                 }
-                Err(e) => format!(r#"{{"ok":false,"error":"DB open error: {}"}}"#, e),
+                _ => {
+                    // Fall back to legacy DescriptionDb
+                    drop(ddb);
+                    if !desc_db_path.exists() {
+                        return r#"{"ok":true,"data":{}}"#.to_string();
+                    }
+                    match magector_core::describe::DescriptionDb::open_readonly(desc_db_path) {
+                        Ok(db) => {
+                            match db.all() {
+                                Ok(all) => {
+                                    match serde_json::to_string(&all) {
+                                        Ok(json) => format!(r#"{{"ok":true,"data":{}}}"#, json),
+                                        Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
+                                    }
+                                }
+                                Err(e) => format!(r#"{{"ok":false,"error":"DB read error: {}"}}"#, e),
+                            }
+                        }
+                        Err(e) => format!(r#"{{"ok":false,"error":"DB open error: {}"}}"#, e),
+                    }
+                }
+            }
+        }
+
+        "enrich" => {
+            let mg_root = match req.get("magento_root").and_then(|v| v.as_str()) {
+                Some(r) if !r.is_empty() => r,
+                _ => return r#"{"ok":false,"error":"Missing 'magento_root' field"}"#.to_string(),
+            };
+
+            // Scan vendor/**/*.php for method chains
+            let pattern = format!("{}/vendor/**/*.php", mg_root);
+            let php_files: Vec<_> = match glob::glob(&pattern) {
+                Ok(paths) => paths.filter_map(|p| p.ok()).collect(),
+                Err(e) => return format!(r#"{{"ok":false,"error":"Glob error: {}"}}"#, e),
+            };
+
+            let chain_re = match regex::Regex::new(r"\$(\w+)\s*->\s*(\w+)\s*\([^)]{0,60}\)\s*->\s*(\w+)\s*\(") {
+                Ok(r) => r,
+                Err(e) => return format!(r#"{{"ok":false,"error":"Regex error: {}"}}"#, e),
+            };
+
+            // Null guard patterns for window scanning
+            let null_safe_arrow = "?->";
+            let null_coalesce_re = regex::Regex::new(r"\?\?|\?:").unwrap();
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+
+            let mut scanned: usize = 0;
+            let mut chains: usize = 0;
+            let mg_root_prefix = format!("{}/", mg_root);
+
+            let ddb = data_db.lock().unwrap();
+            if let Err(e) = ddb.begin() {
+                return format!(r#"{{"ok":false,"error":"Transaction begin failed: {}"}}"#, e);
+            }
+            if let Err(e) = ddb.enrich_clear() {
+                let _ = ddb.rollback();
+                return format!(r#"{{"ok":false,"error":"Clear failed: {}"}}"#, e);
+            }
+
+            for php_file in &php_files {
+                let content = match std::fs::read_to_string(php_file) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                if !content.contains("->") {
+                    continue;
+                }
+
+                let rel_path = php_file.to_string_lossy()
+                    .strip_prefix(&mg_root_prefix)
+                    .unwrap_or(&php_file.to_string_lossy())
+                    .to_string();
+
+                let lines: Vec<&str> = content.lines().collect();
+
+                // Build line offset index for O(1) line number lookup
+                let mut line_offsets = vec![0usize];
+                for (i, ch) in content.as_bytes().iter().enumerate() {
+                    if *ch == b'\n' {
+                        line_offsets.push(i + 1);
+                    }
+                }
+
+                for cap in chain_re.captures_iter(&content) {
+                    let match_start = cap.get(0).unwrap().start();
+                    // Binary search for line number
+                    let line_num = match line_offsets.binary_search(&match_start) {
+                        Ok(i) => i + 1,
+                        Err(i) => i, // i is the insertion point, which equals 1-based line number
+                    };
+
+                    let receiver = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+                    let first_method = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+                    let second_method = cap.get(3).map(|m| m.as_str()).unwrap_or("");
+                    let chain_str = format!("->{first_method}()->{second_method}()");
+
+                    // Check null guard in ±6 lines
+                    let guard_radius: usize = 6;
+                    let match_line_idx = if line_num > 0 { line_num - 1 } else { 0 };
+                    let start_idx = match_line_idx.saturating_sub(guard_radius);
+                    let end_idx = (match_line_idx + guard_radius).min(lines.len().saturating_sub(1));
+                    let match_line = lines.get(match_line_idx).copied().unwrap_or("");
+                    let window: String = lines[start_idx..=end_idx].join("\n");
+
+                    let has_guard = {
+                        // ?-> on the match line
+                        match_line.contains(null_safe_arrow)
+                        // ?? or ?: in window
+                        || null_coalesce_re.is_match(&window)
+                        // receiver-specific checks
+                        || {
+                            if !receiver.is_empty() {
+                                let recv = format!("${}", receiver);
+                                let escaped = regex::escape(&recv);
+                                // Check: is_null($recv), $recv === null, $recv !== null, !$recv, isset($recv)
+                                let pat = format!(
+                                    r"(?i)(?:is_null\s*\(\s*{}|{}\s*(?:===|!==)\s*null|!\s*{}\s*[,)]|isset\s*\(\s*{})",
+                                    escaped, escaped, escaped, escaped
+                                );
+                                regex::Regex::new(&pat)
+                                    .map(|re| re.is_match(&window))
+                                    .unwrap_or(false)
+                            } else {
+                                false
+                            }
+                        }
+                    };
+
+                    if let Err(e) = ddb.enrich_insert(
+                        &rel_path,
+                        line_num as i64,
+                        &chain_str,
+                        first_method,
+                        second_method,
+                        has_guard,
+                        now,
+                    ) {
+                        let _ = ddb.rollback();
+                        return format!(r#"{{"ok":false,"error":"Insert failed: {}"}}"#, e);
+                    }
+                    chains += 1;
+                }
+                scanned += 1;
+            }
+
+            if let Err(e) = ddb.commit() {
+                return format!(r#"{{"ok":false,"error":"Commit failed: {}"}}"#, e);
+            }
+
+            format!(r#"{{"ok":true,"data":{{"scanned":{},"chains":{}}}}}"#, scanned, chains)
+        }
+
+        "enrich_query" => {
+            let first_method = req.get("first_method").and_then(|v| v.as_str());
+            // Accept null JSON values as None
+            let first_method = first_method.filter(|s| !s.is_empty());
+            let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+
+            let ddb = data_db.lock().unwrap();
+            match ddb.enrich_query_null_risks(first_method, limit) {
+                Ok(rows) => {
+                    let data: Vec<serde_json::Value> = rows.into_iter().map(|(file, line, chain, first, second)| {
+                        serde_json::json!({
+                            "file": file,
+                            "line": line,
+                            "chain": chain,
+                            "first_method": first,
+                            "second_method": second,
+                        })
+                    }).collect();
+                    match serde_json::to_string(&data) {
+                        Ok(json) => format!(r#"{{"ok":true,"data":{}}}"#, json),
+                        Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
+                    }
+                }
+                Err(e) => format!(r#"{{"ok":false,"error":"Query error: {}"}}"#, e),
             }
         }
 
