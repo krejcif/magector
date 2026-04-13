@@ -128,7 +128,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 
 ### Fixed
 - **`magento_find_class` filesystem fallback** — when vector search returns no matching results (common for custom module class names that embed poorly), the tool now falls back to `glob(**/${ClassName}.php)`, reads the file to extract the namespace and public methods, and returns full results. Previously returned `{"results":[],"count":0}` for classes like `AddressConditions` or `AfterDiscountCollector`.
-- **`magento_module_structure` camelCase hyphenation** — vendor path matching now correctly hyphenates camelCase module names (`OrderSplit` → `module-order-split/`). Previously, `DrmaxMarketplace_OrderSplit` would look for `module-ordersplit/` which doesn't exist.
+- **`magento_module_structure` camelCase hyphenation** — vendor path matching now correctly hyphenates camelCase module names (`OrderSplit` → `module-order-split/`). Previously, `AcmeCorp_OrderSplit` would look for `module-ordersplit/` which doesn't exist.
 - **`magento_impact_analysis` filesystem fallback** — when vector search finds too few candidate files, the tool now globs for `{ClassName}.php` to find the class file. This ensures DI references are still found even when the vector search misses the class.
 - **`magento_batch` find_class** — batch version of find_class now also has filesystem fallback.
 
