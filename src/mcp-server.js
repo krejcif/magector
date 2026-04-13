@@ -142,6 +142,9 @@ function extractJson(stdout) {
 
 // ─── PID File & Orphan Cleanup ──────────────────────────────────
 // Track the serve process PID to clean up orphans on restart.
+// Primary state lives in data.db (state_processes / state_cache tables).
+// File-based paths are kept as fallback for operations that run before
+// the serve process (and thus data.db) is available.
 
 const PID_PATH = path.join(config.magentoRoot, '.magector', 'serve.pid');
 const REINDEX_PID_PATH = path.join(config.magentoRoot, '.magector', 'reindex.pid');
@@ -222,12 +225,15 @@ function expandIncludePattern(include) {
 /**
  * Try to acquire the primary lock (O_EXCL = atomic create-or-fail).
  * Returns true if we are the primary instance, false if another instance holds the lock.
+ * Uses file-based O_EXCL for atomicity (runs before serve/DB is available).
+ * Also writes lock state to data.db when serve becomes available.
  */
 function tryAcquirePrimaryLock() {
   try {
     const fd = openSync(PRIMARY_LOCK_PATH, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL);
     writeFileSync(fd, String(process.pid));
     closeSync(fd);
+    // DB write deferred — serve is not available during lock acquisition
     return true;
   } catch {
     // Lock file exists — check if holder is alive
@@ -258,6 +264,19 @@ function tryAcquirePrimaryLock() {
   }
 }
 
+/**
+ * Write primary lock state to data.db (called after serve becomes available).
+ * This mirrors the file-based lock so other processes can query DB for lock owner.
+ */
+function persistPrimaryLockToDb() {
+  if (serveProcess && serveReady) {
+    serveQuery('cache_set', {
+      key: 'primary_lock',
+      value: JSON.stringify({ pid: process.pid, timestamp: Date.now() })
+    }, 5000).catch(() => {});
+  }
+}
+
 function releasePrimaryLock() {
   try {
     // Only remove if we own it
@@ -266,13 +285,27 @@ function releasePrimaryLock() {
       unlinkSync(PRIMARY_LOCK_PATH);
     }
   } catch {}
+  // Also clean DB state — fire-and-forget
+  if (serveProcess && serveReady) {
+    serveQuery('cache_set', {
+      key: 'primary_lock',
+      value: JSON.stringify({ pid: null, released: true })
+    }, 5000).catch(() => {});
+  }
 }
 
 /**
  * Write the serve process PID to disk so future instances can clean up orphans.
+ * Also writes to data.db via serve command when the serve process is available.
+ * Note: the Rust serve process writes its own PID to data.db on startup, so
+ * the file is primarily a fallback for the brief window before serve is ready.
  */
 function writePidFile(pid) {
   try { writeFileSync(PID_PATH, `${pid}\n${__pkg.version}`); } catch {}
+  // Async DB write — fire-and-forget, serve process also writes its own PID
+  if (serveProcess && serveReady) {
+    serveQuery('process_set', { name: 'serve', pid, version: __pkg.version }, 5000).catch(() => {});
+  }
 }
 
 function getServePidVersion() {
@@ -286,21 +319,35 @@ function getServePidVersion() {
 
 function removePidFile() {
   try { if (existsSync(PID_PATH)) unlinkSync(PID_PATH); } catch {}
+  // Also clean DB state — fire-and-forget
+  if (serveProcess && serveReady) {
+    serveQuery('process_remove', { name: 'serve' }, 5000).catch(() => {});
+  }
 }
 
 function writeReindexPidFile(pid) {
   try { writeFileSync(REINDEX_PID_PATH, String(pid)); } catch {}
+  // Also persist in data.db when serve is available
+  if (serveProcess && serveReady) {
+    serveQuery('process_set', { name: 'reindex', pid }, 5000).catch(() => {});
+  }
 }
 
 function removeReindexPidFile() {
   try { if (existsSync(REINDEX_PID_PATH)) unlinkSync(REINDEX_PID_PATH); } catch {}
+  // Also clean DB state
+  if (serveProcess && serveReady) {
+    serveQuery('process_remove', { name: 'reindex' }, 5000).catch(() => {});
+  }
 }
 
 /**
  * Check if another reindex process is already running (from another MCP instance).
+ * Checks data.db first (via serve query), falls back to PID file.
  * Returns the PID if alive, null otherwise.
  */
 function getRunningReindexPid() {
+  // Try file-based check (synchronous, always available)
   try {
     if (!existsSync(REINDEX_PID_PATH)) return null;
     const pid = parseInt(readFileSync(REINDEX_PID_PATH, 'utf-8').trim(), 10);
@@ -319,6 +366,7 @@ function getRunningReindexPid() {
  * Returns the PID if alive, null if stale/missing.
  * Does NOT kill it — multiple MCP instances can share one serve process
  * by sending queries to it via stdin (each instance starts its own).
+ * Tries file-based check (synchronous, always available).
  */
 function getExistingServePid() {
   try {
@@ -337,6 +385,7 @@ function getExistingServePid() {
  * Kill any stale serve process from a previous MCP server instance.
  * Only called during cleanup (exit/SIGTERM), not during startup —
  * multiple concurrent MCP instances each run their own serve process.
+ * Reads PID from file (DB may not be available if serve is dead).
  */
 function killStaleServeProcess() {
   try {
@@ -376,8 +425,13 @@ let warmupInProgress = true; // true until checkDbFormat + serve process ready
 
 /**
  * Check if the database file is compatible with the current binary.
- * Uses a cached result file to avoid running stats (30-60s) on every startup.
+ * Uses a cached result to avoid running stats (30-60s) on every startup.
  * Cache key: binary path mtime + db file mtime + db size.
+ *
+ * Cache lookup order:
+ *   1. data.db state_cache (via serve query, if serve is available)
+ *   2. format-ok.json file (fallback — runs before serve starts)
+ * Both locations are written on cache miss.
  */
 async function checkDbFormat() {
   if (!existsSync(config.dbPath)) return true;
@@ -389,10 +443,27 @@ async function checkDbFormat() {
     // Check cached result — avoids 40s stats command on every MCP startup
     const binaryStat = statSync(config.rustBinary);
     const cacheKey = `${binaryStat.mtimeMs}|${fstat.mtimeMs}|${fstat.size}`;
+
+    // Try DB cache first (if serve process is running)
+    const queryFn = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
+    if (queryFn) {
+      try {
+        const resp = await queryFn('cache_get', { key: 'format_ok' }, 5000);
+        if (resp.ok && resp.data) {
+          const cached = JSON.parse(resp.data.value);
+          if (cached.key === cacheKey) {
+            logToFile('INFO', `Format check cached (DB): ${cached.ok ? 'compatible' : 'incompatible'}`);
+            return cached.ok;
+          }
+        }
+      } catch { /* DB cache miss or unavailable */ }
+    }
+
+    // Fall back to file cache
     try {
       const cached = JSON.parse(readFileSync(FORMAT_CACHE_PATH, 'utf-8'));
       if (cached.key === cacheKey) {
-        logToFile('INFO', `Format check cached: ${cached.ok ? 'compatible' : 'incompatible'}`);
+        logToFile('INFO', `Format check cached (file): ${cached.ok ? 'compatible' : 'incompatible'}`);
         return cached.ok;
       }
     } catch { /* no cache or invalid */ }
@@ -412,8 +483,14 @@ async function checkDbFormat() {
     const vectors = parseInt(result.match(/Total vectors:\s*(\d+)/)?.[1] || '0');
     const ok = vectors > 0;
 
-    // Write cache
-    try { writeFileSync(FORMAT_CACHE_PATH, JSON.stringify({ key: cacheKey, ok })); } catch {}
+    // Write cache to both file and DB
+    const cacheValue = JSON.stringify({ key: cacheKey, ok });
+    try { writeFileSync(FORMAT_CACHE_PATH, cacheValue); } catch {}
+    // Async DB write — fire-and-forget (serve may not be up yet on first startup)
+    const queryFn2 = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
+    if (queryFn2) {
+      queryFn2('cache_set', { key: 'format_ok', value: cacheValue }, 5000).catch(() => {});
+    }
     return ok;
   } catch {
     return false;
@@ -717,6 +794,8 @@ function startServeProcess() {
         serveReady = true;
         logToFile('INFO', `Serve process ready (PID ${proc.pid})`);
         if (serveReadyResolve) { serveReadyResolve(true); serveReadyResolve = null; }
+        // Now that serve is up, persist primary lock state to data.db
+        persistPrimaryLockToDb();
         return;
       }
 

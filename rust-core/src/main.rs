@@ -539,6 +539,22 @@ fn run_serve(
         eprintln!("File watcher enabled (interval: {}s)", watch_interval);
     }
 
+    // Write own PID to data.db so Node.js can discover us via DB query
+    {
+        let ddb = data_db.lock().unwrap();
+        let pid = std::process::id();
+        let version = env!("CARGO_PKG_VERSION");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        if let Err(e) = ddb.process_set("serve", pid, Some(version), now) {
+            eprintln!("Warning: failed to write serve PID to DataDb: {}", e);
+        } else {
+            eprintln!("Registered serve process PID {} (v{}) in DataDb", pid, version);
+        }
+    }
+
     eprintln!("Ready. Listening on stdin for JSON queries.");
 
     // Signal readiness with a JSON line on stdout
@@ -949,6 +965,105 @@ fn handle_serve_request(
                     }
                 }
                 Err(e) => format!(r#"{{"ok":false,"error":"Query error: {}"}}"#, e),
+            }
+        }
+
+        // ─── Process state commands ─────────────────────────────────
+        "process_set" => {
+            let name = match req.get("name").and_then(|v| v.as_str()) {
+                Some(n) => n,
+                None => return r#"{"ok":false,"error":"Missing 'name' field"}"#.to_string(),
+            };
+            let pid = match req.get("pid").and_then(|v| v.as_u64()) {
+                Some(p) => p as u32,
+                None => return r#"{"ok":false,"error":"Missing 'pid' field"}"#.to_string(),
+            };
+            let version = req.get("version").and_then(|v| v.as_str());
+            let ts = req.get("timestamp").and_then(|v| v.as_i64()).unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64
+            });
+            let ddb = data_db.lock().unwrap();
+            match ddb.process_set(name, pid, version, ts) {
+                Ok(()) => r#"{"ok":true}"#.to_string(),
+                Err(e) => format!(r#"{{"ok":false,"error":"process_set failed: {}"}}"#, e),
+            }
+        }
+
+        "process_get" => {
+            let name = match req.get("name").and_then(|v| v.as_str()) {
+                Some(n) => n,
+                None => return r#"{"ok":false,"error":"Missing 'name' field"}"#.to_string(),
+            };
+            let ddb = data_db.lock().unwrap();
+            match ddb.process_get(name) {
+                Some((pid, version, started_at)) => {
+                    let ver_json = match &version {
+                        Some(v) => format!(r#""{}""#, v),
+                        None => "null".to_string(),
+                    };
+                    format!(
+                        r#"{{"ok":true,"data":{{"pid":{},"version":{},"started_at":{}}}}}"#,
+                        pid, ver_json, started_at
+                    )
+                }
+                None => r#"{"ok":true,"data":null}"#.to_string(),
+            }
+        }
+
+        "process_remove" => {
+            let name = match req.get("name").and_then(|v| v.as_str()) {
+                Some(n) => n,
+                None => return r#"{"ok":false,"error":"Missing 'name' field"}"#.to_string(),
+            };
+            let ddb = data_db.lock().unwrap();
+            match ddb.process_remove(name) {
+                Ok(()) => r#"{"ok":true}"#.to_string(),
+                Err(e) => format!(r#"{{"ok":false,"error":"process_remove failed: {}"}}"#, e),
+            }
+        }
+
+        // ─── Cache state commands ─────────────────────────────────────
+        "cache_set" => {
+            let key = match req.get("key").and_then(|v| v.as_str()) {
+                Some(k) => k,
+                None => return r#"{"ok":false,"error":"Missing 'key' field"}"#.to_string(),
+            };
+            let value = match req.get("value").and_then(|v| v.as_str()) {
+                Some(v) => v,
+                None => return r#"{"ok":false,"error":"Missing 'value' field"}"#.to_string(),
+            };
+            let ts = req.get("timestamp").and_then(|v| v.as_i64()).unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64
+            });
+            let ddb = data_db.lock().unwrap();
+            match ddb.cache_set(key, value, ts) {
+                Ok(()) => r#"{"ok":true}"#.to_string(),
+                Err(e) => format!(r#"{{"ok":false,"error":"cache_set failed: {}"}}"#, e),
+            }
+        }
+
+        "cache_get" => {
+            let key = match req.get("key").and_then(|v| v.as_str()) {
+                Some(k) => k,
+                None => return r#"{"ok":false,"error":"Missing 'key' field"}"#.to_string(),
+            };
+            let ddb = data_db.lock().unwrap();
+            match ddb.cache_get(key) {
+                Some((value, updated_at)) => {
+                    // Escape the value string for JSON embedding
+                    let escaped = serde_json::to_string(&value).unwrap_or_else(|_| "\"\"".to_string());
+                    format!(
+                        r#"{{"ok":true,"data":{{"value":{},"updated_at":{}}}}}"#,
+                        escaped, updated_at
+                    )
+                }
+                None => r#"{"ok":true,"data":null}"#.to_string(),
             }
         }
 
