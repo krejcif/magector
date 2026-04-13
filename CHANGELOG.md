@@ -4,6 +4,11 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.16.5] - 2026-04-13
+
+### Fixed
+- **`magento_ast_search` / `magento_find_dataobject_issues` missing `magento_root`** — `astSearch()` sent the `ast_query` serve command without the `magento_root` field, so the Rust handler always responded with `Missing 'magento_root' field`. Both tools now pass `config.magentoRoot` through to the serve process. This restores detection of the `DataObject::setX(null)` anti-pattern and arbitrary tree-sitter pattern queries.
+
 ## [2.16.4] - 2026-04-13
 
 ### Fixed

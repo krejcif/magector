@@ -3638,7 +3638,7 @@ async function astSearch(patternName, searchPath, maxResults) {
   logToFile('INFO', `ast_search: pattern="${patternName}" path="${safeSp}" limit=${limit}`);
   const start = Date.now();
 
-  const resp = await serveQuery('ast_query', { pattern: patternName, path: safeSp, limit }, 60000);
+  const resp = await serveQuery('ast_query', { magento_root: root, pattern: patternName, path: safeSp, limit }, 60000);
   if (!resp.ok) throw new Error(resp.error || 'ast_query failed');
 
   const elapsed = Date.now() - start;
