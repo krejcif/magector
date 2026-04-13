@@ -136,6 +136,37 @@ flowchart LR
 
 ---
 
+## Security
+
+Magector operates on source code indexed from potentially-untrusted `vendor/` dependencies and is driven by an LLM that may be manipulated via prompt injection in indexed comments, docblocks, or markdown. The following hardening applies as of **v2.15.1**:
+
+### Path traversal protection
+
+All tools that accept a `path` argument (`magento_read`, `magento_grep`, `magento_ast_search`, `magento_find_dataobject_issues`) route the input through `safePath()` / `safeRelPath()` helpers in `src/mcp-server.js`. These:
+
+1. Resolve the argument against `MAGENTO_ROOT` with `path.resolve()` (normalizes `..`, symlinks are not followed during validation).
+2. Reject any resolved path that does not lie inside `MAGENTO_ROOT`.
+
+This prevents a hostile `vendor/` comment from instructing the LLM to e.g. `magento_read` `../../home/user/.ssh/id_rsa`. Both the standalone case handlers and their `magento_batch` counterparts share the same chokepoint.
+
+### Shell injection hardening in auto-update
+
+`src/update.js` fetches the `latest` field from the npm registry and re-execs itself with the new version string. Previously this was interpolated into a shell command; a tampered registry response could inject shell metacharacters. As of v2.15.1:
+
+- The re-exec passes argv as an **array** to a no-shell spawner (no intermediate shell).
+- A semver-strict `isSafeVersion()` validator rejects any version string containing metacharacters or that does not match `X.Y.Z` / `X.Y.Z-prerelease` form.
+- Fails closed: the auto-update is silently skipped rather than run a malformed version.
+
+### Unix socket permissions
+
+The serve-proxy Unix socket at `.magector/serve.sock` is created with `chmod 0600` immediately after `listen()`. On multi-user systems, another local account can no longer connect and query the vector index (which would leak indexed source snippets). The chmod is best-effort on platforms that don't support it (logged to `.magector/magector.log`).
+
+### Reporting vulnerabilities
+
+If you find a security issue, please open an issue on the GitHub repo and mark it as security-related. Do not post reproducers that leak actual source contents from private codebases.
+
+---
+
 ## Quick Start
 
 ### Prerequisites

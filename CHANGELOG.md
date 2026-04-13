@@ -4,6 +4,13 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.15.1] - 2026-04-13
+
+### Security
+- **Path traversal in `magento_read`, `magento_grep`, `magento_ast_search`** — handlers previously joined `args.path` with the project root without validation, so a relative path containing `..` segments (or an absolute path) escaped `MAGENTO_ROOT`. In isolation the tools are invoked by a trusted MCP client, but combined with prompt injection from indexed third-party code (e.g. a hostile comment in a `vendor/` module instructing the LLM to read `../../home/user/.ssh/id_rsa`) the escape was exploitable. New `safePath()` / `safeRelPath()` helpers normalize the input with `path.resolve()` and reject any result that falls outside the resolved root. All three standalone handlers and their `magento_batch` counterparts share the same chokepoint. Unit tests cover the normal, boundary and escape cases.
+- **Shell injection hardening in `update.js`** — the auto-update re-exec interpolated the npm registry's `latest` field into a shell command string. A tampered registry response (or an MITM without TLS pinning) could therefore inject shell metacharacters. The re-exec now passes argv as an array to a no-shell spawner, and a semver-strict `isSafeVersion()` validator rejects anything containing metacharacters. Fails closed — the auto-update is silently skipped rather than running a malformed version string.
+- **Unix socket permissions** — the serve-proxy Unix socket at `.magector/serve.sock` was created with the default umask (typically world-readable). On multi-user systems another local account could connect and query the vector index, leaking indexed code snippets. The socket is now `chmod 0600` immediately after `listen()`.
+
 ## [2.15.0] - 2026-04-13
 
 ### Added

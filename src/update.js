@@ -8,7 +8,7 @@
  * Never blocks the CLI on failure — network errors are silently ignored.
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { homedir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -141,13 +141,28 @@ export async function checkForUpdate(command, originalArgs) {
 }
 
 /**
+ * Validate a semver string to prevent shell injection via malicious registry
+ * responses. Only digits, dots, dashes and alphanumerics allowed (semver prerelease).
+ * Example: "1.2.3", "1.2.3-beta.1", "2.0.0-rc.9" — yes. "1; rm -rf ~" — no.
+ */
+function isSafeVersion(v) {
+  return typeof v === 'string' && /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/.test(v);
+}
+
+/**
  * Re-exec the current command with the latest version.
  */
 function reExec(current, latest, originalArgs) {
+  // Defensive: reject anything that doesn't look like a real semver so a
+  // compromised npm registry response can't inject shell metacharacters.
+  if (!isSafeVersion(latest)) {
+    return; // silently skip — never block CLI on update check
+  }
   console.log(`\n⬆  Updating magector: v${current} → v${latest}...\n`);
   try {
-    const cmd = `npx -y magector@${latest} ${originalArgs.join(' ')}`;
-    execSync(cmd, {
+    // execFileSync with an argv array (no shell) — originalArgs are passed as
+    // individual argv entries, so spaces/metachars in them can't expand.
+    execFileSync('npx', ['-y', `magector@${latest}`, ...originalArgs], {
       stdio: 'inherit',
       env: { ...process.env, MAGECTOR_NO_UPDATE: '1' }
     });

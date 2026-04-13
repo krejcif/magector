@@ -17,7 +17,7 @@ import {
 import { execFileSync, spawn } from 'child_process';
 import { createInterface } from 'readline';
 import { createServer as createNetServer, createConnection } from 'net';
-import { existsSync, statSync, unlinkSync, copyFileSync, renameSync, appendFileSync, writeFileSync, readFileSync, mkdirSync, openSync, closeSync, constants as fsConstants } from 'fs';
+import { existsSync, statSync, unlinkSync, copyFileSync, renameSync, appendFileSync, writeFileSync, readFileSync, mkdirSync, openSync, closeSync, chmodSync, constants as fsConstants } from 'fs';
 import { stat } from 'fs/promises';
 import { glob } from 'glob';
 import path from 'path';
@@ -148,6 +148,38 @@ const REINDEX_PID_PATH = path.join(config.magentoRoot, '.magector', 'reindex.pid
 const SOCK_PATH = path.join(config.magentoRoot, '.magector', 'serve.sock');
 const FORMAT_CACHE_PATH = path.join(config.magentoRoot, '.magector', 'format-ok.json');
 const PRIMARY_LOCK_PATH = path.join(config.magentoRoot, '.magector', 'primary.lock');
+
+// ─── Path Safety ────────────────────────────────────────────────
+// All tool handlers accept user-supplied paths relative to MAGENTO_ROOT.
+// Without validation, `../../../etc/passwd` would escape the project.
+// A hostile indexed file could prompt-inject the LLM into requesting such a
+// path and leak host files. These helpers are the single chokepoint.
+
+/**
+ * Resolve a user-supplied path against a trusted root and verify it stays
+ * inside the root. Returns the absolute resolved path or null on escape.
+ */
+function safePath(root, rel) {
+  if (rel === undefined || rel === null) return null;
+  const rootAbs = path.resolve(root);
+  const joined = path.resolve(rootAbs, String(rel));
+  if (joined !== rootAbs && !joined.startsWith(rootAbs + path.sep)) {
+    return null;
+  }
+  return joined;
+}
+
+/**
+ * Like safePath but returns the relative form (used for tools that invoke
+ * external processes with cwd=root and want a relative path argument).
+ * '.' means "the root itself".
+ */
+function safeRelPath(root, rel) {
+  const abs = safePath(root, rel);
+  if (!abs) return null;
+  const r = path.relative(path.resolve(root), abs);
+  return r === '' ? '.' : r;
+}
 
 /**
  * Expand brace patterns in include globs for GNU grep compatibility.
@@ -737,7 +769,13 @@ function startSocketProxy() {
     logToFile('WARN', `Socket proxy error: ${err.message}`);
   });
   socketServer.listen(SOCK_PATH, () => {
-    logToFile('INFO', `Socket proxy listening on ${SOCK_PATH}`);
+    // Restrict socket to the owning user — without this, on multi-user
+    // systems any local account could connect to the serve proxy and query
+    // the index (leaking indexed code snippets to other local users).
+    try { chmodSync(SOCK_PATH, 0o600); } catch (err) {
+      logToFile('WARN', `Failed to chmod socket to 0600: ${err.message}`);
+    }
+    logToFile('INFO', `Socket proxy listening on ${SOCK_PATH} (mode 0600)`);
   });
 }
 
@@ -3663,7 +3701,11 @@ async function astSearch(pattern, searchPath, lang, maxResults) {
   const root = config.magentoRoot;
   if (!root) throw new Error('MAGENTO_ROOT not set');
 
-  const targetPath = searchPath ? path.join(root, searchPath) : root;
+  const targetPath = searchPath ? safePath(root, searchPath) : path.resolve(root);
+  if (!targetPath) {
+    logToFile('WARN', `ast_search: rejected path traversal attempt: "${searchPath}"`);
+    throw new Error(`Path escapes project root: ${searchPath}`);
+  }
   const semgrepLang = lang || 'php';
   const limit = Math.min(maxResults || 50, 200);
 
@@ -6466,7 +6508,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 break;
               }
               case 'magento_read': {
-                const filePath = path.join(config.magentoRoot, a.path);
+                const filePath = safePath(config.magentoRoot, a.path);
+                if (!filePath) {
+                  logToFile('WARN', `batch read: rejected path traversal attempt: "${a.path}"`);
+                  text = `Path escapes project root: ${a.path}`;
+                  break;
+                }
                 let fileContent;
                 try { fileContent = readFileSync(filePath, 'utf-8'); } catch {
                   text = `File not found: ${a.path}`;
@@ -6491,7 +6538,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 break;
               }
               case 'magento_grep': {
-                const searchPath = a.path || '.';
+                const searchPath = safeRelPath(config.magentoRoot, a.path || '.');
+                if (!searchPath) {
+                  logToFile('WARN', `batch grep: rejected path traversal attempt: "${a.path}"`);
+                  text = `Path escapes project root: ${a.path}`;
+                  break;
+                }
                 const include = a.include || '*.php';
                 const maxRes = Math.min(a.maxResults || 30, 100);
                 const batchCtx = a.context !== undefined ? a.context : 4;
@@ -6569,7 +6621,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'magento_grep': {
         const root = config.magentoRoot;
         if (!root) return { content: [{ type: 'text', text: 'MAGENTO_ROOT not set.' }], isError: true };
-        const searchPath = args.path || '.';
+        const searchPath = safeRelPath(root, args.path || '.');
+        if (!searchPath) {
+          logToFile('WARN', `grep: rejected path traversal attempt: "${args.path}"`);
+          return { content: [{ type: 'text', text: `Path escapes project root: ${args.path}` }], isError: true };
+        }
         const include = args.include || '*.php';
         const maxResults = Math.min(args.maxResults || 50, 200);
         const ctxLines = args.context !== undefined ? args.context : 4;
@@ -6756,7 +6812,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'magento_read': {
         const root = config.magentoRoot;
         if (!root) return { content: [{ type: 'text', text: 'MAGENTO_ROOT not set.' }], isError: true };
-        const filePath = path.join(root, args.path);
+        const filePath = safePath(root, args.path);
+        if (!filePath) {
+          logToFile('WARN', `read: rejected path traversal attempt: "${args.path}"`);
+          return { content: [{ type: 'text', text: `Path escapes project root: ${args.path}` }], isError: true };
+        }
         let content;
         try { content = readFileSync(filePath, 'utf-8'); } catch (err) {
           logToFile('WARN', `read: file not found: ${args.path} (${err.code || err.message})`);
