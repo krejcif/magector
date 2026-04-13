@@ -484,7 +484,7 @@ Magector was validated against the complete Magento 2.4.7 codebase with 102 test
 
 | Component | Library | Purpose |
 |-----------|---------|---------|
-| Embeddings | `ort` (ONNX Runtime) | all-MiniLM-L6-v2 model |
+| Embeddings | `ort` (ONNX Runtime) | bge-small-en-v1.5 model |
 | Vector Search | `hnsw_rs` | HNSW approximate nearest neighbor |
 | PHP Parsing | `tree-sitter-php` | AST extraction |
 | JS Parsing | `tree-sitter-javascript` | AMD/ES6 module detection |
@@ -492,7 +492,7 @@ Magector was validated against the complete Magento 2.4.7 codebase with 102 test
 
 ### Embedding Details
 
-- **Model:** all-MiniLM-L6-v2
+- **Model:** bge-small-en-v1.5
 - **Dimensions:** 384
 - **Pooling:** Mean pooling with attention mask
 - **Normalization:** L2 normalized

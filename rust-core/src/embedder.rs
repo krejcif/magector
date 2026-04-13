@@ -1,6 +1,6 @@
 //! ONNX-based semantic embeddings for Magento code search
 //!
-//! Uses all-MiniLM-L6-v2 model for 384-dimensional embeddings
+//! Uses bge-small-en-v1.5 model for 384-dimensional embeddings
 
 use anyhow::{Context, Result};
 use ndarray::Array1;
@@ -9,7 +9,7 @@ use ort::value::Tensor;
 use std::path::Path;
 use tokenizers::Tokenizer;
 
-/// Embedding dimension for all-MiniLM-L6-v2
+/// Embedding dimension for bge-small-en-v1.5
 pub const EMBEDDING_DIM: usize = 384;
 
 /// Maximum sequence length
@@ -68,14 +68,14 @@ impl Embedder {
         Ok(Self { session, tokenizer })
     }
 
-    /// Download and initialize with default model (all-MiniLM-L6-v2)
+    /// Download and initialize with default model (bge-small-en-v1.5)
     pub fn from_pretrained(cache_dir: &Path) -> Result<Self> {
         Self::from_pretrained_with_threads(cache_dir, None)
     }
 
     /// Download and initialize with thread limit
     pub fn from_pretrained_with_threads(cache_dir: &Path, max_threads: Option<usize>) -> Result<Self> {
-        let model_path = cache_dir.join("all-MiniLM-L6-v2.onnx");
+        let model_path = cache_dir.join("bge-small-en-v1.5.onnx");
         let tokenizer_path = cache_dir.join("tokenizer.json");
 
         // Download if not exists
@@ -93,8 +93,8 @@ impl Embedder {
 
         fs::create_dir_all(cache_dir)?;
 
-        let model_url = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx";
-        let tokenizer_url = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json";
+        let model_url = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model.onnx";
+        let tokenizer_url = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json";
 
         tracing::info!("Downloading embedding model...");
 
@@ -106,7 +106,7 @@ impl Embedder {
             .read_to_end(&mut model_bytes)
             .context("Failed to read model bytes")?;
 
-        let model_path = cache_dir.join("all-MiniLM-L6-v2.onnx");
+        let model_path = cache_dir.join("bge-small-en-v1.5.onnx");
         let mut file = fs::File::create(&model_path)?;
         file.write_all(&model_bytes)?;
 
