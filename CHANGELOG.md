@@ -4,6 +4,18 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.16.1] - 2026-04-13
+
+### Fixed
+- **`magento_find_dataobject_issues` crash** — calling this tool before the serve process was ready threw `Cannot read properties of null (reading 'stdin')`. The `serveQuery()` function now guards against a null or not-yet-ready serve process and returns a graceful error instead of crashing.
+- **`magento_module_structure` mixes cross-references** — vector search returned results from unrelated modules (e.g. a 100-file result set containing references from other modules). Now uses filesystem glob as primary source (`app/code/{Vendor}/{Module}/` then `vendor/{vendor}/{module-hyphenated}/`), falling back to vector search only when no files are found. Vendor-specific path matching prevents false positives from same-named modules of different vendors.
+- **`magento_find_config` unavailable inside `magento_batch`** — the tool was not implemented in the batch handler, causing `Unsupported batch tool: magento_find_config` errors. Now fully supported in batch with `configType` filtering.
+
+### Changed
+- **`magento_search` description** clarifies that semantic search may return 0 results for small custom/proprietary modules whose names are not well-represented in the embedding model. Recommends using `magento_grep` for such modules.
+- **`magento_find_null_risks` description** notes that `magento_enrich` is triggered automatically in the background after `magento_index` completes.
+- **`magento_batch` description** now lists all 19 supported tools explicitly, preventing confusion about which tools can be batched.
+
 ## [2.16.0] - 2026-04-13
 
 ### Changed

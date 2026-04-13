@@ -938,6 +938,10 @@ function tryConnectSocket() {
 let globalServeQuery = null;
 
 function serveQuery(command, params = {}, timeoutMs = 30000) {
+  if (!serveProcess || !serveReady) {
+    logToFile('WARN', `serveQuery(${command}): serve process not ready — returning error`);
+    return Promise.resolve({ ok: false, error: 'Serve process not ready' });
+  }
   return new Promise((resolve, reject) => {
     const id = serveNextId++;
     logToFile('QUERY', `[${id}] → ${command}(${JSON.stringify(params).slice(0, 200)})`);
@@ -3631,7 +3635,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'magento_search',
-      description: 'Search Magento codebase semantically — find any PHP class, method, XML config, PHTML template, JS file, or GraphQL schema by describing what you need in natural language. Use this as a general-purpose search when no specialized tool fits. See also: magento_find_class, magento_find_method, magento_find_config for targeted searches.',
+      description: 'Search Magento codebase semantically — find any PHP class, method, XML config, PHTML template, JS file, or GraphQL schema by describing what you need in natural language. Use this as a general-purpose search when no specialized tool fits. Works best for Magento core and popular vendor modules. For small/custom project-specific modules (e.g. proprietary modules not widely known to the embedding model), use magento_grep instead — semantic search may return 0 results for these. See also: magento_find_class, magento_find_method, magento_find_config for targeted searches.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -4278,7 +4282,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_batch',
-      description: 'Execute multiple Magector tool calls in a single request to reduce MCP round-trip overhead. Each query runs in parallel and returns combined results. Use this when you need 2+ independent lookups (e.g., find a class AND its plugins AND its observers in one call instead of three).',
+      description: 'Execute multiple Magector tool calls in a single request to reduce MCP round-trip overhead. Each query runs in parallel and returns combined results. Use this when you need 2+ independent lookups (e.g., find a class AND its plugins AND its observers in one call instead of three). Supported tools: magento_search, magento_find_class, magento_find_method, magento_find_plugin, magento_find_observer, magento_find_config, magento_find_event_flow, magento_find_di_wiring, magento_find_callers, magento_find_preference, magento_find_fieldset, magento_module_structure, magento_trace_dependency, magento_impact_analysis, magento_grep, magento_read, magento_ast_search, magento_find_dataobject_issues, magento_find_null_risks.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -4391,7 +4395,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_find_null_risks',
-      description: 'Find method chains without null guards using the pre-built enrichment index. Returns all ->firstMethod()->secondMethod() calls where no null check (=== null, !== null, ?->, ??, isset, is_null) was detected in surrounding code. Requires magento_enrich to have been run first. 100× faster than grep — O(1) SQLite query vs O(n) file scan. Use firstMethod to filter (e.g., "getPayment" finds all ->getPayment()->anything() without null guard). ⚡ For multi-query workflows use magento_batch.',
+      description: 'Find method chains without null guards using the pre-built enrichment index. Returns all ->firstMethod()->secondMethod() calls where no null check (=== null, !== null, ?->, ??, isset, is_null) was detected in surrounding code. Requires magento_enrich to have been run first (magento_index triggers it automatically in the background). 100× faster than grep — O(1) SQLite query vs O(n) file scan. Use firstMethod to filter (e.g., "getPayment" finds all ->getPayment()->anything() without null guard). ⚡ For multi-query workflows use magento_batch.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -5200,43 +5204,63 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'magento_module_structure': {
-        const raw = await rustSearchAsync(args.moduleName, 200);
-        // Support both app/code (Magento/Catalog/) and vendor (module-catalog/) paths
-        const modulePath = args.moduleName.replace('_', '/') + '/';
         const parts = args.moduleName.split('_');
+        // Support both app/code (Magento/Catalog/) and vendor (magento/module-catalog/) paths
+        const modulePath = args.moduleName.replace('_', '/') + '/';
         // Hyphenate camelCase for vendor path: OrderSplit → order-split
+        const vendorDir = parts.length === 2 ? parts[0].toLowerCase() : '';
         const vendorPath = parts.length === 2
           ? `module-${parts[1].replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()}/`
           : '';
-        let results = raw.map(normalizeResult).filter(r => {
-          const p = r.path || '';
-          const mod = r.module || '';
-          // Exact module match or directory-level path match (trailing slash prevents Catalog matching CatalogRule)
-          return mod === args.moduleName ||
-            p.includes(modulePath) ||
-            (vendorPath && p.toLowerCase().includes(vendorPath));
-        });
+        let results = [];
 
-        // Filesystem fallback: if vector search found nothing, glob the module directory
-        if (results.length === 0 && config.magentoRoot && vendorPath) {
-          logToFile('INFO', `module_structure: vector search returned 0 results for "${args.moduleName}" — using filesystem fallback (glob ${vendorPath})`);
-          try {
-            const vendorGlob = `**/${vendorPath}**/*.{php,xml,phtml}`;
-            const files = await glob(vendorGlob, { cwd: config.magentoRoot, absolute: false, nodir: true });
-            for (const f of files.slice(0, 100)) {
-              const entry = { path: f, score: 0.5 };
-              if (f.includes('/Controller/')) entry.isController = true;
-              if (f.includes('/Model/')) entry.isModel = true;
-              if (f.includes('/Block/')) entry.isBlock = true;
-              if (f.includes('/Plugin/')) entry.isPlugin = true;
-              if (f.includes('/Observer/')) entry.isObserver = true;
-              if (f.endsWith('.xml')) entry.type = 'xml';
-              // Extract class name from path
-              const phpMatch = f.match(/\/([A-Z]\w+)\.php$/);
-              if (phpMatch) entry.className = phpMatch[1];
-              results.push(entry);
+        // Primary: filesystem-based (authoritative — avoids mixing cross-references from vector search)
+        if (config.magentoRoot) {
+          const fsGlobs = [];
+          if (parts.length === 2) {
+            // app/code/{Vendor}/{Module}/
+            fsGlobs.push(`app/code/${parts[0]}/${parts[1]}/**/*.{php,xml,phtml}`);
+            // vendor/{vendor-lower}/{module-lower}/ — vendor-specific to avoid false positives
+            if (vendorDir && vendorPath) {
+              fsGlobs.push(`vendor/${vendorDir}/${vendorPath}**/*.{php,xml,phtml}`);
             }
-          } catch {}
+          }
+          for (const globPattern of fsGlobs) {
+            try {
+              const files = await glob(globPattern, { cwd: config.magentoRoot, absolute: false, nodir: true });
+              if (files.length > 0) {
+                logToFile('INFO', `module_structure: filesystem found ${files.length} files for "${args.moduleName}" (${globPattern})`);
+                for (const f of files.slice(0, 100)) {
+                  const entry = { path: f, score: 1.0 };
+                  if (f.includes('/Controller/')) entry.isController = true;
+                  if (f.includes('/Model/')) entry.isModel = true;
+                  if (f.includes('/Block/')) entry.isBlock = true;
+                  if (f.includes('/Plugin/')) entry.isPlugin = true;
+                  if (f.includes('/Observer/')) entry.isObserver = true;
+                  if (f.endsWith('.xml')) entry.type = 'xml';
+                  const phpMatch = f.match(/\/([A-Z]\w+)\.php$/);
+                  if (phpMatch) entry.className = phpMatch[1];
+                  results.push(entry);
+                }
+                break; // Found in one location, stop
+              }
+            } catch {}
+          }
+        }
+
+        // Fallback: vector search with strict path/module filtering (only if filesystem found nothing)
+        if (results.length === 0) {
+          logToFile('INFO', `module_structure: filesystem found 0 files for "${args.moduleName}" — falling back to vector search`);
+          const raw = await rustSearchAsync(args.moduleName, 200);
+          results = raw.map(normalizeResult).filter(r => {
+            const p = r.path || '';
+            const mod = r.module || '';
+            // Exact module match or directory-level path match (trailing slash prevents Catalog matching CatalogRule)
+            return mod === args.moduleName ||
+              p.includes(modulePath) ||
+              // Vendor-specific path check to avoid matching other vendors' same-named modules
+              (vendorDir && vendorPath && p.toLowerCase().includes(`${vendorDir}/${vendorPath}`));
+          });
         }
 
         const structure = {
@@ -6182,6 +6206,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 }
                 break;
               }
+              case 'magento_find_config': {
+                let cfgQuery = a.query;
+                if (a.configType && a.configType !== 'other') cfgQuery = `${a.configType}.xml xml config ${a.query}`;
+                const cfgRaw = await rustSearchAsync(cfgQuery, 100);
+                let cfgRes = cfgRaw.map(normalizeResult).filter(r =>
+                  r.type === 'xml' || r.path?.endsWith('.xml') || r.path?.includes('.xml')
+                );
+                if (a.configType && a.configType !== 'other') {
+                  const cfgTypeFile = `${a.configType}.xml`;
+                  const cfgTyped = cfgRes.filter(r => r.path?.includes(cfgTypeFile));
+                  if (cfgTyped.length >= 3) cfgRes = cfgTyped;
+                }
+                text = formatSearchResults(cfgRes.slice(0, 10));
+                break;
+              }
               case 'magento_trace_dependency': {
                 const dep = await traceDependency(a.className, a.direction || 'both');
                 text = `Preferences: ${dep.preferences.length}, Plugins: ${dep.plugins.length}, VirtualTypes: ${dep.virtualTypes.length}, Args: ${dep.argumentOverrides.length}\n`;
@@ -6271,35 +6310,52 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 break;
               }
               case 'magento_module_structure': {
-                const raw = await rustSearchAsync(a.moduleName, 200);
-                const modulePath = a.moduleName.replace('_', '/') + '/';
                 const mParts = a.moduleName.split('_');
-                // Hyphenate camelCase for vendor path: OrderSplit → order-split
+                const modulePath = a.moduleName.replace('_', '/') + '/';
+                const mVendorDir = mParts.length === 2 ? mParts[0].toLowerCase() : '';
                 const vendorPath = mParts.length === 2
                   ? `module-${mParts[1].replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()}/`
                   : '';
-                let res = raw.map(normalizeResult).filter(r => {
-                  const p = r.path || '';
-                  const mod = r.module || '';
-                  return mod === a.moduleName || p.includes(modulePath) || (vendorPath && p.toLowerCase().includes(vendorPath));
-                });
-                // Filesystem fallback
-                if (res.length === 0 && config.magentoRoot && vendorPath) {
-                  try {
-                    const vendorGlob = `**/${vendorPath}**/*.{php,xml,phtml}`;
-                    const files = await glob(vendorGlob, { cwd: config.magentoRoot, absolute: false, nodir: true });
-                    for (const f of files.slice(0, 100)) {
-                      const entry = { path: f, score: 0.5 };
-                      if (f.includes('/Controller/')) entry.isController = true;
-                      if (f.includes('/Model/')) entry.isModel = true;
-                      if (f.includes('/Plugin/')) entry.isPlugin = true;
-                      if (f.includes('/Observer/')) entry.isObserver = true;
-                      if (f.endsWith('.xml')) entry.type = 'xml';
-                      const phpMatch = f.match(/\/([A-Z]\w+)\.php$/);
-                      if (phpMatch) entry.className = phpMatch[1];
-                      res.push(entry);
+                let res = [];
+                // Primary: filesystem-based (avoids mixing cross-references)
+                if (config.magentoRoot) {
+                  const msGlobs = [];
+                  if (mParts.length === 2) {
+                    msGlobs.push(`app/code/${mParts[0]}/${mParts[1]}/**/*.{php,xml,phtml}`);
+                    if (mVendorDir && vendorPath) {
+                      msGlobs.push(`vendor/${mVendorDir}/${vendorPath}**/*.{php,xml,phtml}`);
                     }
-                  } catch {}
+                  }
+                  for (const gp of msGlobs) {
+                    try {
+                      const files = await glob(gp, { cwd: config.magentoRoot, absolute: false, nodir: true });
+                      if (files.length > 0) {
+                        for (const f of files.slice(0, 100)) {
+                          const entry = { path: f, score: 1.0 };
+                          if (f.includes('/Controller/')) entry.isController = true;
+                          if (f.includes('/Model/')) entry.isModel = true;
+                          if (f.includes('/Plugin/')) entry.isPlugin = true;
+                          if (f.includes('/Observer/')) entry.isObserver = true;
+                          if (f.endsWith('.xml')) entry.type = 'xml';
+                          const phpMatch = f.match(/\/([A-Z]\w+)\.php$/);
+                          if (phpMatch) entry.className = phpMatch[1];
+                          res.push(entry);
+                        }
+                        break;
+                      }
+                    } catch {}
+                  }
+                }
+                // Fallback: vector search with vendor-specific path filtering
+                if (res.length === 0) {
+                  const raw = await rustSearchAsync(a.moduleName, 200);
+                  res = raw.map(normalizeResult).filter(r => {
+                    const p = r.path || '';
+                    const mod = r.module || '';
+                    return mod === a.moduleName ||
+                      p.includes(modulePath) ||
+                      (mVendorDir && vendorPath && p.toLowerCase().includes(`${mVendorDir}/${vendorPath}`));
+                  });
                 }
                 text = `Module: ${a.moduleName} (${res.length} files)\n`;
                 const cats = { controllers: '/Controller/', models: '/Model/', plugins: '/Plugin/', observers: '/Observer/', api: '/Api/' };
