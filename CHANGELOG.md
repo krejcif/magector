@@ -4,6 +4,11 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.16.4] - 2026-04-13
+
+### Fixed
+- **Secondary instance reconnects to serve socket automatically** — when a secondary MCP instance couldn't connect to the serve socket at startup (socket didn't exist yet — primary was still re-indexing), it stayed on slow `execFileSync` fallback for the entire session. After the primary completed re-indexing and restarted its serve process, the secondary never retried the socket. Now `rustSearchAsync` attempts socket reconnection before each cold-start fallback if not yet connected as a secondary. This prevents 30–44s timeout failures on search after re-indexing completes.
+
 ## [2.16.3] - 2026-04-13
 
 ### Fixed

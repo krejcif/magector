@@ -1000,6 +1000,15 @@ async function rustSearchAsync(query, limit = 10) {
     await Promise.race([serveReadyPromise, new Promise(r => setTimeout(() => r(false), 10000))]);
   }
 
+  // Secondary instance: retry socket if not connected (primary may have (re)started serve)
+  if (!serveProcess && !globalServeQuery) {
+    const reconnected = await tryConnectSocket();
+    if (reconnected) {
+      logToFile('INFO', 'rustSearchAsync: reconnected to serve socket');
+      searchCache.clear(); // clear stale empty results before using new serve
+    }
+  }
+
   // Try socket proxy (secondary instance) or local serve process (primary)
   const queryFn = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
   if (queryFn) {
