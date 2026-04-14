@@ -493,26 +493,6 @@ let reindexItemsToEmbed = 0;
 let reindexPhase2Start = null;
 
 /**
- * Build a short reindex progress message for tool responses.
- * Returns null when not reindexing.
- */
-function getReindexWarning() {
-  if (!reindexInProgress) return null;
-  const phases = ['initializing', 'AST analysis', 'embedding generation', 'building HNSW graph'];
-  const phase = phases[reindexPhase] || 'in progress';
-  const elapsed = reindexStartTime ? Math.round((Date.now() - reindexStartTime) / 1000) : 0;
-  let msg = `⚠️ Re-indexing ${phase}`;
-  if (elapsed > 0) msg += ` (${elapsed}s elapsed)`;
-  if (reindexPhase === 2 && reindexPhase2Start && reindexItemsToEmbed > 0) {
-    const p2elapsed = (Date.now() - reindexPhase2Start) / 1000;
-    const rate = p2elapsed > 0 ? Math.round(reindexItemsToEmbed * (p2elapsed / reindexItemsToEmbed)) : 0;
-    if (rate > 0) msg += ` — ETA ~${Math.round((reindexItemsToEmbed / (p2elapsed > 0 ? reindexItemsToEmbed / p2elapsed : 1)) * (1 - p2elapsed / rate))}s`;
-  }
-  msg += '. Results may be from previous index or incomplete.';
-  return msg;
-}
-
-/**
  * Check if the database file is compatible with the current binary.
  * Uses a cached result to avoid running stats (30-60s) on every startup.
  * Cache key: binary path mtime + db file mtime + db size.
