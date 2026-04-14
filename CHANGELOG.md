@@ -4,6 +4,21 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.16.9] - 2026-04-14
+
+### Fixed
+- **Socket proxy search always timing out** — `globalServeQuery` (used by secondary MCP instances connecting to an existing serve process via Unix socket) had no default `timeoutMs` parameter. When callers like `rustSearchAsync` omitted the third argument, `setTimeout(fn, undefined)` resolved to a 1ms timeout — causing every socket search query to fail instantly with "Socket query timeout" and fall through to the 20-second `execFileSync` cold-start fallback. Added `timeoutMs = 30000` default parameter and `|| 30000` safety fallback in `processSocketQueue`. This restores sub-second search response for all secondary MCP instances.
+
+## [2.16.8] - 2026-04-14
+
+### Added
+- **New tool: `magento_trace_config`** — traces a Magento config path end-to-end: finds the `system.xml` admin definition (label, type, source_model, comment), PHP classes that read the value (with constant names and consuming methods), and actual database values from config-data exports. Accepts either an exact config path (`acme_marketplace/payments/payment_methods`) or a keyword search (`marketplace_payment`). Available in `magento_batch`.
+- **Config-data exports** — one-time JSON exports of `core_config_data` stored in `.magector/config-data/{env}.json` (e.g., `CZ-production.json`). The `magento_trace_config` tool automatically looks up actual values from all available exports and shows them per environment with scope information.
+- **`excludeModuleFilter` parameter on `magento_search`** — inverse of `moduleFilter`. Removes results from specified vendor/module patterns. Same pattern syntax (wildcards, vendor prefix matching). Useful when you know which modules are irrelevant to your search.
+
+### Fixed
+- **`moduleFilter` returning 0 results for less-popular modules** — when `moduleFilter` was specified, semantic search only fetched 30 results before applying the post-filter. If the target modules weren't in the semantic top-30, filtering returned nothing. Now fetches up to 200 results when `moduleFilter` is present, ensuring modules with lower semantic ranking are still found.
+
 ## [2.16.6] - 2026-04-14
 
 ### Changed

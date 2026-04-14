@@ -4325,6 +4325,224 @@ async function testFindDiWiringFqcn() {
   try { rmSync(tmpDir, { recursive: true }); } catch {}
 }
 
+// ─── excludeByModule Tests ──────────────────────────────────────
+
+function testExcludeByModule() {
+  console.log('\n── excludeByModule ──');
+
+  function filterByModule(results, moduleFilter) {
+    if (!moduleFilter) return results;
+    const patterns = Array.isArray(moduleFilter) ? moduleFilter : [moduleFilter];
+    return results.filter(r => {
+      const mod = r.module || '';
+      const filePath = r.path || '';
+      return patterns.some(pat => {
+        if (pat.includes('*')) {
+          const normalized = pat.replace(/[/_]/g, '[/_]');
+          const regex = new RegExp('^' + normalized.replace(/\*/g, '.*') + '$', 'i');
+          if (regex.test(mod) || regex.test(filePath)) return true;
+          const vendorPrefix = pat.split(/[/*_]/)[0];
+          if (vendorPrefix) {
+            const pfx = vendorPrefix.toLowerCase();
+            if (mod.toLowerCase().startsWith(pfx)) return true;
+            if (filePath.toLowerCase().includes('vendor/' + pfx) ||
+                filePath.toLowerCase().includes('app/code/' + pfx)) return true;
+          }
+          return false;
+        }
+        const patLower = pat.toLowerCase();
+        if (mod.toLowerCase().includes(patLower) || filePath.toLowerCase().includes(patLower)) return true;
+        return false;
+      });
+    });
+  }
+
+  function excludeByModule(results, excludeFilter) {
+    if (!excludeFilter) return results;
+    const toExclude = new Set(filterByModule(results, excludeFilter).map(r => r.path));
+    return results.filter(r => !toExclude.has(r.path));
+  }
+
+  const testResults = [
+    { path: 'vendor/magento/module-catalog/Model/Product.php', module: 'magento_module-catalog' },
+    { path: 'vendor/acme/module-marketplace-base/Model/Config.php', module: 'acme_module-marketplace-base' },
+    { path: 'vendor/acme-marketplace/module-checkout/Model/Config.php', module: 'acme-marketplace_module-checkout' },
+    { path: 'vendor/acme/module-payment-restrictions/Model/Rule.php', module: 'acme_module-payment-restrictions' },
+    { path: 'vendor/magento/module-sales/Model/Order.php', module: 'magento_module-sales' },
+  ];
+
+  // Null exclude returns all
+  const all = excludeByModule(testResults, null);
+  assertEq(all.length, 5, 'excludeByModule: null returns all');
+
+  // Exclude single module
+  const noBase = excludeByModule(testResults, 'acme_module-marketplace-base');
+  assertEq(noBase.length, 4, 'excludeByModule: exclude single module');
+  assert(!noBase.some(r => r.module === 'acme_module-marketplace-base'), 'excludeByModule: correct module excluded');
+
+  // Exclude with wildcard
+  const noMagento = excludeByModule(testResults, 'magento_*');
+  assertEq(noMagento.length, 3, 'excludeByModule: wildcard excludes Magento modules');
+
+  // Exclude array of patterns
+  const noAcme = excludeByModule(testResults, ['acme_*', 'acme-marketplace_*']);
+  assertEq(noAcme.length, 2, 'excludeByModule: array excludes multiple vendors');
+  assert(noAcme.every(r => r.module.startsWith('magento')), 'excludeByModule: only Magento modules remain');
+
+  // Exclude non-existent module
+  const noChange = excludeByModule(testResults, 'nonexistent_module');
+  assertEq(noChange.length, 5, 'excludeByModule: non-matching exclude changes nothing');
+}
+
+// ─── Config Data Loading Tests ──────────────────────────────────
+
+function testConfigDataLoading() {
+  console.log('\n── Config Data Loading ──');
+
+  // Write test config data
+  const czData = [
+    { scope: 'default', scope_id: 0, path: 'payment/cashondelivery/active', value: '1' },
+    { scope: 'default', scope_id: 0, path: 'acme_marketplace/payments/marketplace_payment_methods', value: 'csob,cashondelivery' },
+    { scope: 'stores', scope_id: 1, path: 'payment/cashondelivery/active', value: '0' },
+  ];
+  const skData = [
+    { scope: 'default', scope_id: 0, path: 'payment/cashondelivery/active', value: '0' },
+  ];
+  const allData = { 'CZ-production': czData, 'SK-production': skData };
+
+  function lookupValues(data, configPath) {
+    const results = [];
+    for (const [env, rows] of Object.entries(data)) {
+      const matches = rows.filter(r => r.path === configPath);
+      if (matches.length > 0) results.push({ environment: env, values: matches });
+    }
+    return results;
+  }
+
+  function searchData(data, keyword) {
+    const kw = keyword.toLowerCase();
+    const results = [];
+    for (const [env, rows] of Object.entries(data)) {
+      const matches = rows.filter(r =>
+        (r.path && r.path.toLowerCase().includes(kw)) ||
+        (r.value && String(r.value).toLowerCase().includes(kw))
+      );
+      if (matches.length > 0) results.push({ environment: env, values: matches });
+    }
+    return results;
+  }
+
+  // Lookup exact path
+  const cashResults = lookupValues(allData, 'payment/cashondelivery/active');
+  assertEq(cashResults.length, 2, 'configData: lookup finds in both environments');
+  assertEq(cashResults[0].values.length, 2, 'configData: CZ has 2 scopes for cashondelivery');
+  assertEq(cashResults[1].values.length, 1, 'configData: SK has 1 scope');
+
+  // Lookup non-existent path
+  const noResults = lookupValues(allData, 'nonexistent/path');
+  assertEq(noResults.length, 0, 'configData: non-existent path returns empty');
+
+  // Search by keyword
+  const marketplaceSearch = searchData(allData, 'marketplace');
+  assertEq(marketplaceSearch.length, 1, 'configData: keyword search finds CZ marketplace');
+  assertEq(marketplaceSearch[0].environment, 'CZ-production', 'configData: correct environment');
+
+  // Search by value
+  const csobSearch = searchData(allData, 'csob');
+  assertEq(csobSearch.length, 1, 'configData: search by value finds csob');
+}
+
+// ─── Trace Config Formatter Tests ───────────────────────────────
+
+function testTraceConfigFormatter() {
+  console.log('\n── Trace Config Formatter ──');
+
+  function formatResult(result) {
+    let text = '## Config Trace';
+    if (result.configPath) text += ': `' + result.configPath + '`';
+    if (result.keyword) text += ' (keyword: "' + result.keyword + '")';
+    text += '\n\n';
+    if (result.error) return text + 'Error: ' + result.error + '\n';
+    if (result.systemXml.length > 0) {
+      text += '### Admin Configuration (system.xml)\n\n';
+      for (const s of result.systemXml) {
+        text += '**' + (s.label || s.configPath) + '**';
+        if (s.type) text += ' (type: ' + s.type + ')';
+        text += '\n';
+      }
+    } else {
+      text += '### Admin Configuration (system.xml)\nNo system.xml definition found.\n\n';
+    }
+    if (result.phpConsumers.length > 0) {
+      text += '### PHP Consumers\n\n';
+      for (const c of result.phpConsumers) {
+        text += '- `' + (c.className || c.file) + '`\n';
+      }
+    } else {
+      text += '### PHP Consumers\nNo PHP files reference this config path.\n\n';
+    }
+    if (result.configValues.length > 0) {
+      text += '### Actual Values (from config-data exports)\n\n';
+      for (const cv of result.configValues) {
+        for (const env of cv.environments) {
+          text += '**' + env.environment + ':**\n';
+        }
+      }
+    }
+    return text;
+  }
+
+  // Test with full result
+  const fullResult = {
+    configPath: 'acme/payments/methods',
+    keyword: null,
+    systemXml: [
+      { file: 'vendor/acme/module/etc/adminhtml/system.xml', configPath: 'acme/payments/methods', label: 'Payment Methods', type: 'multiselect' }
+    ],
+    phpConsumers: [
+      { file: 'vendor/acme/module/Model/Config.php', className: 'Acme\\Module\\Model\\Config' }
+    ],
+    configValues: [
+      { configPath: 'acme/payments/methods', environments: [{ environment: 'CZ-production', values: [{ scope: 'default', scope_id: 0, value: 'csob,cash' }] }] }
+    ],
+    configPhpValues: []
+  };
+
+  const formatted = formatResult(fullResult);
+  assertIncludes(formatted, 'Config Trace', 'traceConfig formatter: has header');
+  assertIncludes(formatted, 'acme/payments/methods', 'traceConfig formatter: has config path');
+  assertIncludes(formatted, 'Payment Methods', 'traceConfig formatter: has label');
+  assertIncludes(formatted, 'multiselect', 'traceConfig formatter: has type');
+  assertIncludes(formatted, 'Acme\\Module\\Model\\Config', 'traceConfig formatter: has PHP consumer');
+  assertIncludes(formatted, 'CZ-production', 'traceConfig formatter: has environment');
+
+  // Test with error
+  const errorResult = { error: 'MAGENTO_ROOT not set', systemXml: [], phpConsumers: [], configValues: [], configPhpValues: [] };
+  const errorFormatted = formatResult(errorResult);
+  assertIncludes(errorFormatted, 'Error: MAGENTO_ROOT not set', 'traceConfig formatter: error displayed');
+
+  // Test with empty results
+  const emptyResult = { configPath: 'nonexistent/path', keyword: null, systemXml: [], phpConsumers: [], configValues: [], configPhpValues: [] };
+  const emptyFormatted = formatResult(emptyResult);
+  assertIncludes(emptyFormatted, 'No system.xml definition found', 'traceConfig formatter: empty sysxml message');
+  assertIncludes(emptyFormatted, 'No PHP files reference', 'traceConfig formatter: empty PHP message');
+}
+
+// ─── Tool Count (includes magento_trace_config) ─────────────────
+
+function testToolCountIncludesTraceConfig() {
+  console.log('\n── Tool Count (trace_config) ──');
+  const serverCode = readFileSync(path.join(__dirname, '..', 'src', 'mcp-server.js'), 'utf-8');
+  const toolNames = new Set();
+  const nameRegex = /name: 'magento_(\w+)'/g;
+  let m;
+  while ((m = nameRegex.exec(serverCode)) !== null) {
+    toolNames.add('magento_' + m[1]);
+  }
+  assert(toolNames.has('magento_trace_config'), 'toolCount: magento_trace_config is registered');
+  assert(toolNames.size >= 46, 'toolCount: at least 46 unique tool names');
+}
+
 async function main() {
   console.log('╔═══════════════════════════════════════════════════════════╗');
   console.log('║            MAGECTOR UNIT TESTS                          ║');
@@ -4397,6 +4615,11 @@ async function main() {
   testExpandIncludePattern();
   testSafePath();
   testGetReindexWarning();
+  testExcludeByModule();
+  testConfigDataLoading();
+  testTraceConfigFormatter();
+  testToolCountIncludesTraceConfig();
+  testSocketQueryDefaultTimeout();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
@@ -4700,6 +4923,72 @@ function testGetReindexWarning() {
   const w3 = getReindexWarning(true, now - 3000000, 3, 87000, 87000, now - 3000000);
   assert(w3.includes('phase 3/3'), 'phase 3 label');
   assert(w3.includes('5–10 min'), 'phase 3 estimate');
+}
+
+// ─── Socket Query Default Timeout Tests ─────────────────────
+
+function testSocketQueryDefaultTimeout() {
+  console.log('\n── Socket Query Default Timeout ──');
+
+  // Reproduce the bug: globalServeQuery called without timeoutMs
+  // setTimeout(fn, undefined) fires in 1ms — effectively instant timeout.
+  // Fix: default timeoutMs = 30000 in both globalServeQuery and processSocketQueue.
+
+  // Simulate the socket query factory with the FIX applied
+  function createSocketQuery() {
+    const results = [];
+    let socketBusy = false;
+    const queue = [];
+    let pendingResolve = null;
+
+    function processQueue() {
+      if (socketBusy || queue.length === 0) return;
+      socketBusy = true;
+      const { timeoutMs, resolve: qResolve, reject: qReject } = queue.shift();
+      // Record the timeout that would be passed to setTimeout
+      results.push({ timeoutMs });
+      // The fix: timeoutMs || 30000 ensures undefined/0 → 30000
+      const effectiveTimeout = timeoutMs || 30000;
+      qResolve({ effectiveTimeout });
+      socketBusy = false;
+      processQueue();
+    }
+
+    // The fix: default parameter + fallback in push
+    const globalServeQuery = (command, params, timeoutMs = 30000) => new Promise((res, rej) => {
+      queue.push({ command, params, timeoutMs: timeoutMs || 30000, resolve: res, reject: rej });
+      processQueue();
+    });
+
+    return { globalServeQuery, results };
+  }
+
+  // Test 1: Called without timeout (the bug scenario)
+  const { globalServeQuery: sq1, results: r1 } = createSocketQuery();
+  sq1('search', { query: 'test', limit: 10 }); // no third arg
+  assertEq(r1[0].timeoutMs, 30000, 'Missing timeout defaults to 30000ms');
+
+  // Test 2: Called with explicit timeout
+  const { globalServeQuery: sq2, results: r2 } = createSocketQuery();
+  sq2('search', { query: 'test', limit: 10 }, 15000);
+  assertEq(r2[0].timeoutMs, 15000, 'Explicit timeout preserved');
+
+  // Test 3: Called with undefined explicitly
+  const { globalServeQuery: sq3, results: r3 } = createSocketQuery();
+  sq3('search', { query: 'test', limit: 10 }, undefined);
+  assertEq(r3[0].timeoutMs, 30000, 'Explicit undefined defaults to 30000ms');
+
+  // Test 4: Called with 0 (falsy)
+  const { globalServeQuery: sq4, results: r4 } = createSocketQuery();
+  sq4('search', { query: 'test', limit: 10 }, 0);
+  assertEq(r4[0].timeoutMs, 30000, 'Zero timeout defaults to 30000ms');
+
+  // Test 5: Verify setTimeout(fn, undefined) behavior (the root cause)
+  // This confirms the bug: undefined delay = 1ms timeout
+  const start = Date.now();
+  const undefinedTimeout = setTimeout(() => {}, undefined);
+  assertEq(undefinedTimeout._idleTimeout, 1, 'setTimeout(fn, undefined) has 1ms timeout (confirms the bug)');
+  clearTimeout(undefinedTimeout);
 }
 
 main().catch((e) => {

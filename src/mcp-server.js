@@ -17,7 +17,7 @@ import {
 import { execFileSync, spawn } from 'child_process';
 import { createInterface } from 'readline';
 import { createServer as createNetServer, createConnection } from 'net';
-import { existsSync, statSync, unlinkSync, copyFileSync, renameSync, appendFileSync, writeFileSync, readFileSync, mkdirSync, openSync, closeSync, chmodSync, constants as fsConstants } from 'fs';
+import { existsSync, statSync, unlinkSync, copyFileSync, renameSync, appendFileSync, writeFileSync, readFileSync, readdirSync, mkdirSync, openSync, closeSync, chmodSync, constants as fsConstants } from 'fs';
 import { stat } from 'fs/promises';
 import { glob } from 'glob';
 import path from 'path';
@@ -65,6 +65,68 @@ async function loadDescriptions() {
     logToFile('INFO', 'Skipping description load (serve process not ready)');
   }
 
+}
+
+// ─── Config Data (core_config_data exports) ─────────────────────
+// One-time JSON exports from core_config_data, stored per environment.
+// Directory: .magector/config-data/
+// Files: {label}.json, e.g. "CZ-production.json", "SK-staging.json"
+// Format: [{scope, scope_id, path, value}, ...]
+
+let configDataCache = null;
+
+function getConfigDataDir() {
+  return path.join(config.magentoRoot, '.magector', 'config-data');
+}
+
+function loadAllConfigData() {
+  if (configDataCache) return configDataCache;
+  const dir = getConfigDataDir();
+  configDataCache = {};
+  try {
+    if (!existsSync(dir)) return configDataCache;
+    const files = readdirSync(dir).filter(f => f.endsWith('.json'));
+    for (const file of files) {
+      const label = file.replace(/\.json$/, '');
+      try {
+        const data = JSON.parse(readFileSync(path.join(dir, file), 'utf-8'));
+        configDataCache[label] = Array.isArray(data) ? data : [];
+      } catch {
+        // Skip malformed files
+      }
+    }
+  } catch {
+    // Directory doesn't exist yet — that's fine
+  }
+  return configDataCache;
+}
+
+function lookupConfigValues(configPath) {
+  const allData = loadAllConfigData();
+  const results = [];
+  for (const [env, rows] of Object.entries(allData)) {
+    const matches = rows.filter(r => r.path === configPath);
+    if (matches.length > 0) {
+      results.push({ environment: env, values: matches });
+    }
+  }
+  return results;
+}
+
+function searchConfigData(keyword) {
+  const allData = loadAllConfigData();
+  const kw = keyword.toLowerCase();
+  const results = [];
+  for (const [env, rows] of Object.entries(allData)) {
+    const matches = rows.filter(r =>
+      (r.path && r.path.toLowerCase().includes(kw)) ||
+      (r.value && String(r.value).toLowerCase().includes(kw))
+    );
+    if (matches.length > 0) {
+      results.push({ environment: env, values: matches });
+    }
+  }
+  return results;
 }
 
 // ─── Logging ─────────────────────────────────────────────────────
@@ -933,7 +995,7 @@ function tryConnectSocket() {
         if (socketBusy || socketQueryQueue.length === 0) return;
         socketBusy = true;
         const { command, params, timeoutMs, resolve: qResolve, reject: qReject } = socketQueryQueue.shift();
-        const timer = setTimeout(() => { pendingResolve = null; qReject(new Error('Socket query timeout')); socketBusy = false; processSocketQueue(); }, timeoutMs);
+        const timer = setTimeout(() => { pendingResolve = null; qReject(new Error('Socket query timeout')); socketBusy = false; processSocketQueue(); }, timeoutMs || 30000);
         pendingResolve = (resp) => { clearTimeout(timer); qResolve(resp); socketBusy = false; processSocketQueue(); };
         try {
           conn.write(JSON.stringify({ command, params, timeout: timeoutMs }) + '\n');
@@ -947,8 +1009,8 @@ function tryConnectSocket() {
       }
 
       // Replace the global serveQuery with socket-based version
-      globalServeQuery = (command, params, timeoutMs) => new Promise((res, rej) => {
-        socketQueryQueue.push({ command, params, timeoutMs, resolve: res, reject: rej });
+      globalServeQuery = (command, params, timeoutMs = 30000) => new Promise((res, rej) => {
+        socketQueryQueue.push({ command, params, timeoutMs: timeoutMs || 30000, resolve: res, reject: rej });
         processSocketQueue();
       });
 
@@ -2486,6 +2548,13 @@ function filterByModule(results, moduleFilter) {
   });
 }
 
+function excludeByModule(results, excludeFilter) {
+  if (!excludeFilter) return results;
+  // Use filterByModule to find what TO exclude, then remove those
+  const toExclude = new Set(filterByModule(results, excludeFilter).map(r => r.path));
+  return results.filter(r => !toExclude.has(r.path));
+}
+
 // ─── Layout XML Search ──────────────────────────────────────────
 
 async function findLayout(query, handle) {
@@ -3653,6 +3722,247 @@ async function findDataObjectIssues(searchPath, maxResults) {
   return astSearch('dataobject-set-null', searchPath, maxResults || 100);
 }
 
+// ─── Config Tracing ─────────────────────────────────────────────
+// Trace a config path end-to-end: system.xml definition → PHP consumers → actual DB values
+
+async function traceConfig(configPath, keyword) {
+  const root = config.magentoRoot;
+  if (!root) return { error: 'MAGENTO_ROOT not set' };
+
+  const result = {
+    configPath: configPath || null,
+    keyword: keyword || null,
+    systemXml: [],
+    phpConsumers: [],
+    configValues: [],
+    configPhpValues: []
+  };
+
+  // If only keyword given, try to find matching config paths first
+  let pathsToTrace = [];
+  if (configPath) {
+    pathsToTrace = [configPath];
+  } else if (keyword) {
+    // Search system.xml for the keyword
+    const kw = keyword.toLowerCase();
+    try {
+      const sysXmlFiles = await glob('**/etc/adminhtml/system.xml', { cwd: root, absolute: true, nodir: true });
+      for (const f of sysXmlFiles) {
+        try {
+          const content = readFileSync(f, 'utf-8');
+          if (content.toLowerCase().includes(kw)) {
+            // Extract config paths (section/group/field ids) using nested regex
+            const sectionRegex = /<section\s+id="([^"]+)"[^>]*>([\s\S]*?)<\/section>/g;
+            let secMatch;
+            while ((secMatch = sectionRegex.exec(content)) !== null) {
+              const secId = secMatch[1];
+              const secBlock = secMatch[2];
+              const groupRegex = /<group\s+id="([^"]+)"[^>]*>([\s\S]*?)<\/group>/g;
+              let grpMatch;
+              while ((grpMatch = groupRegex.exec(secBlock)) !== null) {
+                const grpId = grpMatch[1];
+                const grpBlock = grpMatch[2];
+                const fieldRegex = /<field\s+id="([^"]+)"/g;
+                let fldMatch;
+                while ((fldMatch = fieldRegex.exec(grpBlock)) !== null) {
+                  const fullPath = `${secId}/${grpId}/${fldMatch[1]}`;
+                  if (fullPath.toLowerCase().includes(kw) || fldMatch[1].toLowerCase().includes(kw)) {
+                    if (!pathsToTrace.includes(fullPath)) pathsToTrace.push(fullPath);
+                  }
+                }
+              }
+            }
+          }
+        } catch { /* skip unreadable */ }
+      }
+    } catch { /* glob error */ }
+  }
+
+  // For each config path, find system.xml definition
+  for (const cp of pathsToTrace) {
+    const parts = cp.split('/');
+    const fieldId = parts[parts.length - 1];
+
+    // 1. Find system.xml definition
+    try {
+      const sysXmlFiles = await glob('**/etc/adminhtml/system.xml', { cwd: root, absolute: true, nodir: true });
+      for (const f of sysXmlFiles) {
+        try {
+          const content = readFileSync(f, 'utf-8');
+          if (!content.includes(`id="${fieldId}"`)) continue;
+          // Check if this is the right section/group
+          const hasSection = parts.length < 2 || content.includes(`id="${parts[0]}"`);
+          const hasGroup = parts.length < 3 || content.includes(`id="${parts[1]}"`);
+          if (!hasSection || !hasGroup) continue;
+
+          const relPath = path.relative(root, f);
+          const entry = { file: relPath, configPath: cp };
+
+          // Extract field details
+          const fieldRegex = new RegExp(`<field\\s+id="${fieldId}"[^>]*>([\\s\\S]*?)</field>`, 'g');
+          const fieldMatch = fieldRegex.exec(content);
+          if (fieldMatch) {
+            const block = fieldMatch[1];
+            const labelMatch = block.match(/<label>(.*?)<\/label>/);
+            const typeMatch = content.match(new RegExp(`<field\\s+id="${fieldId}"[^>]*type="([^"]+)"`));
+            const sourceMatch = block.match(/<source_model>(.*?)<\/source_model>/);
+            const commentMatch = block.match(/<comment>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/comment>/s);
+            if (labelMatch) entry.label = labelMatch[1];
+            if (typeMatch) entry.type = typeMatch[1];
+            if (sourceMatch) entry.sourceModel = sourceMatch[1];
+            if (commentMatch) entry.comment = commentMatch[1].trim();
+          }
+          result.systemXml.push(entry);
+        } catch { /* skip */ }
+      }
+    } catch { /* glob error */ }
+
+    // 2. Find PHP consumers — classes that read this config path
+    const escapedPath = cp.replace(/[/]/g, '\\/');
+    try {
+      // Search for the config path string in PHP files (argv-array, no shell)
+      const grepArgs = ['-rn', '-l', '--include=*.php', '--', cp, root];
+      let grepOut;
+      try {
+        grepOut = execFileSync('grep', grepArgs, { encoding: 'utf-8', timeout: 15000, maxBuffer: 5 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] });
+      } catch (err) { grepOut = err.stdout || ''; }
+
+      const phpFiles = grepOut.trim().split('\n').filter(Boolean);
+      for (const f of phpFiles.slice(0, 20)) {
+        try {
+          const content = readFileSync(f, 'utf-8');
+          const relPath = path.relative(root, f);
+          const entry = { file: relPath };
+
+          // Extract class name
+          const nsMatch = content.match(/namespace\s+([\w\\]+)/);
+          const classMatch = content.match(/class\s+(\w+)/);
+          if (nsMatch && classMatch) entry.className = nsMatch[1] + '\\' + classMatch[1];
+
+          // Find the constant or property that holds this path
+          const constMatch = content.match(new RegExp(`(\\w+)\\s*=\\s*'${escapedPath}'`));
+          if (constMatch) entry.constant = constMatch[1];
+
+          // Find methods that use this config value
+          const methods = [];
+          const methodRegex = /(?:public|protected|private)\s+(?:static\s+)?function\s+(\w+)/g;
+          let mm;
+          while ((mm = methodRegex.exec(content)) !== null) {
+            const methodName = mm[1];
+            const body = readFullMethodBody(f, methodName);
+            if (body && (body.includes(cp) || (constMatch && body.includes(constMatch[1])))) {
+              methods.push(methodName);
+            }
+          }
+          if (methods.length > 0) entry.methods = methods;
+
+          result.phpConsumers.push(entry);
+        } catch { /* skip */ }
+      }
+    } catch { /* grep error */ }
+
+    // 3. Look up actual config values from imported data
+    const dbValues = lookupConfigValues(cp);
+    if (dbValues.length > 0) {
+      result.configValues.push({ configPath: cp, environments: dbValues });
+    }
+  }
+
+  // 4. Also check config.php for statically set values
+  if (pathsToTrace.length > 0) {
+    const configPhpPath = path.join(root, 'app/etc/config.php');
+    if (existsSync(configPhpPath)) {
+      try {
+        const configPhpContent = readFileSync(configPhpPath, 'utf-8');
+        for (const cp of pathsToTrace) {
+          const parts = cp.split('/');
+          // Check if any part of the path appears in config.php
+          if (parts.some(p => configPhpContent.includes(`'${p}'`))) {
+            result.configPhpValues.push({ configPath: cp, note: 'Path segments found in app/etc/config.php — may contain static overrides' });
+          }
+        }
+      } catch { /* skip */ }
+    }
+  }
+
+  return result;
+}
+
+function formatTraceConfigResult(result) {
+  let text = '## Config Trace';
+  if (result.configPath) text += `: \`${result.configPath}\``;
+  if (result.keyword) text += ` (keyword: "${result.keyword}")`;
+  text += '\n\n';
+
+  if (result.error) return text + `Error: ${result.error}\n`;
+
+  // System.xml definitions
+  if (result.systemXml.length > 0) {
+    text += '### Admin Configuration (system.xml)\n\n';
+    for (const s of result.systemXml) {
+      text += `**${s.label || s.configPath}**`;
+      if (s.type) text += ` (type: ${s.type})`;
+      text += `\n- File: \`${s.file}\`\n- Config path: \`${s.configPath}\`\n`;
+      if (s.sourceModel) text += `- Source model: \`${s.sourceModel}\`\n`;
+      if (s.comment) text += `- Comment: ${s.comment}\n`;
+      text += '\n';
+    }
+  } else {
+    text += '### Admin Configuration (system.xml)\nNo system.xml definition found.\n\n';
+  }
+
+  // PHP consumers
+  if (result.phpConsumers.length > 0) {
+    text += '### PHP Consumers\n\n';
+    for (const c of result.phpConsumers) {
+      text += `- \`${c.className || c.file}\``;
+      if (c.constant) text += ` (const \`${c.constant}\`)`;
+      if (c.methods?.length > 0) text += ` — methods: ${c.methods.map(m => '`' + m + '()`').join(', ')}`;
+      text += `\n  File: \`${c.file}\`\n`;
+    }
+    text += '\n';
+  } else {
+    text += '### PHP Consumers\nNo PHP files reference this config path.\n\n';
+  }
+
+  // Actual DB values
+  if (result.configValues.length > 0) {
+    text += '### Actual Values (from config-data exports)\n\n';
+    for (const cv of result.configValues) {
+      text += `**\`${cv.configPath}\`**\n`;
+      for (const env of cv.environments) {
+        text += `\n**${env.environment}:**\n`;
+        for (const v of env.values) {
+          const scope = v.scope === 'default' ? 'default' : `${v.scope} (id: ${v.scope_id})`;
+          const val = v.value === null ? '*(null)*' : (String(v.value).length > 200 ? String(v.value).slice(0, 200) + '...' : String(v.value));
+          text += `- [${scope}] = \`${val}\`\n`;
+        }
+      }
+      text += '\n';
+    }
+  } else {
+    const dataDir = getConfigDataDir();
+    let hasData = false;
+    try { hasData = existsSync(dataDir) && readdirSync(dataDir).some(f => f.endsWith('.json')); } catch {}
+    if (!hasData) {
+      text += '### Actual Values\nNo config-data exports found. Export `core_config_data` to `.magector/config-data/{env}.json` (format: `[{scope, scope_id, path, value}, ...]`).\n\n';
+    } else {
+      text += '### Actual Values\nNo matching values found in config-data exports.\n\n';
+    }
+  }
+
+  // config.php static values
+  if (result.configPhpValues.length > 0) {
+    text += '### Static Config (app/etc/config.php)\n';
+    for (const c of result.configPhpValues) {
+      text += `- \`${c.configPath}\`: ${c.note}\n`;
+    }
+    text += '\n';
+  }
+
+  return text;
+}
+
 // ─── MCP Server ─────────────────────────────────────────────────
 
 const server = new Server(
@@ -3691,6 +4001,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
               { type: 'array', items: { type: 'string' } }
             ],
             description: 'Filter results by vendor/module pattern(s). Accepts a single string or array of strings. Supports wildcards and vendor prefix matching. Uses "/" or "_" interchangeably as separator. Examples: "Vendor_*", ["Acme_PaymentGateway", "Acme_FreeShipping"], "Magento_Catalog".'
+          },
+          excludeModuleFilter: {
+            oneOf: [
+              { type: 'string' },
+              { type: 'array', items: { type: 'string' } }
+            ],
+            description: 'Exclude results from vendor/module pattern(s). Inverse of moduleFilter — removes matching modules from results. Same pattern syntax as moduleFilter. Useful when you know which modules are irrelevant. Examples: "Vendor_MarketplaceBase", ["Vendor_ModuleA", "Vendor_ModuleB"].'
           },
           expand: {
             type: 'boolean',
@@ -4471,6 +4788,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
+      name: 'magento_trace_config',
+      description: 'Trace a Magento config path end-to-end: finds system.xml admin definition (label, type, source_model), PHP classes that read the value, and actual DB values from config-data exports. Use when investigating config-driven behavior ("why is this feature enabled/disabled?", "what controls marketplace payment methods?"). Accepts either an exact config path or a keyword to search for.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          configPath: {
+            type: 'string',
+            description: 'Exact config path to trace. Example: "acme_marketplace/payments/marketplace_payment_methods", "payment/cashondelivery/active"'
+          },
+          keyword: {
+            type: 'string',
+            description: 'Keyword to search for in system.xml fields when exact path is unknown. Example: "marketplace_payment", "cashondelivery". Returns all matching config paths.'
+          }
+        }
+      }
+    },
+    {
       name: 'magento_read',
       description: 'Read a file from the Magento codebase. Use in magento_batch to read multiple files in a single MCP call (e.g., grep finds 5 files → read all 5 in one batch). Supports line ranges and method extraction.',
       inputSchema: {
@@ -4605,7 +4939,11 @@ const _callToolHandler = async (request) => {
       case 'magento_search': {
         const precise = args.precise === true;
         const searchQuery = (args.expand !== false && !precise) ? expandQuery(args.query) : args.query;
-        const raw = await rustSearchAsync(searchQuery, Math.max(args.limit || 10, precise ? 60 : 30));
+        // When moduleFilter is present, fetch more results so post-filtering has enough candidates
+        const fetchLimit = args.moduleFilter
+          ? Math.max(args.limit || 10, 200)
+          : Math.max(args.limit || 10, precise ? 60 : 30);
+        const raw = await rustSearchAsync(searchQuery, fetchLimit);
         const arr = Array.isArray(raw) ? raw : [];
         let results = arr.map(normalizeResult);
         // Hybrid BM25 rerank for better exact-match handling
@@ -4622,6 +4960,9 @@ const _callToolHandler = async (request) => {
         // Apply module filter if specified
         if (args.moduleFilter) {
           results = filterByModule(results, args.moduleFilter);
+        }
+        if (args.excludeModuleFilter) {
+          results = excludeByModule(results, args.excludeModuleFilter);
         }
         // SONA: record search with results for follow-up tracking
         sessionTracker.recordToolCall(name, args || {}, arr);
@@ -6631,6 +6972,11 @@ const _callToolHandler = async (request) => {
                 }
                 break;
               }
+              case 'magento_trace_config': {
+                const trResult = await traceConfig(a.configPath, a.keyword);
+                text = formatTraceConfigResult(trResult);
+                break;
+              }
               default:
                 text = `Unsupported batch tool: ${q.tool}`;
             }
@@ -6881,6 +7227,17 @@ const _callToolHandler = async (request) => {
         }
 
         return { content: [{ type: 'text', text }] };
+      }
+
+      case 'magento_trace_config': {
+        const traceResult = await traceConfig(args.configPath, args.keyword);
+        logToFile('RES', `trace_config: path=${args.configPath || 'none'} keyword=${args.keyword || 'none'} sysxml=${traceResult.systemXml?.length || 0} php=${traceResult.phpConsumers?.length || 0} values=${traceResult.configValues?.length || 0}`);
+        return {
+          content: [{
+            type: 'text',
+            text: formatTraceConfigResult(traceResult)
+          }]
+        };
       }
 
       case 'magento_read': {

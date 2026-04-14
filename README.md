@@ -2,7 +2,7 @@
 
 **Technology-aware MCP server for Magento 2 and Adobe Commerce with intelligent indexing and search.**
 
-Magector is a Model Context Protocol (MCP) server that deeply understands Magento 2 and Adobe Commerce. It builds a semantic vector index of your entire codebase — 18,000+ files across hundreds of modules — and exposes 46 tools that let AI assistants search, navigate, and understand the code with domain-specific intelligence. Instead of grepping for keywords, your AI asks *"how are checkout totals calculated?"* and gets ranked, relevant results in under 50ms, enriched with Magento pattern detection (plugins, observers, controllers, DI preferences, layout XML, and 20+ more).
+Magector is a Model Context Protocol (MCP) server that deeply understands Magento 2 and Adobe Commerce. It builds a semantic vector index of your entire codebase — 18,000+ files across hundreds of modules — and exposes 47 tools that let AI assistants search, navigate, and understand the code with domain-specific intelligence. Instead of grepping for keywords, your AI asks *"how are checkout totals calculated?"* and gets ranked, relevant results in under 50ms, enriched with Magento pattern detection (plugins, observers, controllers, DI preferences, layout XML, and 20+ more).
 
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org)
 [![Node.js](https://img.shields.io/badge/node-18+-green.svg)](https://nodejs.org)
@@ -58,7 +58,7 @@ The result: your AI assistant calls one MCP tool and gets ranked, pattern-enrich
 - **Complexity analysis** -- cyclomatic complexity, function count, and hotspot detection across modules
 - **Fast** -- 10-45ms queries via persistent serve process, batched ONNX embedding with adaptive thread scaling
 - **LLM description enrichment** -- generate natural-language descriptions of di.xml files using Claude, stored in SQLite, and prepend them to embedding text so descriptions influence vector search ranking (not just post-retrieval display)
-- **MCP server** -- 46 tools integrating with Claude Code, Cursor, and any MCP-compatible AI tool
+- **MCP server** -- 47 tools integrating with Claude Code, Cursor, and any MCP-compatible AI tool
 - **Clean architecture** -- Rust core handles all indexing/search, Node.js MCP server delegates to it
 
 ---
@@ -70,7 +70,7 @@ flowchart LR
   subgraph node ["Node.js Layer"]
     direction TB
     G["CLI<br/>init · index · search · describe"]
-    E["MCP Server<br/>46 tools · LRU cache"]
+    E["MCP Server<br/>47 tools · LRU cache"]
     F["Persistent Serve Process"]
     G --> F
     E --> F
@@ -132,6 +132,7 @@ flowchart LR
 | Unified metadata | rusqlite (bundled SQLite) | LLM descriptions, method-chain enrichment, process state, cache — all in .magector/data.db |
 | SONA | Custom Rust | Feedback learning with MicroLoRA + EWC++ |
 | MCP server | `@modelcontextprotocol/sdk` | AI tool integration with structured JSON output |
+| Config data | JSON exports in `.magector/config-data/` | One-time `core_config_data` exports per environment for config tracing |
 
 ---
 
@@ -400,7 +401,7 @@ npx magector index --force
 
 ## MCP Server Tools
 
-The MCP server exposes 46 tools for AI-assisted Magento 2 and Adobe Commerce development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
+The MCP server exposes 47 tools for AI-assisted Magento 2 and Adobe Commerce development. All search tools return **structured JSON** with file paths, class names, methods, role badges, and content snippets -- enabling AI clients to parse results programmatically and minimize file-read round-trips.
 
 ### Output Format
 
@@ -508,6 +509,7 @@ Auto-detects entry type from pattern (`/V1/...` → API, `snake_case` → event,
 | `magento_grep` | Exact text/regex search across PHP/XML/PHTML files (`grep -rn -E` internally). Supports `filesOnly` mode (like `grep -l`), `context` lines, `ignoreCase`, `include` patterns. **(v2.9)** |
 | `magento_read` | Read a specific file with optional `methodName` extraction (~10× fewer tokens than reading the whole file) and `startLine`/`endLine` range. **(v2.10)** |
 | `magento_trace_api` | Trace REST/GraphQL API endpoint from URL to implementation: webapi.xml → service interface → DI preference → method body. One call replaces 4-5 grep+read steps. **(v2.11)** |
+| `magento_trace_config` | Trace a config path end-to-end: system.xml admin definition → PHP classes that consume the value → actual DB values from config-data exports. Accepts exact path or keyword search. **(v2.17)** |
 | `magento_find_trigger` | Find database triggers across the codebase |
 | `magento_find_table_usage` | Find all PHP code referencing a specific database table |
 
@@ -702,7 +704,7 @@ cd rust-core && cargo run --release -- validate -m ./magento2 --skip-index
 magector/
 ├── src/                          # Node.js source
 │   ├── cli.js                    # CLI entry point (npx magector <command>)
-│   ├── mcp-server.js             # MCP server (46 tools, structured JSON output)
+│   ├── mcp-server.js             # MCP server (47 tools, structured JSON output)
 │   ├── binary.js                 # Platform binary resolver
 │   ├── model.js                  # ONNX model resolver/downloader
 │   ├── init.js                   # Full init command (index + IDE config)
@@ -1021,6 +1023,25 @@ lib/internal
 - Trailing slashes are stripped (`vendor/` → `vendor`)
 - Patterns without `/` match directory names anywhere in the tree
 - Patterns with `/` match relative paths from the project root
+
+### Config Data (core_config_data exports)
+
+The `magento_trace_config` tool can show actual database config values alongside code analysis. Export your `core_config_data` table as JSON and place files in `.magector/config-data/`:
+
+```bash
+# Export from MySQL (one-time per environment)
+mysql -u user -p magento_db -e "SELECT scope, scope_id, path, value FROM core_config_data" --json > .magector/config-data/CZ-production.json
+
+# Or from n8n/API/any tool that produces:
+# [{scope, scope_id, path, value}, ...]
+```
+
+**File naming:** Use `{country}-{environment}.json`, e.g.:
+- `CZ-production.json`
+- `SK-staging.json`
+- `IT-production.json`
+
+When `magento_trace_config` traces a config path, it automatically looks up values from all available exports and shows them per environment.
 
 ### Model Configuration
 
