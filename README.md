@@ -1029,8 +1029,14 @@ lib/internal
 The `magento_trace_config` tool can show actual database config values alongside code analysis. Export your `core_config_data` table as JSON and place files in `.magector/config-data/`:
 
 ```bash
-# Export from MySQL (one-time per environment)
+# MySQL 8.0+ with --json flag
 mysql -u user -p magento_db -e "SELECT scope, scope_id, path, value FROM core_config_data" --json > .magector/config-data/CZ-production.json
+
+# Older MySQL (no --json): pipe through python3
+mysql -u user -p magento_db -B -e "SELECT scope, scope_id, path, value FROM core_config_data" | \
+  python3 -c "import sys,json; lines=sys.stdin.read().strip().split('\n'); h=lines[0].split('\t'); \
+  rows=[dict(zip(h,l.split('\t'))) for l in lines[1:]]; [r.update({'scope_id':int(r['scope_id'])}) for r in rows]; \
+  json.dump(rows,sys.stdout,indent=2)" > .magector/config-data/CZ-production.json
 
 # Or from n8n/API/any tool that produces:
 # [{scope, scope_id, path, value}, ...]
