@@ -4901,11 +4901,14 @@ const _callToolHandler = async (request) => {
             let tm;
             while ((tm = typeBlockRegex.exec(content)) !== null) {
               const typeName = tm[1].replace(/\\\\/g, '\\');
-              // FQCN: exact match. Short name: match if type ends with the short name
-              const typeMatches = isFqcn
+              // FQCN: exact match. Short name: match last segment OR any namespace segment
+              // (catches sub-namespace types like Payment\State\CaptureCommand when searching for "Payment")
+              const typeSegments = typeName.split('\\').map(s => s.toLowerCase());
+              const isExactMatch = isFqcn
                 ? typeName === normalizedTarget
-                : typeName.split('\\').pop().toLowerCase() === shortTarget;
-              if (!typeMatches) continue;
+                : typeSegments[typeSegments.length - 1] === shortTarget;
+              const isSubNamespace = !isFqcn && !isExactMatch && typeSegments.includes(shortTarget);
+              if (!isExactMatch && !isSubNamespace) continue;
               const block = tm[2];
               const pluginRegex = /<plugin\s+([^/>]*)\/?>/g;
               let pm;
@@ -4926,6 +4929,7 @@ const _callToolHandler = async (request) => {
                   pluginClass: attrs.type || '',
                   disabled: attrs.disabled === 'true',
                   sortOrder: attrs.sortOrder || null,
+                  isSubNamespace,
                   area,
                   file: relPath
                 });
@@ -4942,8 +4946,9 @@ const _callToolHandler = async (request) => {
             if (pluginFile) {
               reg.methods = extractPluginMethods(pluginFile);
               reg.resolvedFile = pluginFile.replace(fpRoot2 + '/', '');
-              // Read method bodies — only for targetMethod if specified (reduces token bloat)
-              const methodsToRead = args.targetMethod
+              // Read method bodies — for exact matches, filter by targetMethod to reduce bloat
+              // For sub-namespace matches, read ALL bodies (intercepted method name may differ)
+              const methodsToRead = (args.targetMethod && !reg.isSubNamespace)
                 ? reg.methods.filter(m => m.targetMethod === args.targetMethod)
                 : reg.methods;
               for (const m of methodsToRead) {
@@ -4955,12 +4960,27 @@ const _callToolHandler = async (request) => {
         }
 
         let text = formatSearchResults(enrichedResults);
+        const exactRegs = diRegistrations.filter(r => !r.isSubNamespace);
+        const subNsRegs = diRegistrations.filter(r => r.isSubNamespace);
         if (diRegistrations.length > 0) {
-          text += `\n\n### DI Plugin Registrations for ${args.targetClass} (${diRegistrations.length})\n`;
-          for (const reg of diRegistrations) {
+          if (exactRegs.length > 0) {
+            text += `\n\n### DI Plugin Registrations for ${args.targetClass} (${exactRegs.length})\n`;
+          }
+          if (subNsRegs.length > 0) {
+            if (exactRegs.length === 0) text += '\n';
+            text += `\n### Plugins on ${args.targetClass} sub-classes (${subNsRegs.length})\n`;
+            text += `> These intercept classes in the \\${args.targetClass}\\ namespace subtree — operations, state commands, etc.\n\n`;
+          }
+          const orderedRegs = [...exactRegs, ...subNsRegs];
+          let inSubNs = false;
+          for (const reg of orderedRegs) {
+            if (!inSubNs && reg.isSubNamespace) {
+              inSubNs = true;
+            }
             const disabledTag = reg.disabled ? ' **[DISABLED]**' : '';
             const sortTag = reg.sortOrder ? ` (sortOrder: ${reg.sortOrder})` : '';
-            text += `- **${reg.pluginName}** → \`${reg.pluginClass}\` [${reg.area}]${sortTag}${disabledTag} (${reg.file})\n`;
+            const targetTag = reg.isSubNamespace ? ` on \`${reg.target.split('\\').pop()}\`` : '';
+            text += `- **${reg.pluginName}**${targetTag} → \`${reg.pluginClass}\` [${reg.area}]${sortTag}${disabledTag} (${reg.file})\n`;
             if (reg.resolvedFile) {
               text += `  PHP: \`${reg.resolvedFile}\`\n`;
             }
@@ -6257,25 +6277,30 @@ const _callToolHandler = async (request) => {
                     while ((tm = typeBlockRegex.exec(diContent)) !== null) {
                       if (regCount >= 8) break;
                       const typeName = tm[1].replace(/\\\\/g, '\\');
-                      const typeMatches = isFqcn ? typeName === normalizedTarget : typeName.split('\\').pop().toLowerCase() === shortTarget;
-                      if (!typeMatches) continue;
+                      const batchSegs = typeName.split('\\').map(s => s.toLowerCase());
+                      const isExact = isFqcn ? typeName === normalizedTarget : batchSegs[batchSegs.length - 1] === shortTarget;
+                      const isSubNs = !isFqcn && !isExact && batchSegs.includes(shortTarget);
+                      if (!isExact && !isSubNs) continue;
                       const block = tm[2];
-                      const pluginRegex = /<plugin\s+([^/>]*)\/?>/g;
+                      const pluginRegex2 = /<plugin\s+([^/>]*)\/?>/g;
                       let pm;
-                      while ((pm = pluginRegex.exec(block)) !== null) {
-                        if (regCount >= 8) break;
+                      while ((pm = pluginRegex2.exec(block)) !== null) {
+                        if (regCount >= 12) break;
                         const attrs = {};
                         const localAttrRe = /(\w+)="([^"]*)"/g;
                         let am2;
                         while ((am2 = localAttrRe.exec(pm[1])) !== null) attrs[am2[1]] = am2[2];
                         const disabled = attrs.disabled === 'true' ? ' [DISABLED]' : '';
-                        text += `- **${attrs.name || '?'}** → \`${attrs.type || '?'}\`${disabled} (${relPath})\n`;
-                        // Only read method bodies for plugins that intercept the targetMethod
-                        if (attrs.type && a.targetMethod) {
+                        const subTag = isSubNs ? ` on \`${typeName.split('\\').pop()}\`` : '';
+                        text += `- **${attrs.name || '?'}**${subTag} → \`${attrs.type || '?'}\`${disabled} (${relPath})\n`;
+                        // Read method bodies: exact matches filter by targetMethod; sub-namespace reads ALL
+                        if (attrs.type) {
                           const pFile = findClassFile(config.magentoRoot, attrs.type);
                           if (pFile) {
                             const methods = extractPluginMethods(pFile);
-                            const relevant = methods.filter(m => m.targetMethod === a.targetMethod);
+                            const relevant = (a.targetMethod && !isSubNs)
+                              ? methods.filter(m => m.targetMethod === a.targetMethod)
+                              : methods;
                             for (const m of relevant) {
                               const body = readFullMethodBody(pFile, m.name);
                               text += `  - \`${m.type}\` **${m.targetMethod}** → \`${m.name}()\`\n`;

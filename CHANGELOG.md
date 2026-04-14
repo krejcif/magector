@@ -4,6 +4,11 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.16.6] - 2026-04-14
+
+### Changed
+- **`magento_find_plugin` sub-namespace discovery** — when searching for plugins on a short class name like `Payment`, the DI scan now also finds plugins registered on sub-namespace types (e.g., `Payment\State\CaptureCommand`, `Payment\Operations\CaptureOperation`). Previously only types whose last namespace segment matched were found. Sub-namespace matches include full method bodies for all intercepted methods (not filtered by `targetMethod`), since the intercepted method name typically differs from the searched method. Results appear in a separate "Plugins on sub-classes" section. Both standalone and batch handlers updated. DI registration limit raised from 8 to 12 in batch to accommodate the broader discovery.
+
 ## [2.16.5] - 2026-04-13
 
 ### Fixed
