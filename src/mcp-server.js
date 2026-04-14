@@ -493,6 +493,26 @@ let reindexItemsToEmbed = 0;
 let reindexPhase2Start = null;
 
 /**
+ * Build a short reindex progress message for tool responses.
+ * Returns null when not reindexing.
+ */
+function getReindexWarning() {
+  if (!reindexInProgress) return null;
+  const phases = ['initializing', 'AST analysis', 'embedding generation', 'building HNSW graph'];
+  const phase = phases[reindexPhase] || 'in progress';
+  const elapsed = reindexStartTime ? Math.round((Date.now() - reindexStartTime) / 1000) : 0;
+  let msg = `⚠️ Re-indexing ${phase}`;
+  if (elapsed > 0) msg += ` (${elapsed}s elapsed)`;
+  if (reindexPhase === 2 && reindexPhase2Start && reindexItemsToEmbed > 0) {
+    const p2elapsed = (Date.now() - reindexPhase2Start) / 1000;
+    const rate = p2elapsed > 0 ? Math.round(reindexItemsToEmbed * (p2elapsed / reindexItemsToEmbed)) : 0;
+    if (rate > 0) msg += ` — ETA ~${Math.round((reindexItemsToEmbed / (p2elapsed > 0 ? reindexItemsToEmbed / p2elapsed : 1)) * (1 - p2elapsed / rate))}s`;
+  }
+  msg += '. Results may be from previous index or incomplete.';
+  return msg;
+}
+
+/**
  * Check if the database file is compatible with the current binary.
  * Uses a cached result to avoid running stats (30-60s) on every startup.
  * Cache key: binary path mtime + db file mtime + db size.
@@ -1978,6 +1998,7 @@ async function traceDependency(className, direction = 'both') {
     plugins: [],
     virtualTypes: [],
     argumentOverrides: [],
+    argumentInjections: [],
     totalDiFiles: diFiles.length
   };
 
@@ -2040,6 +2061,54 @@ async function traceDependency(className, direction = 'both') {
               argumentName: aMatch[1],
               argumentType: aMatch[2],
               value: aMatch[3].trim().slice(0, 200),
+              file: relativePath
+            });
+          }
+        }
+      }
+
+      // Find argument injections: className used as an argument VALUE in any <type> or <virtualType> block.
+      // Catches cases where an interface is injected via constructor argument, e.g.:
+      //   <virtualType name="SomeVT" type="SomeClass">
+      //     <argument name="validator" xsi:type="object">My\Interface</argument>
+      //   </virtualType>
+      const allBlockRegex = /<(?:type|virtualType)\s+name="([^"]+)"[^>]*(?:type="([^"]+)")?[^>]*>([\s\S]*?)<\/(?:type|virtualType)>/g;
+      let blockMatch;
+      while ((blockMatch = allBlockRegex.exec(content)) !== null) {
+        const blockName = blockMatch[1];
+        const blockType = blockMatch[2] || null;
+        const blockBody = blockMatch[3];
+        // Skip if this block IS the target (already covered above)
+        if (blockName.toLowerCase().includes(classLower)) continue;
+
+        // Search argument values for the className
+        const objArgRegex = /<argument\s+name="([^"]+)"[^>]*xsi:type="object"[^>]*>([^<]*)<\/argument>/g;
+        let oMatch;
+        while ((oMatch = objArgRegex.exec(blockBody)) !== null) {
+          const argValue = oMatch[2].trim();
+          if (argValue.toLowerCase().includes(classLower) || argValue.toLowerCase().includes(classShort)) {
+            result.argumentInjections.push({
+              injectedAs: argValue,
+              intoBlock: blockName,
+              blockType: blockType,
+              argumentName: oMatch[1],
+              file: relativePath
+            });
+          }
+        }
+
+        // Also check <item> values inside array arguments
+        const itemRegex = /<item\s+name="([^"]+)"[^>]*xsi:type="object"[^>]*>([^<]*)<\/item>/g;
+        let iMatch;
+        while ((iMatch = itemRegex.exec(blockBody)) !== null) {
+          const itemValue = iMatch[2].trim();
+          if (itemValue.toLowerCase().includes(classLower) || itemValue.toLowerCase().includes(classShort)) {
+            result.argumentInjections.push({
+              injectedAs: itemValue,
+              intoBlock: blockName,
+              blockType: blockType,
+              argumentName: iMatch[1],
+              isArrayItem: true,
               file: relativePath
             });
           }
@@ -4968,10 +5037,12 @@ const _callToolHandler = async (request) => {
         }
         // SONA: record search with results for follow-up tracking
         sessionTracker.recordToolCall(name, args || {}, arr);
+        const reindexWarn = getReindexWarning();
+        const searchOutput = formatSearchResults(results.slice(0, args.limit || 5));
         return {
           content: [{
             type: 'text',
-            text: formatSearchResults(results.slice(0, args.limit || 5))
+            text: reindexWarn ? `${reindexWarn}\n\n${searchOutput}` : searchOutput
           }]
         };
       }
@@ -6024,6 +6095,15 @@ const _callToolHandler = async (request) => {
         const result = await traceFlow(entryPoint, entryType, depth);
         result.summary = buildTraceSummary(result);
 
+        const reindexWarn = getReindexWarning();
+        if (reindexWarn) result.warning = reindexWarn;
+
+        // Detect empty trace — likely caused by search unavailability
+        const traceKeys = Object.keys(result.trace || {});
+        if (traceKeys.length === 0 && reindexInProgress) {
+          result.warning = '⚠️ Re-indexing in progress — trace returned empty results. Search-dependent tracing will produce accurate results once re-indexing completes.';
+        }
+
         return {
           content: [{
             type: 'text',
@@ -6070,8 +6150,21 @@ const _callToolHandler = async (request) => {
           text += '\n';
         }
 
-        if (diResult.preferences.length === 0 && diResult.plugins.length === 0 &&
-            diResult.virtualTypes.length === 0 && diResult.argumentOverrides.length === 0) {
+        if (diResult.argumentInjections && diResult.argumentInjections.length > 0) {
+          text += `### Argument Injections (${diResult.argumentInjections.length})\n`;
+          text += `_This class is injected as a constructor argument value in the following blocks:_\n`;
+          for (const a of diResult.argumentInjections) {
+            const blockLabel = a.blockType ? `\`${a.intoBlock}\` (type: \`${a.blockType}\`)` : `\`${a.intoBlock}\``;
+            const itemTag = a.isArrayItem ? ' [array item]' : '';
+            text += `- ${blockLabel} → argument \`${a.argumentName}\`${itemTag} = \`${a.injectedAs}\` (${a.file})\n`;
+          }
+          text += '\n';
+        }
+
+        const totalFound = diResult.preferences.length + diResult.plugins.length +
+            diResult.virtualTypes.length + diResult.argumentOverrides.length +
+            (diResult.argumentInjections?.length || 0);
+        if (totalFound === 0) {
           text += '_No DI configuration found for this class. It may use default Magento auto-resolution or be configured under a different name._\n';
         }
 

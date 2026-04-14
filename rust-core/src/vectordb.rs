@@ -18,6 +18,20 @@ const HNSW_MAX_LAYER: usize = 16;
 const HNSW_EF_CONSTRUCTION: usize = 200;
 const HNSW_MIN_CAPACITY: usize = 1_000;
 
+/// Check whether a vector is safe for cosine distance computation.
+/// Rejects NaN, Inf, and zero vectors — these produce NaN distances
+/// that corrupt the HNSW graph structure.
+fn is_valid_vector(v: &[f32]) -> bool {
+    let mut norm_sq = 0.0f32;
+    for &x in v {
+        if x.is_nan() || x.is_infinite() {
+            return false;
+        }
+        norm_sq += x * x;
+    }
+    norm_sq > 1e-12
+}
+
 /// Metadata associated with each indexed item
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexMetadata {
@@ -220,17 +234,31 @@ impl VectorDB {
         let capacity = state.vectors.len().max(HNSW_MIN_CAPACITY);
         let hnsw = make_hnsw(capacity);
 
+        // Filter out invalid vectors to prevent HNSW corruption
         let data: Vec<(&Vec<f32>, usize)> = state.vectors.iter()
+            .filter(|(_, vec)| is_valid_vector(vec))
             .map(|(&id, vec)| (vec, id))
             .collect();
+        let skipped = state.vectors.len() - data.len();
+        if skipped > 0 {
+            tracing::warn!("V1 load: skipped {} invalid vectors (NaN/Inf/zero)", skipped);
+        }
         hnsw.parallel_insert(&data);
+
+        // Tombstone any invalid vectors
+        let mut tombstones = HashSet::new();
+        for (&id, vec) in &state.vectors {
+            if !is_valid_vector(vec) {
+                tombstones.insert(id);
+            }
+        }
 
         Ok(Self {
             hnsw,
             metadata: state.metadata,
             vectors: state.vectors,
             next_id: state.next_id,
-            tombstones: HashSet::new(),
+            tombstones,
         })
     }
 
@@ -240,9 +268,20 @@ impl VectorDB {
         let capacity = live_count.max(HNSW_MIN_CAPACITY);
         let hnsw = make_hnsw(capacity);
 
-        // Only insert non-tombstoned vectors
+        // Only insert non-tombstoned AND valid vectors
+        let mut tombstones = state.tombstones;
         let data: Vec<(&Vec<f32>, usize)> = state.vectors.iter()
-            .filter(|(id, _)| !state.tombstones.contains(id))
+            .filter(|(id, vec)| {
+                if tombstones.contains(id) {
+                    return false;
+                }
+                if !is_valid_vector(vec) {
+                    tracing::warn!("V2 load: tombstoning invalid vector id={}", id);
+                    tombstones.insert(**id);
+                    return false;
+                }
+                true
+            })
             .map(|(&id, vec)| (vec, id))
             .collect();
         hnsw.parallel_insert(&data);
@@ -252,7 +291,7 @@ impl VectorDB {
             metadata: state.metadata,
             vectors: state.vectors,
             next_id: state.next_id,
-            tombstones: state.tombstones,
+            tombstones,
         })
     }
 
@@ -317,9 +356,21 @@ impl VectorDB {
         Ok(())
     }
 
-    /// Insert a vector with metadata
+    /// Insert a vector with metadata.
+    /// Returns None if the vector is invalid (NaN/Inf/zero).
     pub fn insert(&mut self, vector: &[f32], metadata: IndexMetadata) -> usize {
         assert_eq!(vector.len(), EMBEDDING_DIM);
+
+        if !is_valid_vector(vector) {
+            tracing::warn!("Skipping invalid vector for {}: NaN/Inf/zero", metadata.path);
+            // Still assign an ID and store metadata (for stats accuracy),
+            // but tombstone it immediately so it's excluded from search.
+            let id = self.next_id;
+            self.next_id += 1;
+            self.metadata.insert(id, metadata);
+            self.tombstones.insert(id);
+            return id;
+        }
 
         let id = self.next_id;
         self.next_id += 1;
@@ -332,30 +383,45 @@ impl VectorDB {
         id
     }
 
-    /// Batch insert vectors with metadata (uses parallel HNSW insert)
+    /// Batch insert vectors with metadata (uses parallel HNSW insert).
+    /// Invalid vectors (NaN/Inf/zero) are silently skipped from HNSW insertion.
     pub fn insert_batch(&mut self, items: Vec<(Vec<f32>, IndexMetadata)>) {
         if items.is_empty() {
             return;
         }
 
         let start_id = self.next_id;
+        let mut skipped = 0usize;
 
-        // Assign IDs and store metadata + vectors
+        // Assign IDs and store metadata + vectors, filtering invalid ones
         for (i, (vec, meta)) in items.iter().enumerate() {
             let id = start_id + i;
-            self.vectors.insert(id, vec.clone());
-            self.metadata.insert(id, meta.clone());
+            if !is_valid_vector(vec) {
+                tracing::warn!("Skipping invalid vector for {}: NaN/Inf/zero", meta.path);
+                self.metadata.insert(id, meta.clone());
+                self.tombstones.insert(id);
+                skipped += 1;
+            } else {
+                self.vectors.insert(id, vec.clone());
+                self.metadata.insert(id, meta.clone());
+            }
         }
 
-        // Build references for parallel HNSW insert
+        if skipped > 0 {
+            tracing::warn!("Batch insert: skipped {} invalid vectors", skipped);
+        }
+
+        // Build references for parallel HNSW insert (only valid vectors)
         let data: Vec<(&Vec<f32>, usize)> = (0..items.len())
-            .map(|i| {
+            .filter_map(|i| {
                 let id = start_id + i;
-                (self.vectors.get(&id).unwrap(), id)
+                self.vectors.get(&id).map(|vec| (vec, id))
             })
             .collect();
 
-        self.hnsw.parallel_insert(&data);
+        if !data.is_empty() {
+            self.hnsw.parallel_insert(&data);
+        }
         self.next_id = start_id + items.len();
     }
 
@@ -769,7 +835,8 @@ mod tests {
     fn test_batch_insert() {
         let mut db = VectorDB::with_capacity(10);
 
-        let items: Vec<(Vec<f32>, IndexMetadata)> = (0..5)
+        // Start from 1 to avoid zero vectors (which are now tombstoned as invalid)
+        let items: Vec<(Vec<f32>, IndexMetadata)> = (1..6)
             .map(|i| {
                 let mut vec = vec![0.0f32; EMBEDDING_DIM];
                 vec[0] = i as f32 * 0.1;
@@ -808,7 +875,8 @@ mod tests {
         db.insert_batch(items);
         assert_eq!(db.len(), 5);
 
-        let query = vec![0.0f32; EMBEDDING_DIM];
+        let mut query = vec![0.0f32; EMBEDDING_DIM];
+        query[0] = 0.1; // non-zero query vector
         let results = db.search(&query, 3);
         assert!(results.len() <= 3);
     }

@@ -219,12 +219,23 @@ impl Embedder {
                 vec![0.0; EMBEDDING_DIM]
             };
 
+            // Check for NaN/Inf before normalization — these corrupt the HNSW graph
+            let has_bad_values = embedding.iter().any(|x| x.is_nan() || x.is_infinite());
+            if has_bad_values {
+                tracing::warn!("Embedding contains NaN/Inf values, replacing with zero vector");
+                embeddings.push(vec![0.0; EMBEDDING_DIM]);
+                continue;
+            }
+
             // L2 normalize
             let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
-            let embedding: Vec<f32> = if norm > 0.0 {
+            let embedding: Vec<f32> = if norm > 1e-8 {
                 embedding.iter().map(|x| x / norm).collect()
             } else {
-                embedding
+                // Zero or near-zero vector — cannot be normalized for cosine similarity.
+                // Insert a tiny uniform vector instead to avoid NaN distances in HNSW.
+                let uniform = 1.0 / (EMBEDDING_DIM as f32).sqrt();
+                vec![uniform; EMBEDDING_DIM]
             };
 
             embeddings.push(embedding);

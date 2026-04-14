@@ -4,6 +4,17 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.16.11] - 2026-04-14
+
+### Fixed
+- **Search returning 0 results after indexing** — zero vectors (from empty/binary files that produce no tokens) and NaN/Inf embeddings (from ONNX model edge cases) were inserted into the HNSW graph. Cosine distance with a zero-norm vector produces NaN, which corrupts the HNSW graph structure and makes all searches return empty results. Embedder now replaces zero vectors with a small uniform vector and rejects NaN/Inf embeddings. VectorDB validates vectors before HNSW insertion (both at index time and when loading from disk), tombstoning invalid entries instead of corrupting the graph.
+- **Panic in `sona.rs:130`** (index out of bounds) — MicroLoRA arrays loaded from an incompatible sona.db file could have wrong dimensions, causing out-of-bounds access in `forward()`. Added `is_valid()` dimension check on MicroLoRA; `forward()` and `update_from_signal()` now return unchanged data instead of panicking when dimensions are wrong. `SonaEngine::open()` catches deserialization errors and resets to defaults instead of propagating the error.
+- **search/trace_flow silent empty results during re-indexing** — `magento_search` and `magento_trace_flow` now include a progress warning in their output when re-indexing is in progress. `trace_flow` detects empty traces during reindex and reports a clear message instead of returning `{}`.
+
+### Added
+- **bge-small-en-v1.5 query prefix** — search queries now use the `"Represent this sentence: "` prefix recommended by the BGE model for retrieval tasks. Documents are embedded without prefix (as before). This improves retrieval accuracy by signaling the model that the input is a search query, not a document.
+- **`argumentInjections` in `magento_trace_dependency`** — detects when a class/interface is injected as a constructor argument value inside `<type>` or `<virtualType>` blocks (via `xsi:type="object"` arguments and `<item>` elements). Previously only detected `<preference>`, `<plugin>`, and direct `<virtualType type="...">` declarations. New section "Argument Injections" appears in the formatted output.
+
 ## [2.16.9] - 2026-04-14
 
 ### Fixed

@@ -117,9 +117,23 @@ impl Default for MicroLoRA {
 }
 
 impl MicroLoRA {
+    /// Expected size of the A matrix
+    const A_SIZE: usize = EMBEDDING_DIM * LORA_RANK;
+    /// Expected size of the B matrix
+    const B_SIZE: usize = LORA_RANK * EMBEDDING_DIM;
+
+    /// Check whether the LoRA dimensions are valid.
+    /// Returns false if the arrays were corrupted during deserialization.
+    pub fn is_valid(&self) -> bool {
+        self.a.len() == Self::A_SIZE && self.b.len() == Self::B_SIZE
+    }
+
     /// Apply LoRA transformation: embedding' = embedding + B × (A × embedding)
     pub fn forward(&self, embedding: &[f32]) -> Vec<f32> {
-        assert_eq!(embedding.len(), EMBEDDING_DIM);
+        if embedding.len() != EMBEDDING_DIM || !self.is_valid() {
+            // Corrupted LoRA or wrong embedding size — return unchanged
+            return embedding.to_vec();
+        }
 
         // hidden = A × embedding (LORA_RANK-dim)
         let mut hidden = vec![0.0f32; LORA_RANK];
@@ -151,8 +165,9 @@ impl MicroLoRA {
     /// When a user selects a result, we nudge the LoRA to make the query embedding
     /// closer to that result's embedding direction.
     pub fn update_from_signal(&mut self, query_emb: &[f32], target_emb: &[f32]) {
-        assert_eq!(query_emb.len(), EMBEDDING_DIM);
-        assert_eq!(target_emb.len(), EMBEDDING_DIM);
+        if query_emb.len() != EMBEDDING_DIM || target_emb.len() != EMBEDDING_DIM || !self.is_valid() {
+            return; // Corrupted state — skip update
+        }
 
         // Decay learning rate with update count
         self.update_count += 1;
@@ -325,21 +340,44 @@ impl SonaEngine {
 
         // Try V2 format first
         if bytes[0] == SONA_VERSION_V2 {
-            let (state, _): (SonaStateV2, _) = bincode::serde::decode_from_slice(&bytes[1..], bincode::config::standard())?;
-            return Ok(Self {
-                learned: state.learned,
-                lora: state.lora,
-                ewc: state.ewc,
-            });
+            match bincode::serde::decode_from_slice::<SonaStateV2, _>(&bytes[1..], bincode::config::standard()) {
+                Ok((state, _)) => {
+                    // Validate LoRA dimensions — if corrupted, reset to defaults
+                    let lora = if state.lora.is_valid() {
+                        state.lora
+                    } else {
+                        tracing::warn!(
+                            "SONA V2: corrupted LoRA dimensions (a={}, b={}, expected a={}, b={}) — resetting to defaults",
+                            state.lora.a.len(), state.lora.b.len(),
+                            MicroLoRA::A_SIZE, MicroLoRA::B_SIZE,
+                        );
+                        MicroLoRA::default()
+                    };
+                    return Ok(Self {
+                        learned: state.learned,
+                        lora,
+                        ewc: state.ewc,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("SONA V2 deserialization failed: {} — resetting", e);
+                    return Ok(Self::new());
+                }
+            }
         }
 
         // Fallback: V1 format (just LearnedWeights)
-        let (learned, _): (LearnedWeights, _) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())?;
-        Ok(Self {
-            learned,
-            lora: MicroLoRA::default(),
-            ewc: EwcRegularizer::default(),
-        })
+        match bincode::serde::decode_from_slice::<LearnedWeights, _>(&bytes, bincode::config::standard()) {
+            Ok((learned, _)) => Ok(Self {
+                learned,
+                lora: MicroLoRA::default(),
+                ewc: EwcRegularizer::default(),
+            }),
+            Err(e) => {
+                tracing::warn!("SONA V1 deserialization failed: {} — resetting", e);
+                Ok(Self::new())
+            }
+        }
     }
 
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
@@ -540,7 +578,7 @@ impl SonaEngine {
     /// Called before HNSW search to adapt the embedding based on learned patterns.
     /// Modifies the embedding in-place.
     pub fn adjust_query_embedding(&self, embedding: &mut Vec<f32>) {
-        if embedding.len() != EMBEDDING_DIM {
+        if embedding.len() != EMBEDDING_DIM || !self.lora.is_valid() {
             return;
         }
 

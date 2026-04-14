@@ -1358,14 +1358,17 @@ impl Indexer {
         self.vectordb.save_atomic(path)
     }
 
-    /// Embed a query string (public accessor for feedback/LoRA training)
+    /// Embed a query string with the retrieval prefix for bge-small-en-v1.5.
+    /// The prefix improves retrieval accuracy by signaling the model that this
+    /// is a search query, not a document to be indexed.
     pub fn embed_query(&mut self, query: &str) -> Result<Vec<f32>> {
-        self.embedder.embed(query)
+        let prefixed = format!("Represent this sentence: {}", query);
+        self.embedder.embed(&prefixed)
     }
 
     /// Search the index (hybrid: semantic + keyword re-ranking)
     pub fn search(&mut self, query: &str, k: usize) -> Result<Vec<crate::vectordb::SearchResult>> {
-        let mut query_embedding = self.embedder.embed(query)?;
+        let mut query_embedding = self.embed_query(query)?;
         // Apply MicroLoRA adjustment before HNSW search
         if let Some(ref sona) = self.sona {
             sona.adjust_query_embedding(&mut query_embedding);
