@@ -3945,9 +3945,11 @@ function formatTraceConfigResult(result) {
     let hasData = false;
     try { hasData = existsSync(dataDir) && readdirSync(dataDir).some(f => f.endsWith('.json')); } catch {}
     if (!hasData) {
-      text += '### Actual Values\nNo config-data exports found. Export `core_config_data` to `.magector/config-data/{env}.json` (format: `[{scope, scope_id, path, value}, ...]`).\n\n';
+      text += '### Actual Values\n**ACTION REQUIRED:** No config-data exports found. Ask the user to export `core_config_data` from their database and place the JSON file at `.magector/config-data/{country}-{environment}.json` (format: `[{scope, scope_id, path, value}, ...]`). Without this data, actual config values cannot be shown.\n\n';
     } else {
-      text += '### Actual Values\nNo matching values found in config-data exports.\n\n';
+      // Show which environments ARE available so agent knows what's missing
+      const availableEnvs = Object.keys(loadAllConfigData()).join(', ');
+      text += `### Actual Values\nNo matching values found in available exports (${availableEnvs}). If you need values from a different environment, ask the user to provide the export.\n\n`;
     }
   }
 
@@ -4789,7 +4791,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'magento_trace_config',
-      description: 'Trace a Magento config path end-to-end: finds system.xml admin definition (label, type, source_model), PHP classes that read the value, and actual DB values from config-data exports. Use when investigating config-driven behavior ("why is this feature enabled/disabled?", "what controls marketplace payment methods?"). Accepts either an exact config path or a keyword to search for.',
+      description: 'Trace a Magento config path end-to-end: finds system.xml admin definition (label, type, source_model), PHP classes that read the value, and actual DB values from config-data exports. Use when investigating config-driven behavior ("why is this feature enabled/disabled?", "what controls marketplace payment methods?"). Accepts either an exact config path or a keyword to search for. IMPORTANT: If the output says no config-data exports are available, or if the analysis needs config values from a country/environment not yet exported, ask the user to provide the export. They can run a one-time MySQL query and place the JSON file in .magector/config-data/{country}-{environment}.json.',
       inputSchema: {
         type: 'object',
         properties: {
