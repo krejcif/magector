@@ -38,6 +38,14 @@ This project is indexed with Magector. Use the MCP tools below to search the cod
 - Include Magento terms: "plugin for save", "observer for order place"
 - Be specific: "customer address validation before checkout" not just "validation"
 
+## Analysis Patterns
+
+### Negative match audit
+When \`magento_grep\` finds a bug pattern in only SOME files of a known group (e.g. \`orderRepository->save()\` in 5 of 8 transition handlers), always read the files that DON'T match to understand why they differ. This narrows the fix scope — files with a different code path may not need fixing.
+
+### Follow up DI listings with code reads
+When \`magento_trace_dependency\` or \`magento_find_plugin\` returns a list of plugins/preferences, don't stop at the names. Use \`magento_read\` or \`Read\` to inspect the actual implementation of each — the root cause is often in a specific condition inside the plugin code, not in the DI wiring itself.
+
 ## Re-indexing
 
 After significant code changes, re-index:

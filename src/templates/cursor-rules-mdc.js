@@ -40,6 +40,11 @@ Before reading files manually, ALWAYS use Magector MCP tools to find relevant co
 - Include Magento terms: "plugin for save", "observer for order place", "checkout totals collector"
 - Be specific: "customer address validation before checkout" not just "validation"
 
+## Analysis Patterns
+
+- **Negative match audit:** When \`magento_grep\` finds a bug pattern in only SOME files of a group, always read the non-matching files to understand why they differ. This narrows the fix scope.
+- **Follow up DI listings with code reads:** When \`magento_trace_dependency\` or \`magento_find_plugin\` returns plugin/preference names, always read the actual implementation. The root cause is often in a condition inside the code, not in the DI wiring.
+
 ## Magento Development Patterns
 
 - Always check for existing plugins before modifying core behavior
