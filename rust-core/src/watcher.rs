@@ -7,11 +7,32 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 use walkdir::WalkDir;
 
 use crate::indexer::{Indexer, INCLUDE_EXTENSIONS, MAX_FILE_SIZE};
+
+/// Lock a mutex, recovering from poisoning instead of propagating the panic.
+///
+/// A poisoned mutex means another thread panicked while holding the lock
+/// (for example, the `feedback` handler panicking inside `update_fisher`).
+/// The watcher thread must keep running so that incremental re-indexing
+/// resumes as soon as the offending call path is patched — otherwise a
+/// single transient panic takes the watcher offline until the MCP server
+/// is restarted.
+fn lock_recover<'a, T>(mutex: &'a Mutex<T>, label: &str) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            tracing::warn!(
+                "Watcher: {} mutex was poisoned by a prior panic — recovering and continuing",
+                label
+            );
+            poisoned.into_inner()
+        }
+    }
+}
 
 /// Tracked state for a single file
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,13 +279,13 @@ pub fn watcher_loop(
 
     // Build initial manifest
     let mut manifest = {
-        let idx = indexer.lock().unwrap();
+        let idx = lock_recover(&indexer, "indexer");
         let paths = idx.indexed_paths();
         FileManifest::from_existing_index(&magento_root, &paths)
     };
 
     {
-        let mut s = status.lock().unwrap();
+        let mut s = lock_recover(&status, "status");
         s.tracked_files = manifest.files.len();
     }
 
@@ -296,7 +317,7 @@ pub fn watcher_loop(
         );
 
         // Acquire indexer lock for the update
-        let mut idx = indexer.lock().unwrap();
+        let mut idx = lock_recover(&indexer, "indexer");
 
         // 1. Tombstone modified and deleted files
         for path in &changes.modified {
@@ -347,7 +368,7 @@ pub fn watcher_loop(
 
         // 6. Update status
         {
-            let mut s = status.lock().unwrap();
+            let mut s = lock_recover(&status, "status");
             s.tracked_files = manifest.files.len();
             s.last_scan_changes = total;
         }
@@ -377,6 +398,28 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn test_lock_recover_from_poisoned_mutex() {
+        // Reproduces Bug 2: a panic in another thread while holding the lock
+        // poisons it. The watcher used to crash on `lock().unwrap()` and stop
+        // all incremental indexing. After the fix, `lock_recover` must return
+        // the inner guard so the watcher thread can keep running.
+        let m: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let m2 = m.clone();
+
+        let handle = std::thread::spawn(move || {
+            let _guard = m2.lock().unwrap();
+            panic!("simulated panic while holding lock");
+        });
+        let _ = handle.join(); // swallow the panic
+
+        assert!(m.is_poisoned(), "precondition: mutex must be poisoned");
+
+        // This is the call-site that matters — it must not panic.
+        let guard = lock_recover(&m, "test");
+        assert_eq!(*guard, 0);
     }
 
     #[test]

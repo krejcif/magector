@@ -229,10 +229,9 @@ pub struct EwcRegularizer {
 
 impl Default for EwcRegularizer {
     fn default() -> Self {
-        let total_params = EMBEDDING_DIM * LORA_RANK * 2; // A + B matrices
         Self {
-            fisher: vec![0.0; total_params],
-            star_weights: vec![0.0; total_params],
+            fisher: vec![0.0; Self::EXPECTED_SIZE],
+            star_weights: vec![0.0; Self::EXPECTED_SIZE],
             lambda: EWC_LAMBDA,
             update_count: 0,
         }
@@ -240,17 +239,52 @@ impl Default for EwcRegularizer {
 }
 
 impl EwcRegularizer {
+    /// Expected size of fisher and star_weights vectors
+    /// (matches flattened MicroLoRA: a + b concatenated)
+    pub const EXPECTED_SIZE: usize = EMBEDDING_DIM * LORA_RANK * 2;
+
+    /// Check whether the EWC state dimensions are valid.
+    /// Returns false if the arrays were corrupted during deserialization
+    /// or if fisher/star_weights have mismatched sizes.
+    pub fn is_valid(&self) -> bool {
+        self.fisher.len() == Self::EXPECTED_SIZE
+            && self.star_weights.len() == Self::EXPECTED_SIZE
+    }
+
     /// Update Fisher information and star weights from current LoRA state
     pub fn update_fisher(&mut self, lora: &MicroLoRA) {
+        // Guard against corrupted state: if dimensions don't match, reset
+        // to defaults instead of panicking. This can happen if the LoRA was
+        // reset (e.g. due to corrupted on-disk state) but the EWC state
+        // still carries stale star_weights from before the reset.
+        if !self.is_valid() || !lora.is_valid() {
+            tracing::warn!(
+                "EWC: dimension mismatch (fisher={}, star_weights={}, lora.a={}, lora.b={}, expected={}) — resetting EWC state",
+                self.fisher.len(), self.star_weights.len(),
+                lora.a.len(), lora.b.len(), Self::EXPECTED_SIZE,
+            );
+            *self = Self::default();
+            // If the LoRA is also corrupted, skip the update; a subsequent
+            // valid call will seed star_weights correctly.
+            if !lora.is_valid() {
+                return;
+            }
+        }
+
         let current_weights = Self::flatten_lora(lora);
 
         if self.update_count == 0 {
             // First update: just store the reference
             self.star_weights = current_weights;
         } else {
-            // Online update: running average of Fisher information
+            // Online update: running average of Fisher information.
+            // Iterate over the shared prefix so a future dimension drift
+            // cannot panic — is_valid above already guarantees equal sizes.
             let alpha = 1.0 / (self.update_count as f32 + 1.0);
-            for i in 0..self.fisher.len() {
+            let n = self.fisher.len()
+                .min(current_weights.len())
+                .min(self.star_weights.len());
+            for i in 0..n {
                 let diff = current_weights[i] - self.star_weights[i];
                 let new_fisher = diff * diff; // Approximate Fisher diagonal
                 self.fisher[i] = (1.0 - alpha) * self.fisher[i] + alpha * new_fisher;
@@ -263,13 +297,16 @@ impl EwcRegularizer {
 
     /// Compute EWC penalty for current weights vs star weights
     pub fn penalty(&self, lora: &MicroLoRA) -> f32 {
-        if self.update_count == 0 {
+        if self.update_count == 0 || !self.is_valid() || !lora.is_valid() {
             return 0.0;
         }
 
         let current = Self::flatten_lora(lora);
         let mut penalty = 0.0f32;
-        for i in 0..current.len().min(self.star_weights.len()) {
+        let n = current.len()
+            .min(self.star_weights.len())
+            .min(self.fisher.len());
+        for i in 0..n {
             let diff = current[i] - self.star_weights[i];
             penalty += self.fisher[i] * diff * diff;
         }
@@ -279,19 +316,23 @@ impl EwcRegularizer {
 
     /// Apply EWC regularization to LoRA weights (pull toward star weights)
     pub fn regularize(&self, lora: &mut MicroLoRA) {
-        if self.update_count == 0 {
+        if self.update_count == 0 || !self.is_valid() || !lora.is_valid() {
             return;
         }
 
         let lr = lora.lr;
         // Regularize A weights
         let a_size = EMBEDDING_DIM * LORA_RANK;
-        for i in 0..a_size.min(self.star_weights.len()) {
+        let a_n = lora.a.len().min(a_size).min(self.star_weights.len()).min(self.fisher.len());
+        for i in 0..a_n {
             let reg_grad = self.lambda * self.fisher[i] * (lora.a[i] - self.star_weights[i]);
             lora.a[i] -= lr * reg_grad;
         }
         // Regularize B weights
-        for i in 0..lora.b.len().min(self.star_weights.len().saturating_sub(a_size)) {
+        let b_n = lora.b.len()
+            .min(self.star_weights.len().saturating_sub(a_size))
+            .min(self.fisher.len().saturating_sub(a_size));
+        for i in 0..b_n {
             let fi = i + a_size;
             let reg_grad = self.lambda * self.fisher[fi] * (lora.b[i] - self.star_weights[fi]);
             lora.b[i] -= lr * reg_grad;
@@ -343,7 +384,8 @@ impl SonaEngine {
             match bincode::serde::decode_from_slice::<SonaStateV2, _>(&bytes[1..], bincode::config::standard()) {
                 Ok((state, _)) => {
                     // Validate LoRA dimensions — if corrupted, reset to defaults
-                    let lora = if state.lora.is_valid() {
+                    let lora_valid = state.lora.is_valid();
+                    let lora = if lora_valid {
                         state.lora
                     } else {
                         tracing::warn!(
@@ -353,10 +395,31 @@ impl SonaEngine {
                         );
                         MicroLoRA::default()
                     };
+                    // Validate EWC dimensions — if corrupted OR LoRA was reset
+                    // (so star_weights would no longer match the new LoRA),
+                    // reset EWC to defaults. Without this, update_fisher panics
+                    // on length mismatch between fisher/star_weights and the
+                    // flattened LoRA.
+                    let ewc = if state.ewc.is_valid() && lora_valid {
+                        state.ewc
+                    } else {
+                        if !state.ewc.is_valid() {
+                            tracing::warn!(
+                                "SONA V2: corrupted EWC dimensions (fisher={}, star_weights={}, expected={}) — resetting to defaults",
+                                state.ewc.fisher.len(), state.ewc.star_weights.len(),
+                                EwcRegularizer::EXPECTED_SIZE,
+                            );
+                        } else {
+                            tracing::warn!(
+                                "SONA V2: LoRA was reset, also resetting EWC state to keep dimensions consistent"
+                            );
+                        }
+                        EwcRegularizer::default()
+                    };
                     return Ok(Self {
                         learned: state.learned,
                         lora,
-                        ewc: state.ewc,
+                        ewc,
                     });
                 }
                 Err(e) => {
@@ -920,6 +983,152 @@ mod tests {
         }
         // Some weights should be pulled closer (not all, depends on fisher values)
         assert!(closer_count > 0 || ewc.fisher.iter().all(|&f| f == 0.0));
+    }
+
+    #[test]
+    fn test_ewc_update_fisher_recovers_from_corrupted_star_weights() {
+        // Reproduces Bug 1: update_fisher panicked with
+        // "the len is 44 but the index is 44" when star_weights was
+        // shorter than fisher (e.g. from an older corrupted on-disk state
+        // that was loaded without EWC dimension validation).
+        let mut ewc = EwcRegularizer::default();
+        let lora = MicroLoRA::default();
+
+        // First update seeds star_weights with valid dimensions
+        ewc.update_fisher(&lora);
+
+        // Simulate corruption: star_weights was restored from disk with
+        // a truncated length (the concrete "len 44" from the bug report).
+        ewc.star_weights.truncate(44);
+
+        // Second update must not panic; it should reset EWC and succeed.
+        ewc.update_fisher(&lora);
+
+        assert!(ewc.is_valid(), "EWC should be valid after auto-reset");
+        assert_eq!(
+            ewc.star_weights.len(),
+            EwcRegularizer::EXPECTED_SIZE,
+            "star_weights should be resized to expected length after reset"
+        );
+    }
+
+    #[test]
+    fn test_ewc_update_fisher_recovers_from_corrupted_fisher() {
+        let mut ewc = EwcRegularizer::default();
+        let lora = MicroLoRA::default();
+
+        ewc.update_fisher(&lora);
+
+        // Simulate the opposite direction: fisher shorter than star_weights.
+        ewc.fisher.truncate(44);
+
+        // Must not panic.
+        ewc.update_fisher(&lora);
+
+        assert!(ewc.is_valid());
+        assert_eq!(ewc.fisher.len(), EwcRegularizer::EXPECTED_SIZE);
+    }
+
+    #[test]
+    fn test_ewc_penalty_safe_on_corrupted_state() {
+        let mut ewc = EwcRegularizer::default();
+        let lora = MicroLoRA::default();
+
+        ewc.update_fisher(&lora);
+        ewc.star_weights.truncate(10);
+
+        // Must not panic; corrupted state yields zero penalty.
+        let p = ewc.penalty(&lora);
+        assert_eq!(p, 0.0);
+    }
+
+    #[test]
+    fn test_ewc_regularize_safe_on_corrupted_state() {
+        let mut ewc = EwcRegularizer::default();
+        let mut lora = MicroLoRA::default();
+
+        ewc.update_fisher(&lora);
+        ewc.fisher.truncate(10);
+
+        // Must not panic and must be a no-op when state is corrupted.
+        let a_before = lora.a.clone();
+        ewc.regularize(&mut lora);
+        assert_eq!(lora.a, a_before);
+    }
+
+    #[test]
+    fn test_sona_open_resets_ewc_when_lora_corrupted() {
+        // Reproduces on-disk scenario: a sona.db persisted with a corrupted
+        // LoRA (e.g. from a pre-2.16.11 crash). 2.16.11 reset the LoRA but
+        // left the stale EWC intact, so the first subsequent update_fisher
+        // call panicked. After the fix, load must also reset EWC so that
+        // fisher/star_weights match the reset LoRA.
+        let dir = std::env::temp_dir().join("magector_sona_corrupted_lora_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("corrupted.sona");
+
+        // Build a state where LoRA is corrupted but EWC still carries the
+        // original full-size dimensions.
+        let mut bad_lora = MicroLoRA::default();
+        bad_lora.a.truncate(44);
+        bad_lora.b.truncate(44);
+        let mut ewc = EwcRegularizer::default();
+        ewc.update_count = 1; // so is_valid() dimensions matter
+
+        let state = SonaStateV2 {
+            learned: LearnedWeights::default(),
+            lora: bad_lora,
+            ewc,
+        };
+        let mut bytes = vec![SONA_VERSION_V2];
+        bytes.extend(
+            bincode::serde::encode_to_vec(&state, bincode::config::standard()).unwrap(),
+        );
+        std::fs::write(&path, bytes).unwrap();
+
+        let mut loaded = SonaEngine::open(&path).unwrap();
+
+        assert!(loaded.lora.is_valid(), "LoRA must be reset to valid defaults");
+        assert!(loaded.ewc.is_valid(), "EWC must be reset when LoRA is reset");
+        assert_eq!(loaded.ewc.update_count, 0, "Reset EWC has zero updates");
+
+        // The original panic path: this would have panicked before the fix.
+        loaded.ewc.update_fisher(&loaded.lora);
+        assert_eq!(loaded.ewc.update_count, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_sona_open_resets_ewc_when_ewc_corrupted() {
+        // Even if LoRA is valid, corrupted EWC dimensions must be reset
+        // so that subsequent update_fisher calls don't panic.
+        let dir = std::env::temp_dir().join("magector_sona_corrupted_ewc_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("corrupted_ewc.sona");
+
+        let lora = MicroLoRA::default();
+        let mut bad_ewc = EwcRegularizer::default();
+        bad_ewc.fisher.truncate(44);
+        bad_ewc.star_weights.truncate(44);
+        bad_ewc.update_count = 5;
+
+        let state = SonaStateV2 {
+            learned: LearnedWeights::default(),
+            lora,
+            ewc: bad_ewc,
+        };
+        let mut bytes = vec![SONA_VERSION_V2];
+        bytes.extend(
+            bincode::serde::encode_to_vec(&state, bincode::config::standard()).unwrap(),
+        );
+        std::fs::write(&path, bytes).unwrap();
+
+        let loaded = SonaEngine::open(&path).unwrap();
+        assert!(loaded.ewc.is_valid());
+        assert_eq!(loaded.ewc.update_count, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

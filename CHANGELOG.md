@@ -4,6 +4,12 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.16.13] - 2026-04-15
+
+### Fixed
+- **Panic in `sona.rs:254`** (index out of bounds) — `EwcRegularizer::update_fisher` could panic when `fisher` or `star_weights` had dimensions that did not match the flattened `MicroLoRA`. The 2.16.11 fix reset corrupted `MicroLoRA` on load but left the EWC state untouched, so a reset LoRA combined with stale `star_weights` (e.g. `len 44`) produced an out-of-bounds access on the first `learn_with_embeddings` call. Added `EwcRegularizer::is_valid()`, validated EWC dimensions in `SonaEngine::open()`, reset EWC whenever LoRA is reset (to keep them in sync), and made `update_fisher`/`penalty`/`regularize` no-op-or-reset instead of panicking when dimensions disagree.
+- **Watcher thread dying after an unrelated panic** — `watcher_loop` called `indexer.lock().unwrap()` (and `status.lock().unwrap()`), which propagated `PoisonError` when another handler (e.g. `feedback`) panicked while holding the lock. The watcher thread died and no further incremental indexing happened until the MCP server was restarted. Replaced all `lock().unwrap()` call-sites with a `lock_recover` helper that logs a warning and continues with `poisoned.into_inner()`.
+
 ## [2.16.11] - 2026-04-14
 
 ### Fixed
