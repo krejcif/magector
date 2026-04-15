@@ -5128,7 +5128,7 @@ const _callToolHandler = async (request) => {
     // These tools have filesystem/di.xml fallbacks — work without serve process
     'magento_find_class', 'magento_find_method', 'magento_find_plugin',
     'magento_find_observer', 'magento_find_di_wiring', 'magento_module_structure',
-    'magento_batch', 'magento_find_config', 'magento_find_callers', 'magento_grep', 'magento_read', 'magento_trace_api', 'magento_ast_search', 'magento_find_null_risks', 'magento_find_dataobject_issues'];
+    'magento_batch', 'magento_find_config', 'magento_find_callers', 'magento_grep', 'magento_read', 'magento_trace_api', 'magento_trace_flow', 'magento_ast_search', 'magento_find_null_risks', 'magento_find_dataobject_issues'];
   if (warmupInProgress && !indexFreeTools.includes(name)) {
     logToFile('REQ', `${name} → blocked (warmup: loading index)`);
     return {

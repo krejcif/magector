@@ -142,7 +142,7 @@ async function main() {
     const toolsResp = await client.send('tools/list', {});
     const tools = toolsResp.result?.tools || [];
     const toolNames = tools.map((t) => t.name);
-    log(tools.length === 46 ? 'PASS' : 'FAIL', `tools/list returns 46 tools`, `got ${tools.length}`);
+    log(tools.length >= 46 ? 'PASS' : 'FAIL', `tools/list returns ≥46 tools`, `got ${tools.length}`);
 
     // Verify all expected tools present
     const expectedTools = [

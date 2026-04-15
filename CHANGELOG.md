@@ -4,6 +4,14 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.16.15] - 2026-04-15
+
+### Fixed
+- **`magento_trace_flow` blocked during background re-index even when structural data is available** — `magento_trace_flow` was missing from the `indexFreeTools` allowlist, so any call during warmup or background re-indexing was rejected with "Re-indexing in progress and no previous index available". After v2.16.14's structural-first GraphQL parser (and the pre-existing filesystem-based paths for `event`/`cron`/`api` via `findDiWiring()` and XML parsing), `trace_flow` produces valid data without a search index for most entry types, so the hard block was too aggressive. Added `magento_trace_flow` to `indexFreeTools`. The existing empty-trace guard in the handler (added in v2.16.11) already appends a clear `⚠️ Re-indexing in progress` warning when a given trace genuinely depends on semantic search and comes back empty, so agents still get actionable feedback without the tool being silently unusable.
+
+### Added
+- **`tests/trace-graphql.test.js`** — deterministic fixture-based integration test for the v2.16.14 `traceGraphql()` fix. Builds a minimal `.graphqls` + resolver PHP + `di.xml` fixture under `tests/tmp_graphql_trace/`, spawns the MCP server against it via stdio JSON-RPC, and asserts the full response shape across 19 test cases: schema array, resolver class extraction (escaped/bare backslashes, leading-backslash variant, `@doc` directive between signature and `@resolver`), resolver PHP file resolution on disk, `resolve()` method snippet extraction, deep-mode plugin discovery via `findDiWiring()`, and graceful handling of unknown operations. Runs without an index (structural-first path is filesystem-based). Wired into `npm test` and available as `npm run test:trace-graphql`.
+
 ## [2.16.14] - 2026-04-15
 
 ### Fixed
