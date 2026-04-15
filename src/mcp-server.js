@@ -1687,10 +1687,184 @@ async function traceApi(entryPoint, depth) {
   return trace;
 }
 
+/**
+ * Parse .graphqls schema files structurally to find a GraphQL operation
+ * (query/mutation/subscription) by name and extract its @resolver directive.
+ *
+ * This is the structural-first counterpart to semantic search in traceGraphql().
+ * Handles both escaped ("\\\\Magento\\\\…") and bare ("Magento\\…") resolver paths
+ * with or without a leading backslash, and tolerates intermediate directives
+ * (e.g. @doc(…)) between the operation signature and @resolver(…).
+ *
+ * @param {string} entryPoint — GraphQL operation name (e.g. "addProductsToCart")
+ * @returns {Promise<Array<{path, line, resolverClass, snippet}>>}
+ */
+async function parseGraphqlSchema(entryPoint) {
+  const root = config.magentoRoot;
+  const schemas = [];
+
+  let graphqlsFiles;
+  try {
+    graphqlsFiles = await glob('**/etc/**/*.graphqls', {
+      cwd: root,
+      absolute: true,
+      nodir: true,
+      ignore: ['**/test/**', '**/tests/**', '**/Test/**', '**/Tests/**', '**/node_modules/**']
+    });
+  } catch {
+    return schemas;
+  }
+
+  const escapedName = entryPoint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const lineRe = new RegExp(`^\\s*${escapedName}\\s*(?:\\(|:)`);
+
+  for (const file of graphqlsFiles) {
+    let content;
+    try { content = readFileSync(file, 'utf-8'); } catch { continue; }
+    if (!content.includes(entryPoint)) continue;
+
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (!lineRe.test(lines[i])) continue;
+
+      // Accumulate up to 10 lines (covers multi-line operation signatures) until
+      // we find the @resolver directive or exit the current definition.
+      let block = '';
+      for (let j = i; j < Math.min(i + 10, lines.length); j++) {
+        block += lines[j] + '\n';
+        if (/@resolver\s*\(/.test(block)) break;
+      }
+
+      const resolverMatch = block.match(/@resolver\s*\(\s*class\s*:\s*"([^"]+)"\s*\)/);
+      if (!resolverMatch) continue;
+
+      // Normalize: unescape doubled backslashes, strip any leading backslashes
+      const resolverClass = resolverMatch[1].replace(/\\\\/g, '\\').replace(/^\\+/, '');
+      schemas.push({
+        path: file.replace(root + '/', ''),
+        line: i + 1,
+        resolverClass,
+        snippet: block.trim().slice(0, 400)
+      });
+    }
+  }
+
+  return schemas;
+}
+
+/**
+ * Resolve a PHP class FQCN to a filesystem path.
+ * Tries standard Magento locations first (app/code, vendor/), then globs by
+ * short name and verifies the namespace matches. Returns null if not found.
+ */
+async function resolveClassFileFromRoot(className) {
+  const root = config.magentoRoot;
+  if (!className) return null;
+  const nsPath = className.replace(/\\/g, '/') + '.php';
+  const candidates = [
+    path.join(root, 'app', 'code', nsPath),
+    path.join(root, 'vendor', nsPath)
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+
+  const shortName = className.split('\\').pop();
+  let matches;
+  try {
+    matches = await glob(`**/${shortName}.php`, {
+      cwd: root, absolute: true, nodir: true,
+      ignore: ['**/test/**', '**/tests/**', '**/Test/**', '**/Tests/**', '**/node_modules/**']
+    });
+  } catch { return null; }
+
+  for (const match of matches) {
+    let content;
+    try { content = readFileSync(match, 'utf-8'); } catch { continue; }
+    const nsMatch = content.match(/namespace\s+([\w\\]+)/);
+    const classMatch = content.match(/(?:class|abstract\s+class|final\s+class|interface|trait)\s+(\w+)/);
+    if (classMatch && classMatch[1] === shortName) {
+      const fqcn = nsMatch ? `${nsMatch[1]}\\${classMatch[1]}` : classMatch[1];
+      if (fqcn === className) return match;
+    }
+  }
+  return null;
+}
+
 async function traceGraphql(entryPoint, depth) {
   const trace = {};
 
-  // Schema + resolver (independent, run in parallel)
+  // Step 1 — STRUCTURAL: parse .graphqls files for the operation definition.
+  // Short GraphQL operation names (addProductsToCart, placeOrder) don't have
+  // enough context for embedding-based search to reliably locate them, so we
+  // parse the schema files directly. Semantic search remains as a fallback.
+  const schemaMatches = await parseGraphqlSchema(entryPoint);
+
+  if (schemaMatches.length > 0) {
+    trace.schema = schemaMatches.slice(0, 5).map(s => ({
+      path: s.path,
+      line: s.line,
+      resolverClass: s.resolverClass,
+      snippet: s.snippet
+    }));
+
+    // A single operation name may resolve to multiple classes when a schema is
+    // extended/overridden across modules; deduplicate while preserving order.
+    const uniqueResolverClasses = [...new Set(schemaMatches.map(s => s.resolverClass))];
+    const resolverEntries = [];
+    for (const cls of uniqueResolverClasses) {
+      const filePath = await resolveClassFileFromRoot(cls);
+      const entry = { className: cls };
+      if (filePath) {
+        entry.path = filePath.replace(config.magentoRoot + '/', '');
+        // GraphQL resolvers implement ResolverInterface::resolve()
+        const snippet = readMethodSnippet(filePath, 'resolve', 30);
+        if (snippet) entry.codeSnippet = snippet;
+      } else {
+        entry.path = null;
+        entry.note = 'Resolver class referenced in schema but file not located on disk';
+      }
+      resolverEntries.push(entry);
+    }
+    // Primary resolver = first match (backwards-compatible with existing shape).
+    // When multiple distinct resolvers exist, expose extras under additionalResolvers.
+    if (resolverEntries.length > 0) {
+      trace.resolver = resolverEntries[0];
+      if (resolverEntries.length > 1) {
+        trace.additionalResolvers = resolverEntries.slice(1);
+      }
+    }
+
+    // Step 2 — deep mode: walk DI graph for plugins/preferences on every
+    // resolver class we found.
+    if (depth === 'deep') {
+      const pluginEntries = [];
+      const preferenceEntries = [];
+      for (const cls of uniqueResolverClasses) {
+        let di;
+        try { di = await findDiWiring(cls); } catch { continue; }
+        if (!di) continue;
+        for (const p of di.plugins || []) {
+          pluginEntries.push({
+            target: p.target,
+            pluginName: p.pluginName,
+            pluginClass: p.pluginClass,
+            file: p.file
+          });
+        }
+        for (const pref of di.preferences || []) {
+          preferenceEntries.push({ for: pref.for, type: pref.type, file: pref.file });
+        }
+      }
+      if (pluginEntries.length > 0) trace.plugins = pluginEntries.slice(0, 15);
+      if (preferenceEntries.length > 0) trace.preferences = preferenceEntries.slice(0, 10);
+    }
+
+    return trace;
+  }
+
+  // Step 3 — FALLBACK: semantic search (retains the prior behaviour so that
+  // indexed but atypically-named operations aren't completely invisible).
   const [schemaRaw, resolverRaw] = await Promise.all([
     safeSearch(`graphql ${entryPoint} mutation query`, 20),
     safeSearch(`${entryPoint} resolver`, 20)

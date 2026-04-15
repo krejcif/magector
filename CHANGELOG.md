@@ -4,6 +4,11 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [2.16.14] - 2026-04-15
+
+### Fixed
+- **`magento_trace_flow` returning empty trace for GraphQL operations** — `traceGraphql()` relied exclusively on semantic vector search (`graphql ${name} mutation query`, `${name} resolver`) to locate the schema and resolver. For short, specific operation names like `addSimpleProductsToCart`, `addProductsToCart`, or `placeOrder`, the embeddings don't carry enough context to reliably surface the `.graphqls` file or `/Resolver/` class, so the tool returned `{"trace": {}}` and forced agents to fall back to manual `magento_find_plugin` + `magento_find_class` + `Read` + `Grep` (≈10 tool calls). `traceGraphql()` now parses `**/etc/**/*.graphqls` files structurally, extracts the `@resolver(class: "…")` directive (handling both escaped `\\\\` and bare `\\` namespace separators, leading-backslash variants, `@resolver (…)` with space, multi-line operation signatures, and schema extensions that redeclare the same operation in multiple modules), resolves the resolver class on disk, reads the `resolve()` method body, and — in `deep` mode — walks `di.xml` via `findDiWiring()` to surface plugins and preferences on every resolver class found. Semantic search is retained as a fallback when no schema match is located. Matches the same structural-first pattern already used by `find_observer` (events.xml) and `find_plugin` (di.xml).
+
 ## [2.16.13] - 2026-04-15
 
 ### Fixed

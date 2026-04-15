@@ -1165,6 +1165,136 @@ async function testFindObserverEventsXml() {
   rmSync(tmpDir, { recursive: true, force: true });
 }
 
+// ─── parseGraphqlSchema Tests ───────────────────────────────────
+
+async function testParseGraphqlSchema() {
+  console.log('\n── parseGraphqlSchema (.graphqls structural parser) ──');
+
+  const tmpDir = path.join(__dirname, 'tmp_graphqls_parser');
+  const quoteEtc = path.join(tmpDir, 'vendor', 'magento', 'module-quote-graph-ql', 'etc');
+  const catalogEtc = path.join(tmpDir, 'vendor', 'magento', 'module-catalog-graph-ql', 'etc');
+  const acmeEtc = path.join(tmpDir, 'app', 'code', 'Acme', 'CartExt', 'etc');
+  mkdirSync(quoteEtc, { recursive: true });
+  mkdirSync(catalogEtc, { recursive: true });
+  mkdirSync(acmeEtc, { recursive: true });
+
+  // Core mutations: one uses escaped backslashes + leading "\\", the other
+  // omits the leading backslash. Both are valid and both must be parsed.
+  writeFileSync(path.join(quoteEtc, 'schema.graphqls'), [
+    'type Mutation {',
+    '    addSimpleProductsToCart(input: AddSimpleProductsToCartInput): AddSimpleProductsToCartOutput @resolver(class: "Magento\\\\QuoteGraphQl\\\\Model\\\\Resolver\\\\AddSimpleProductsToCart")',
+    '    addProductsToCart(cartId: String!, cartItems: [CartItemInput!]!): AddProductsToCartOutput @doc(description:"Add any type of product to the cart") @resolver(class: "Magento\\\\QuoteGraphQl\\\\Model\\\\Resolver\\\\AddProductsToCart")',
+    '    placeOrder(input: PlaceOrderInput): PlaceOrderOutput @resolver(class: "\\\\Magento\\\\QuoteGraphQl\\\\Model\\\\Resolver\\\\PlaceOrder")',
+    '    mergeCarts(',
+    '        source_cart_id: String!,',
+    '        destination_cart_id: String',
+    '    ): Cart! @doc(description:"Merges the source cart into the destination cart") @resolver(class: "Magento\\\\QuoteGraphQl\\\\Model\\\\Resolver\\\\MergeCarts")',
+    '}',
+    '',
+    'type Query {',
+    '    cart(cart_id: String!): Cart @resolver (class: "\\\\Magento\\\\QuoteGraphQl\\\\Model\\\\Resolver\\\\Cart") @cache(cacheable: false)',
+    '}'
+  ].join('\n'));
+
+  // Unrelated schema file — must not contribute false matches.
+  writeFileSync(path.join(catalogEtc, 'schema.graphqls'), [
+    'type Query {',
+    '    products(search: String): Products @resolver(class: "Magento\\\\CatalogGraphQl\\\\Model\\\\Resolver\\\\Products")',
+    '}'
+  ].join('\n'));
+
+  // Schema extension that re-declares addProductsToCart with a different resolver.
+  writeFileSync(path.join(acmeEtc, 'schema.graphqls'), [
+    'type Mutation {',
+    '    addProductsToCart(cartId: String!, cartItems: [CartItemInput!]!): AddProductsToCartOutput @resolver(class: "Acme\\\\CartExt\\\\Model\\\\Resolver\\\\AddProductsToCart")',
+    '}'
+  ].join('\n'));
+
+  const { glob: globFn } = await import('glob');
+
+  // Reimplemented verbatim from src/mcp-server.js::parseGraphqlSchema
+  async function parseGraphqlSchema(root, entryPoint) {
+    const schemas = [];
+    const graphqlsFiles = await globFn('**/etc/**/*.graphqls', {
+      cwd: root, absolute: true, nodir: true,
+      ignore: ['**/test/**', '**/tests/**', '**/Test/**', '**/Tests/**', '**/node_modules/**']
+    });
+    const escapedName = entryPoint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const lineRe = new RegExp(`^\\s*${escapedName}\\s*(?:\\(|:)`);
+
+    for (const file of graphqlsFiles) {
+      let content;
+      try { content = readFileSync(file, 'utf-8'); } catch { continue; }
+      if (!content.includes(entryPoint)) continue;
+
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (!lineRe.test(lines[i])) continue;
+        let block = '';
+        for (let j = i; j < Math.min(i + 10, lines.length); j++) {
+          block += lines[j] + '\n';
+          if (/@resolver\s*\(/.test(block)) break;
+        }
+        const resolverMatch = block.match(/@resolver\s*\(\s*class\s*:\s*"([^"]+)"\s*\)/);
+        if (!resolverMatch) continue;
+        const resolverClass = resolverMatch[1].replace(/\\\\/g, '\\').replace(/^\\+/, '');
+        schemas.push({
+          path: file.replace(root + '/', ''),
+          line: i + 1,
+          resolverClass,
+          snippet: block.trim().slice(0, 400)
+        });
+      }
+    }
+    return schemas;
+  }
+
+  // Test 1: bug-report mutation — addSimpleProductsToCart must be found
+  const simple = await parseGraphqlSchema(tmpDir, 'addSimpleProductsToCart');
+  assertEq(simple.length, 1, 'graphqls: finds addSimpleProductsToCart');
+  assertEq(simple[0].resolverClass, 'Magento\\QuoteGraphQl\\Model\\Resolver\\AddSimpleProductsToCart',
+    'graphqls: resolver class unescaped correctly');
+  assert(simple[0].path.endsWith('schema.graphqls'), 'graphqls: path relative to root');
+
+  // Test 2: addProductsToCart — core + acme extension => 2 matches, 2 distinct classes
+  const add = await parseGraphqlSchema(tmpDir, 'addProductsToCart');
+  assertEq(add.length, 2, 'graphqls: finds addProductsToCart in core and extension');
+  const classes = new Set(add.map(s => s.resolverClass));
+  assert(classes.has('Magento\\QuoteGraphQl\\Model\\Resolver\\AddProductsToCart'),
+    'graphqls: core resolver class found');
+  assert(classes.has('Acme\\CartExt\\Model\\Resolver\\AddProductsToCart'),
+    'graphqls: override resolver class found');
+
+  // Test 3: leading backslash variant
+  const place = await parseGraphqlSchema(tmpDir, 'placeOrder');
+  assertEq(place.length, 1, 'graphqls: finds placeOrder');
+  assertEq(place[0].resolverClass, 'Magento\\QuoteGraphQl\\Model\\Resolver\\PlaceOrder',
+    'graphqls: leading backslash stripped');
+
+  // Test 4: multi-line mutation signature (mergeCarts spans 4 lines)
+  const merge = await parseGraphqlSchema(tmpDir, 'mergeCarts');
+  assertEq(merge.length, 1, 'graphqls: finds mergeCarts (multi-line signature)');
+  assertEq(merge[0].resolverClass, 'Magento\\QuoteGraphQl\\Model\\Resolver\\MergeCarts',
+    'graphqls: multi-line resolver class');
+
+  // Test 5: @resolver with space before opening paren ("@resolver (class: …)")
+  const cart = await parseGraphqlSchema(tmpDir, 'cart');
+  assertEq(cart.length, 1, 'graphqls: finds cart (space before resolver paren)');
+  assertEq(cart[0].resolverClass, 'Magento\\QuoteGraphQl\\Model\\Resolver\\Cart',
+    'graphqls: space variant resolver class');
+
+  // Test 6: unrelated schema file does not produce a false match for unrelated op
+  const unknown = await parseGraphqlSchema(tmpDir, 'nonexistentMutation');
+  assertEq(unknown.length, 0, 'graphqls: unknown operation returns empty array');
+
+  // Test 7: substring collision — searching "addProducts" must NOT match
+  // "addProductsToCart" (identifier boundary must be enforced).
+  const prefix = await parseGraphqlSchema(tmpDir, 'addProducts');
+  assertEq(prefix.length, 0, 'graphqls: prefix substring does not match longer identifier');
+
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
 // ─── Serve PID Version Tests ────────────────────────────────────
 
 function testServePidVersion() {
@@ -4599,6 +4729,7 @@ async function main() {
   await testDiXmlSessionCache();
   await testFindPluginPartialMatch();
   await testFindObserverEventsXml();
+  await testParseGraphqlSchema();
   testServePidVersion();
   await testFindClassFilesystemFallback();
   await testModuleStructureCamelCase();
