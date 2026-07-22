@@ -24,7 +24,8 @@
     "test:unit": "node tests/unit.test.js",
     "test:integration": "node tests/mcp-server.test.js",
     "test:no-index": "node tests/mcp-server.test.js --no-index",
-    "test:trace-graphql": "node tests/trace-graphql.test.js"
+    "test:trace-graphql": "node tests/trace-graphql.test.js",
+    "version": "node scripts/sync-optional-deps.mjs && git add package.json"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -34,10 +35,10 @@
     "ruvector": "^0.1.96"
   },
   "optionalDependencies": {
-    "@magector/cli-darwin-arm64": "1.2.7",
-    "@magector/cli-linux-x64": "1.2.7",
-    "@magector/cli-linux-arm64": "1.2.7",
-    "@magector/cli-win32-x64": "1.2.7"
+    "@magector/cli-darwin-arm64": "2.16.15",
+    "@magector/cli-linux-x64": "2.16.15",
+    "@magector/cli-linux-arm64": "2.16.15",
+    "@magector/cli-win32-x64": "2.16.15"
   },
   "keywords": [
     "magento",

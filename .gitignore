@@ -44,3 +44,15 @@ tmp/
 
 # Platform binary builds (populated by CI)
 platforms/*/bin/
+
+# Runtime index/cache dir (created when running against a Magento root)
+.magector/
+
+# Local ONNX models (downloaded at runtime, large binaries)
+models/
+
+# Test fixtures/leftovers
+tests/tmp_*
+
+# Stray/compat local core binaries
+rust-core/magector-core-*-compat

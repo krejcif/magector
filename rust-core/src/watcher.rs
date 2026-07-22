@@ -251,6 +251,19 @@ impl FileManifest {
 /// Threshold for automatic compaction (when >20% vectors are tombstoned)
 const COMPACT_THRESHOLD: f64 = 0.20;
 
+/// Maximum files indexed per chunk inside the watcher's incremental update.
+///
+/// The watcher persists (`save_atomic`) and releases the indexer lock after
+/// each chunk. This matters when a large backlog accumulates (e.g. after a big
+/// dependency install, or the first run against an index that predates many new
+/// files): indexing the whole backlog in one locked call can take far longer
+/// than the process stays alive, so without chunked persistence the partial
+/// work is never written to disk and the same files are re-detected as "added"
+/// on every restart — the index never converges. Saving per chunk makes the
+/// progress durable, and releasing the lock between chunks keeps search queries
+/// responsive instead of timing out for the entire run.
+const WATCHER_INDEX_CHUNK: usize = 512;
+
 /// Watcher status reported via serve protocol
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WatcherStatus {
@@ -316,23 +329,28 @@ pub fn watcher_loop(
             changes.deleted.len()
         );
 
-        // Acquire indexer lock for the update
-        let mut idx = lock_recover(&indexer, "indexer");
-
-        // 1. Tombstone modified and deleted files
-        for path in &changes.modified {
-            let relative = path
-                .strip_prefix(&magento_root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string();
-            idx.remove_vectors_for_path(&relative);
+        // 1. Tombstone modified and deleted files under a short-lived lock.
+        {
+            let mut idx = lock_recover(&indexer, "indexer");
+            for path in &changes.modified {
+                let relative = path
+                    .strip_prefix(&magento_root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string();
+                idx.remove_vectors_for_path(&relative);
+            }
+            for path in &changes.deleted {
+                idx.remove_vectors_for_path(path);
+            }
         }
-        for path in &changes.deleted {
-            idx.remove_vectors_for_path(path);
-        }
+        manifest.apply_deleted(&changes.deleted);
 
-        // 2. Index added and modified files
+        // 2. Index added and modified files in bounded chunks. After each chunk
+        //    we persist to disk (so an interrupted process keeps its progress
+        //    and the same files are not re-detected forever) and release the
+        //    indexer lock (so search queries are not starved while a large
+        //    backlog is processed). See WATCHER_INDEX_CHUNK.
         let files_to_index: Vec<PathBuf> = changes
             .added
             .iter()
@@ -341,32 +359,49 @@ pub fn watcher_loop(
             .collect();
 
         if !files_to_index.is_empty() {
-            match idx.index_files(&files_to_index) {
-                Ok(indexed) => {
-                    manifest.apply_indexed(&magento_root, &indexed);
-                    tracing::info!("Indexed {} files ({} entries)", files_to_index.len(), indexed.len());
+            let mut indexed_files = 0usize;
+            let mut indexed_entries = 0usize;
+            for chunk in files_to_index.chunks(WATCHER_INDEX_CHUNK) {
+                let mut idx = lock_recover(&indexer, "indexer");
+                match idx.index_files(chunk) {
+                    Ok(indexed) => {
+                        manifest.apply_indexed(&magento_root, &indexed);
+                        indexed_files += chunk.len();
+                        indexed_entries += indexed.len();
+                        // Persist progress for this chunk (crash-safe).
+                        if let Err(e) = idx.save_atomic(&db_path) {
+                            tracing::error!("Failed to persist index during watcher update: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Incremental index error: {}", e);
+                    }
                 }
-                Err(e) => {
-                    tracing::error!("Incremental index error: {}", e);
+                // Lock dropped here at end of scope, before the next chunk.
+            }
+            tracing::info!("Indexed {} files ({} entries)", indexed_files, indexed_entries);
+        }
+
+        // 3. Compact if the tombstone ratio is high, and always persist the
+        //    final state. The chunk loop above already saved after each chunk,
+        //    so only write again when there is something the loop did not cover:
+        //    a compaction, or a tick that only deleted files.
+        {
+            let mut idx = lock_recover(&indexer, "indexer");
+            let mut needs_save = files_to_index.is_empty(); // delete-only tick
+            if idx.vectordb_tombstone_ratio() > COMPACT_THRESHOLD {
+                tracing::info!("Compacting vector DB (tombstone ratio > {}%)", (COMPACT_THRESHOLD * 100.0) as u32);
+                idx.compact_vectordb();
+                needs_save = true;
+            }
+            if needs_save {
+                if let Err(e) = idx.save_atomic(&db_path) {
+                    tracing::error!("Failed to save index after watcher update: {}", e);
                 }
             }
         }
 
-        // 3. Update manifest for deleted files
-        manifest.apply_deleted(&changes.deleted);
-
-        // 4. Compact if tombstone ratio is high
-        if idx.vectordb_tombstone_ratio() > COMPACT_THRESHOLD {
-            tracing::info!("Compacting vector DB (tombstone ratio > {}%)", (COMPACT_THRESHOLD * 100.0) as u32);
-            idx.compact_vectordb();
-        }
-
-        // 5. Save to disk
-        if let Err(e) = idx.save(&db_path) {
-            tracing::error!("Failed to save index after watcher update: {}", e);
-        }
-
-        // 6. Update status
+        // 4. Update status
         {
             let mut s = lock_recover(&status, "status");
             s.tracked_files = manifest.files.len();
@@ -505,6 +540,70 @@ mod tests {
         assert!(changes.modified.is_empty());
         assert_eq!(changes.deleted.len(), 1);
         assert_eq!(changes.deleted[0], "gone.php");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_chunked_apply_persists_partial_progress() {
+        // Models the watcher's chunked incremental update: each chunk's
+        // apply_indexed is followed by a save, so if the process is interrupted
+        // after chunk N, the files from the first N chunks stay tracked (their
+        // vectors were written to disk) and are NOT re-detected as "added" on
+        // restart, while the remaining files are simply retried next tick.
+        //
+        // The old all-or-nothing behavior (index the whole changeset, then save
+        // once at the very end) lost ALL progress on interruption, so a backlog
+        // larger than one process lifetime never converged.
+        let dir = make_temp_dir();
+        for i in 0..5 {
+            fs::write(dir.join(format!("f{i}.php")), "<?php\n").unwrap();
+        }
+
+        // Nothing indexed yet → all five files are "added".
+        let mut manifest = FileManifest::new();
+        let initial = manifest.detect_changes(&dir).unwrap();
+        assert_eq!(initial.added.len(), 5);
+
+        // Process only the first chunk of 2 files, then simulate a crash.
+        let chunk: Vec<(String, Vec<usize>)> = initial
+            .added
+            .iter()
+            .take(2)
+            .map(|p| {
+                (
+                    p.strip_prefix(&dir).unwrap().to_string_lossy().to_string(),
+                    vec![0usize],
+                )
+            })
+            .collect();
+        manifest.apply_indexed(&dir, &chunk);
+
+        // After restart the two persisted files must be tracked; only the
+        // remaining three are re-detected (durable partial progress).
+        let after_crash = manifest.detect_changes(&dir).unwrap();
+        assert_eq!(
+            after_crash.added.len(),
+            3,
+            "partial progress must persist; only the unprocessed files are retried"
+        );
+
+        // Finishing the remainder converges to zero changes.
+        let rest: Vec<(String, Vec<usize>)> = after_crash
+            .added
+            .iter()
+            .map(|p| {
+                (
+                    p.strip_prefix(&dir).unwrap().to_string_lossy().to_string(),
+                    vec![0usize],
+                )
+            })
+            .collect();
+        manifest.apply_indexed(&dir, &rest);
+        assert!(
+            manifest.detect_changes(&dir).unwrap().is_empty(),
+            "after all chunks are applied the backlog must converge to empty"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

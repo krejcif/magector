@@ -11,6 +11,7 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs';
+import { syncOptionalDeps } from '../scripts/sync-optional-deps.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1415,6 +1416,46 @@ function testCliVersion() {
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
   assert(typeof pkg.version === 'string', 'cli version: package.json has version string');
   assert(/^\d+\.\d+\.\d+/.test(pkg.version), 'cli version: version matches semver pattern');
+}
+
+function testSyncOptionalDeps() {
+  console.log('\n── Sync optionalDependencies ──');
+
+  // Pure function: every pin rewritten to pkg.version, input untouched, order kept.
+  const before = {
+    name: 'magector',
+    version: '9.9.9',
+    optionalDependencies: {
+      '@magector/cli-darwin-arm64': '1.2.7',
+      '@magector/cli-linux-x64': '1.2.7',
+    },
+    keywords: ['x'],
+  };
+  const after = syncOptionalDeps(before);
+  assertEq(after.optionalDependencies['@magector/cli-darwin-arm64'], '9.9.9', 'sync: darwin pin bumped to version');
+  assertEq(after.optionalDependencies['@magector/cli-linux-x64'], '9.9.9', 'sync: linux pin bumped to version');
+  assertEq(before.optionalDependencies['@magector/cli-linux-x64'], '1.2.7', 'sync: input object not mutated');
+  assertEq(Object.keys(after).join(','), 'name,version,optionalDependencies,keywords', 'sync: key order preserved');
+
+  // Missing optionalDependencies must not crash.
+  const none = syncOptionalDeps({ name: 'x', version: '1.0.0' });
+  assertEq(Object.keys(none.optionalDependencies || {}).length, 0, 'sync: missing optionalDependencies handled');
+
+  // Regression guard for the bug that shipped in <2.16.16: the committed
+  // package.json pinned the platform binary packages to a stale version, so a
+  // `git clone` + `npm install` pulled an incompatible Rust core (no `serve`
+  // subcommand, wrong index naming) and the server re-indexed on every startup.
+  // The pins MUST equal the package version.
+  const pkgPath = path.resolve(__dirname, '..', 'package.json');
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+  const pins = Object.entries(pkg.optionalDependencies || {});
+  assert(pins.length > 0, 'sync: package.json declares platform binary pins');
+  for (const [name, ver] of pins) {
+    assertEq(ver, pkg.version, `sync: ${name} pinned to package version`);
+  }
+
+  // The version lifecycle hook must be wired so pins stay in lockstep on bump.
+  assertIncludes(pkg.scripts?.version || '', 'sync-optional-deps', 'sync: npm version hook runs the sync script');
 }
 
 // ─── magento_grep Tests ─────────────────────────────────────────
@@ -4734,6 +4775,7 @@ async function main() {
   await testFindClassFilesystemFallback();
   await testModuleStructureCamelCase();
   testCliVersion();
+  testSyncOptionalDeps();
   await testMagentoGrep();
   await testMagentoRead();
   testGrepDefaultContext();
