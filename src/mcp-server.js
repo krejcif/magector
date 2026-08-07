@@ -483,6 +483,7 @@ function killStaleServeProcess() {
 
 let reindexInProgress = false;
 let reindexProcess = null;
+let formatCheckProcess = null;
 let warmupInProgress = true; // true until checkDbFormat + serve process ready
 
 // Re-index progress tracking (updated from INDEX log lines)
@@ -542,11 +543,26 @@ async function checkDbFormat() {
     const result = await new Promise((resolve, reject) => {
       const proc = spawn(config.rustBinary, ['stats', '-d', config.dbPath],
         { stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
+      // Tracked so cleanup() can kill it: the timeout below only fires while
+      // this process is alive, so a parent exit before it elapses would leave
+      // stats running forever, reparented to init.
+      formatCheckProcess = proc;
       let stdout = '';
+      let timer = null;
+      const settle = (fn, arg) => {
+        if (timer) { clearTimeout(timer); timer = null; }
+        if (formatCheckProcess === proc) formatCheckProcess = null;
+        fn(arg);
+      };
       proc.stdout.on('data', (d) => { stdout += d.toString(); });
-      proc.on('error', reject);
-      proc.on('exit', (code) => code === 0 ? resolve(stdout) : reject(new Error(`stats exit ${code}`)));
-      setTimeout(() => { try { proc.kill(); } catch {} reject(new Error('stats timeout')); }, 120000);
+      proc.on('error', (err) => settle(reject, err));
+      proc.on('exit', (code) => code === 0
+        ? settle(resolve, stdout)
+        : settle(reject, new Error(`stats exit ${code}`)));
+      timer = setTimeout(() => {
+        try { proc.kill(); } catch {}
+        settle(reject, new Error('stats timeout'));
+      }, 120000);
     });
 
     const vectors = parseInt(result.match(/Total vectors:\s*(\d+)/)?.[1] || '0');
@@ -7812,6 +7828,11 @@ function cleanup(reason) {
     logToFile('INFO', `Cleanup: killing reindex process (PID ${reindexProcess.pid})`);
     try { reindexProcess.kill(); } catch {}
     reindexProcess = null;
+  }
+  if (formatCheckProcess) {
+    logToFile('INFO', `Cleanup: killing format check process (PID ${formatCheckProcess.pid})`);
+    try { formatCheckProcess.kill(); } catch {}
+    formatCheckProcess = null;
   }
   if (socketServer) {
     try { socketServer.close(); } catch {}
