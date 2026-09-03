@@ -97,6 +97,9 @@ jobs:
       - name: Ensure npm CLI supports trusted publishing (>=11.5.1)
         run: npm install -g npm@12.0.2
 
+      - name: Strip stale _authToken line (breaks OIDC trusted-publish detection)
+        run: sed -i '/_authToken/d' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -121,7 +124,7 @@ jobs:
             "
             echo "Publishing @magector/cli-${platform}@${VERSION}..."
             cd "$dir"
-            npm publish --access public --dry-run || echo "Failed to publish ${platform}, continuing..."
+            npm publish --access public || echo "Failed to publish ${platform}, continuing..."
             cd ../..
           done
 
@@ -135,4 +138,4 @@ jobs:
             }
             require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
-          npm publish --access public --dry-run
+          npm publish --access public
