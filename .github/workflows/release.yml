@@ -100,6 +100,17 @@ jobs:
       - name: Strip stale _authToken line (breaks OIDC trusted-publish detection)
         run: sed -i '/_authToken/d' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
 
+      - name: DEBUG - inspect npmrc and OIDC env
+        run: |
+          echo "--- npmrc path: ${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc} ---"
+          cat "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}" || echo "(file missing)"
+          echo "--- npm version ---"
+          npm --version
+          echo "--- OIDC env presence (names only, not values) ---"
+          env | grep -o '^ACTIONS_ID_TOKEN_REQUEST_[A-Z]*' || echo "NO ACTIONS_ID_TOKEN_REQUEST_* vars found"
+          echo "--- GITHUB_ACTIONS / CI ---"
+          echo "GITHUB_ACTIONS=$GITHUB_ACTIONS CI=$CI"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
