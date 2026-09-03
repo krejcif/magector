@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -120,7 +121,7 @@ jobs:
             "
             echo "Publishing @magector/cli-${platform}@${VERSION}..."
             cd "$dir"
-            npm publish --access public || echo "Failed to publish ${platform}, continuing..."
+            npm publish --access public --dry-run || echo "Failed to publish ${platform}, continuing..."
             cd ../..
           done
 
@@ -134,4 +135,4 @@ jobs:
             }
             require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
-          npm publish --access public
+          npm publish --access public --dry-run
