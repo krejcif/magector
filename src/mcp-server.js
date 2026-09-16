@@ -636,10 +636,13 @@ function startBackgroundReindex() {
 
   const tempDbPath = config.dbPath + '.new';
 
-  // Clean up leftover temp DB from a previous failed reindex
-  if (existsSync(tempDbPath)) {
-    try { unlinkSync(tempDbPath); } catch {}
-  }
+  // A leftover temp DB from a reindex that was interrupted (e.g. the MCP
+  // session ended before it finished) is NOT garbage — magector-core saves
+  // incrementally and auto-resumes from it (already-embedded files are
+  // skipped). Deleting it here would force every short-lived session to
+  // restart PHASE 1 from scratch, so a large codebase could never finish
+  // indexing across multiple sessions. Leave it in place; the Rust binary
+  // decides whether to resume or rebuild (via --force, not used here).
 
   reindexInProgress = true;
   reindexStartTime = Date.now();
@@ -700,7 +703,7 @@ function startBackgroundReindex() {
     if (text) { logToFile('INDEX', text); parseIndexProgress(text); }
   });
 
-  reindexProcess.on('exit', (code) => {
+  reindexProcess.on('exit', (code, signal) => {
     reindexInProgress = false;
     reindexProcess = null;
     reindexStartTime = null;
@@ -725,8 +728,16 @@ function startBackgroundReindex() {
       if (serveProcess) serveProcess.kill();
       searchCache.clear();
       startServeProcess();
+    } else if (signal) {
+      // Killed (e.g. our own cleanup() when the MCP session ended before
+      // indexing finished) — not a real failure. magector-core saves
+      // incrementally, so keep the temp DB for the next session to resume
+      // from instead of discarding the progress.
+      logToFile('WARN', `Background re-index interrupted by signal ${signal} — temp DB kept for resume`);
+      console.error(`Background re-index interrupted (${signal}) — will resume next run.`);
     } else {
-      // Clean up failed temp DB
+      // Genuine failure (non-zero exit, no signal) — the temp DB may be
+      // corrupt, so don't let a later run try to resume from it.
       try { if (existsSync(tempDbPath)) unlinkSync(tempDbPath); } catch {}
       logToFile('ERR', `Background re-index failed (exit code ${code})`);
       console.error(`Background re-index failed (exit code ${code}). Check ${LOG_PATH}`);

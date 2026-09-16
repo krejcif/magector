@@ -2959,6 +2959,25 @@ function testReindexTempPathLogic() {
   assert(!shouldBlock(false, false, 'magento_search'), 'Reindex: not blocked when reindex not running');
 }
 
+// ─── Reindex Interrupt Handling (resume across sessions) ──────
+
+function testReindexInterruptKeepsTempDb() {
+  console.log('\n── Reindex Interrupt Handling ──');
+
+  // Mirrors the reindexProcess 'exit' handler in mcp-server.js: decide what
+  // happens to the temp DB based on how the reindex process ended.
+  function onReindexExit(code, signal) {
+    if (code === 0) return 'swap';
+    if (signal) return 'keep'; // interrupted (e.g. MCP session ended) — resumable
+    return 'delete'; // genuine failure — temp DB may be corrupt
+  }
+
+  assertEq(onReindexExit(0, null), 'swap', 'Interrupt: clean exit swaps new index into place');
+  assertEq(onReindexExit(null, 'SIGTERM'), 'keep', 'Interrupt: killed by cleanup() (session ended) keeps temp DB for resume');
+  assertEq(onReindexExit(null, 'SIGKILL'), 'keep', 'Interrupt: SIGKILL keeps temp DB for resume');
+  assertEq(onReindexExit(1, null), 'delete', 'Interrupt: genuine non-zero exit with no signal deletes temp DB');
+}
+
 // ─── Stdin Cleanup (orphan prevention) ────────────────────────
 
 async function testStdinCleanup() {
@@ -4742,6 +4761,7 @@ async function main() {
   await testTestFinder();
   testImpactAnalysisLogic();
   testReindexTempPathLogic();
+  testReindexInterruptKeepsTempDb();
   testRustSearchAsyncGuards();
   testReindexDeduplication();
   testSingletonAndWarmup();

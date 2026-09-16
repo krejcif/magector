@@ -4,6 +4,25 @@ All notable changes to Magector are documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions correspond to git tags and npm releases.
 
+## [Unreleased]
+
+### Fixed
+- **Interrupted background re-index discarded all progress, so indexing a large codebase could never finish across multiple short MCP sessions** — `magector-core` saves the index incrementally and auto-resumes from a partial temp DB, but the MCP server's `reindexProcess.on('exit', ...)` handler treated any non-zero exit code as a failure and deleted the temp DB, including when the process was simply killed by `cleanup()` because the MCP session ended (the normal case for a short-lived session against a codebase too large to index in one sitting). Every new session therefore restarted PHASE 1 from file 0, never converging on a usable index. The handler now distinguishes a signal-terminated exit (interrupted — keep the temp DB for the next session to resume) from a genuine non-zero exit with no signal (real failure — discard, since the DB may be corrupt). Also removed a second, older unconditional deletion of the temp DB at the *start* of each re-index, which discarded resumable progress before the new run even began.
+
+## [2.16.18] - 2026-09-03
+
+**First release published to npm since 2.16.15.** 2.16.16 and 2.16.17 were version-bumped and tagged but never reached npm — the publish job still authenticated with the long-lived `NPM_TOKEN` secret and could not publish, which is what prompted the move to OIDC below. Everything documented under those two versions therefore reaches users here.
+
+### Fixed
+- **`magector-core stats` process orphaned on shutdown, one leaked core per MCP session** — `checkDbFormat()` spawns `magector-core stats` to validate the index and guards it with a 120 s timeout, but that timeout only fires while the MCP server is alive. `cleanup()` tracked `serveProcess` and `reindexProcess` and not this one, so when the parent exited before the timeout elapsed the stats child was never killed: it reparented to init and kept running. This is easy to hit with a short-lived session against a large index — the format check takes 30–60 s (longer on big indexes) while an agent asking a single question connects and disconnects in seconds, so every such session left a `magector-core` process behind, each consuming a core. Several were observed accumulating on a production box, one per question asked, none ever exiting. The process is now tracked so `cleanup()` can kill it, and the timeout is cleared when it exits on its own. (PR #4, Rudolf Vince)
+
+### Changed
+- **Releases publish via npm trusted publishing (OIDC) instead of `NPM_TOKEN`** — removes the long-lived token secret from the publish job, so releases no longer depend on a credential that has to be rotated by hand, and gets ahead of npm's restrictions on 2FA-bypassing tokens (account changes August 2026, direct publishing January 2027). The publish job also pins the npm CLI version instead of installing `@latest`, so a CLI release cannot change publish behaviour underneath the pipeline.
+
+## [2.16.17] - 2026-09-03
+
+Tagged locally during the OIDC publishing migration but **never pushed and never published to npm**; its contents (the orphaned-process fix and the trusted-publishing switch) shipped in 2.16.18. Recorded here only so the version sequence has no silent gap.
+
 ## [2.16.16] - 2026-07-22
 
 ### Fixed
