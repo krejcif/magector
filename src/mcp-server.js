@@ -602,26 +602,24 @@ function startBackgroundReindex() {
       if (!getRunningReindexPid()) {
         clearInterval(pollInterval);
         reindexInProgress = false;
-        // Swap the new DB into place if the external reindex produced one
+        // The external process is gone, but we have no way to know whether
+        // it actually finished (exit 0) or was interrupted mid-run — a
+        // leftover .new file no longer implies completion now that a
+        // partial temp DB is deliberately kept around for resume (see
+        // startBackgroundReindex below). Blindly promoting it here could
+        // put an incomplete index live. Instead, take ownership and (re)run
+        // the reindex ourselves: magector-core auto-resumes from whatever
+        // .new already has, and the normal exit handler only swaps it into
+        // place once *this* run genuinely completes.
         if (existsSync(tempDbPath)) {
-          try {
-            if (existsSync(config.dbPath)) {
-              const backupPath = config.dbPath + '.bak';
-              if (existsSync(backupPath)) { try { unlinkSync(backupPath); } catch {} }
-              renameSync(config.dbPath, backupPath);
-              logToFile('INFO', 'Old DB moved to .bak');
-            }
-            renameSync(tempDbPath, config.dbPath);
-            logToFile('INFO', 'External reindex complete — new index swapped into place.');
-          } catch (e) {
-            logToFile('ERR', `Failed to swap index after external reindex: ${e.message}`);
-          }
+          logToFile('INFO', 'External reindex process gone — resuming/verifying its temp DB before swap.');
+          startBackgroundReindex();
         } else {
           logToFile('INFO', 'External reindex finished but no .new file found — skipping swap.');
+          if (serveProcess) serveProcess.kill();
+          searchCache.clear();
+          startServeProcess();
         }
-        if (serveProcess) serveProcess.kill();
-        searchCache.clear();
-        startServeProcess();
       }
     }, 10000);
     return;

@@ -2976,6 +2976,17 @@ function testReindexInterruptKeepsTempDb() {
   assertEq(onReindexExit(null, 'SIGTERM'), 'keep', 'Interrupt: killed by cleanup() (session ended) keeps temp DB for resume');
   assertEq(onReindexExit(null, 'SIGKILL'), 'keep', 'Interrupt: SIGKILL keeps temp DB for resume');
   assertEq(onReindexExit(1, null), 'delete', 'Interrupt: genuine non-zero exit with no signal deletes temp DB');
+
+  // Mirrors the poller branch in startBackgroundReindex (mcp-server.js:~600-620):
+  // once a partial temp DB can be left behind by an interrupted run, its mere
+  // existence after an external PID disappears no longer proves the reindex
+  // finished — it must be resumed/verified, never blindly promoted.
+  function onExternalReindexGone(tempDbExists) {
+    return tempDbExists ? 'resume-and-verify' : 'skip-swap';
+  }
+
+  assertEq(onExternalReindexGone(true), 'resume-and-verify', 'Interrupt: leftover temp DB from external process is resumed, not swapped in blind');
+  assertEq(onExternalReindexGone(false), 'skip-swap', 'Interrupt: no temp DB from external process means nothing to swap');
 }
 
 // ─── Stdin Cleanup (orphan prevention) ────────────────────────
