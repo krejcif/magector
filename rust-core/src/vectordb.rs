@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::BufWriter;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::embedder::EMBEDDING_DIM;
 
@@ -17,6 +17,20 @@ const HNSW_M: usize = 32;             // max connections per node
 const HNSW_MAX_LAYER: usize = 16;
 const HNSW_EF_CONSTRUCTION: usize = 200;
 const HNSW_MIN_CAPACITY: usize = 1_000;
+
+/// Move a database that can't be decoded aside, keeping it for recovery.
+/// An index costs hours of CPU to build, so a decode failure — which can also
+/// come from a truncated write, not just a schema change — must never delete it.
+fn keep_incompatible_aside(path: &Path) -> Option<PathBuf> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut name = path.file_name()?.to_os_string();
+    name.push(format!(".incompatible-{stamp}"));
+    let dest = path.with_file_name(name);
+    fs::rename(path, &dest).ok().map(|_| dest)
+}
 
 /// Check whether a vector is safe for cosine distance computation.
 /// Rejects NaN, Inf, and zero vectors — these produce NaN distances
@@ -147,11 +161,16 @@ impl VectorDB {
                     let is_format_error = e.chain()
                         .any(|c| c.to_string().contains("FormatChanged") || c.to_string().contains("schema mismatch"));
                     if is_format_error {
-                        tracing::warn!(
-                            "Database format incompatible at {:?}. Removing old database — re-index required.",
-                            path
-                        );
-                        let _ = fs::remove_file(path);
+                        match keep_incompatible_aside(path) {
+                            Some(dest) => tracing::warn!(
+                                "Database at {:?} could not be read. Kept as {:?} — re-index required.",
+                                path, dest
+                            ),
+                            None => tracing::warn!(
+                                "Database at {:?} could not be read and could not be moved aside — re-index required.",
+                                path
+                            ),
+                        }
                         return Ok(Self::new());
                     }
                     return Err(e);
@@ -167,8 +186,15 @@ impl VectorDB {
             match Self::load(path) {
                 Ok(db) => return Ok(db),
                 Err(_) => {
-                    tracing::warn!("Legacy database format incompatible. Removing.");
-                    let _ = fs::remove_file(path);
+                    match keep_incompatible_aside(path) {
+                        Some(dest) => tracing::warn!(
+                            "Legacy database format incompatible. Kept as {:?} — re-index required.",
+                            dest
+                        ),
+                        None => tracing::warn!(
+                            "Legacy database format incompatible and could not be moved aside — re-index required."
+                        ),
+                    }
                     return Ok(Self::new());
                 }
             }
@@ -827,6 +853,32 @@ mod tests {
         let db = VectorDB::open(&db_path).unwrap();
         assert!(db.tombstones.contains(&0));
         assert_eq!(db.len(), 1); // b.php live
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_open_preserves_incompatible_db() {
+        let dir = std::env::temp_dir().join("magector_test_incompatible");
+        let _ = fs::create_dir_all(&dir);
+        let db_path = dir.join("index.db");
+
+        // Pre-bincode-2.0 layout: a version byte the current decoder rejects,
+        // followed by a payload it cannot parse.
+        let bytes = [2u8, 0xff, 0xff, 0xff, 0xff];
+        fs::write(&db_path, bytes).unwrap();
+
+        let db = VectorDB::open(&db_path).unwrap();
+        assert_eq!(db.len(), 0);
+
+        let kept: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with("index.db.incompatible-"))
+            .collect();
+        assert_eq!(kept.len(), 1, "incompatible index must be kept, not deleted");
+        assert_eq!(fs::read(dir.join(&kept[0])).unwrap(), bytes);
 
         let _ = fs::remove_dir_all(&dir);
     }
