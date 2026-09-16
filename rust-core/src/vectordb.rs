@@ -709,6 +709,27 @@ impl Default for VectorDB {
     }
 }
 
+/// Reopen a just-saved index and confirm its live vector count matches what
+/// was in memory before the save. A decode can succeed (no `FormatChanged`
+/// error) while still yielding an empty or partial DB — e.g. if the file was
+/// overwritten by a concurrent writer between the atomic rename and this
+/// check. An index costs hours of CPU to build, so that must surface as a
+/// loud error, not a silent "Indexing complete".
+pub fn verify_vector_count(path: &Path, expected: usize) -> Result<()> {
+    let reopened = VectorDB::open(path).context("Failed to reopen index after save for verification")?;
+    if reopened.len() != expected {
+        anyhow::bail!(
+            "Index verification failed after save: expected {} vectors, found {} in {:?}. \
+             The saved index is corrupt (likely clobbered by a concurrent process writing \
+             the same path) — do not trust it; re-run indexing.",
+            expected,
+            reopened.len(),
+            path
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -960,6 +981,41 @@ mod tests {
 
         // Verify no temp file left
         assert!(!db_path.with_extension("db.tmp").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_verify_vector_count_passes_on_match() {
+        let dir = std::env::temp_dir().join("magector_test_verify_match");
+        let _ = fs::create_dir_all(&dir);
+        let db_path = dir.join("verify_match.db");
+
+        let mut db = VectorDB::new();
+        db.insert(&vec![0.1f32; EMBEDDING_DIM], make_test_meta("a.php"));
+        db.insert(&vec![0.2f32; EMBEDDING_DIM], make_test_meta("b.php"));
+        db.save_atomic(&db_path).unwrap();
+
+        assert!(verify_vector_count(&db_path, 2).is_ok());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_verify_vector_count_fails_on_mismatch() {
+        // Simulates the exact failure mode this guards against: a save that
+        // reported N vectors created, but the file on disk (e.g. clobbered by
+        // a concurrent writer after the atomic rename) decodes to fewer.
+        let dir = std::env::temp_dir().join("magector_test_verify_mismatch");
+        let _ = fs::create_dir_all(&dir);
+        let db_path = dir.join("verify_mismatch.db");
+
+        let mut db = VectorDB::new();
+        db.insert(&vec![0.1f32; EMBEDDING_DIM], make_test_meta("a.php"));
+        db.save_atomic(&db_path).unwrap();
+
+        let err = verify_vector_count(&db_path, 110_314).unwrap_err();
+        assert!(err.to_string().contains("Index verification failed"));
 
         let _ = fs::remove_dir_all(&dir);
     }

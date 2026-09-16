@@ -13,6 +13,7 @@ import { ensureModels, resolveModels } from './model.js';
 import { init, setup } from './init.js';
 import { checkForUpdate } from './update.js';
 import { createRequire } from 'module';
+import { getRunningIndexPid, writeIndexPidFile, removeIndexPidFile } from './index-lock.js';
 const __cliPkg = createRequire(import.meta.url)('../package.json');
 
 const args = process.argv.slice(2);
@@ -107,6 +108,21 @@ async function runIndex(targetPath, opts = {}) {
   const magectorDir = path.resolve(root, '.magector');
   mkdirSync(magectorDir, { recursive: true });
 
+  // Refuse to run alongside another indexer (this CLI or an MCP server's
+  // background reindex) on the same root — two indexers racing on the same
+  // Magento tree can clobber each other's output even when writing to
+  // different -d paths (shared descriptions DB, CPU/RAM contention).
+  const resolvedRoot = path.resolve(root);
+  const conflictPid = getRunningIndexPid(resolvedRoot);
+  if (conflictPid) {
+    console.error(
+      `Another indexing process (PID ${conflictPid}) is already running for ${resolvedRoot}.\n` +
+      `Wait for it to finish, or if it's stale/dead, remove .magector/reindex.pid.`
+    );
+    process.exit(1);
+  }
+  writeIndexPidFile(resolvedRoot, process.pid);
+
   // Default 4 hours — generous enough for ~80K-file enterprise codebases under
   // CPU constraint. Override via MAGECTOR_INDEX_TIMEOUT (milliseconds).
   const indexTimeout = parseInt(process.env.MAGECTOR_INDEX_TIMEOUT, 10) || 14400000;
@@ -142,6 +158,7 @@ async function runIndex(targetPath, opts = {}) {
   } catch (err) {
     if (err.status) {
       console.error('Indexing failed.');
+      removeIndexPidFile(resolvedRoot);
       process.exit(err.status);
     }
     if (err.message && err.message.includes('ETIMEDOUT')) {
@@ -157,8 +174,10 @@ async function runIndex(targetPath, opts = {}) {
     } else {
       console.error(`Indexing error: ${err.message}`);
     }
+    removeIndexPidFile(resolvedRoot);
     process.exit(1);
   }
+  removeIndexPidFile(resolvedRoot);
 }
 
 function runSearch(query, opts = {}) {

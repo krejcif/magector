@@ -21,6 +21,7 @@ import { existsSync, statSync, unlinkSync, copyFileSync, renameSync, appendFileS
 import { stat } from 'fs/promises';
 import { glob } from 'glob';
 import path from 'path';
+import { getRunningIndexPid, writeIndexPidFile, removeIndexPidFile } from './index-lock.js';
 import {
   analyzeCommit,
   getStagedDiff,
@@ -209,7 +210,6 @@ function extractJson(stdout) {
 // the serve process (and thus data.db) is available.
 
 const PID_PATH = path.join(config.magentoRoot, '.magector', 'serve.pid');
-const REINDEX_PID_PATH = path.join(config.magentoRoot, '.magector', 'reindex.pid');
 const SOCK_PATH = path.join(config.magentoRoot, '.magector', 'serve.sock');
 const FORMAT_CACHE_PATH = path.join(config.magentoRoot, '.magector', 'format-ok.json');
 const PRIMARY_LOCK_PATH = path.join(config.magentoRoot, '.magector', 'primary.lock');
@@ -388,7 +388,7 @@ function removePidFile() {
 }
 
 function writeReindexPidFile(pid) {
-  try { writeFileSync(REINDEX_PID_PATH, String(pid)); } catch {}
+  writeIndexPidFile(config.magentoRoot, pid);
   // Also persist in data.db when serve is available
   if (serveProcess && serveReady) {
     serveQuery('process_set', { name: 'reindex', pid }, 5000).catch(() => {});
@@ -396,7 +396,7 @@ function writeReindexPidFile(pid) {
 }
 
 function removeReindexPidFile() {
-  try { if (existsSync(REINDEX_PID_PATH)) unlinkSync(REINDEX_PID_PATH); } catch {}
+  removeIndexPidFile(config.magentoRoot);
   // Also clean DB state
   if (serveProcess && serveReady) {
     serveQuery('process_remove', { name: 'reindex' }, 5000).catch(() => {});
@@ -404,23 +404,13 @@ function removeReindexPidFile() {
 }
 
 /**
- * Check if another reindex process is already running (from another MCP instance).
- * Checks data.db first (via serve query), falls back to PID file.
+ * Check if another reindex process is already running — from another MCP
+ * instance, or from a manually-invoked `npx magector index` on the same
+ * root (both write/check the same lock file via index-lock.js).
  * Returns the PID if alive, null otherwise.
  */
 function getRunningReindexPid() {
-  // Try file-based check (synchronous, always available)
-  try {
-    if (!existsSync(REINDEX_PID_PATH)) return null;
-    const pid = parseInt(readFileSync(REINDEX_PID_PATH, 'utf-8').trim(), 10);
-    if (!pid || isNaN(pid)) return null;
-    process.kill(pid, 0); // signal 0 = existence check
-    return pid;
-  } catch {
-    // Process doesn't exist or PID file unreadable — clean up
-    removeReindexPidFile();
-    return null;
-  }
+  return getRunningIndexPid(config.magentoRoot);
 }
 
 /**
