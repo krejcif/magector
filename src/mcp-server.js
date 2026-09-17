@@ -1186,6 +1186,37 @@ function rustStats() {
   return { totalVectors: parseInt(vectors), embeddingDim: parseInt(dim), dbPath: config.dbPath };
 }
 
+/**
+ * Stats via the warm `serve` process (socket "stats" command — reads the
+ * already-loaded indexer, no rebuild) with a cold execFileSync fallback.
+ * `rustStats()`'s cold path re-opens the DB and rebuilds the entire HNSW
+ * graph from the flat vector list on every call — cheap for a small index,
+ * but on a large one (hundreds of thousands of vectors) that rebuild alone
+ * can exceed the hardcoded 30s execFileSync timeout, so `magento_stats`
+ * would reliably ETIMEDOUT on exactly the indexes where the answer is most
+ * useful, even though `serve` already has the same numbers in memory.
+ * Mirrors the socket-first pattern `rustSearchAsync` already uses.
+ */
+async function rustStatsAsync() {
+  if (serveProcess && !serveReady && serveReadyPromise) {
+    await Promise.race([serveReadyPromise, new Promise((r) => setTimeout(() => r(false), 10000))]);
+  }
+
+  const queryFn = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
+  if (queryFn) {
+    try {
+      const resp = await queryFn('stats', {});
+      if (resp.ok && typeof resp.data?.vectors === 'number') {
+        return { totalVectors: resp.data.vectors, embeddingDim: 384, dbPath: config.dbPath };
+      }
+    } catch (err) {
+      logToFile('WARN', `Serve stats query failed, falling back to execFileSync: ${err.message}`);
+    }
+  }
+
+  return rustStats();
+}
+
 // ─── Analysis (ruvector JS) ─────────────────────────────────────
 
 async function analyzeDiff(options = {}) {
@@ -5435,7 +5466,7 @@ const _callToolHandler = async (request) => {
       }
 
       case 'magento_stats': {
-        const stats = rustStats();
+        const stats = await rustStatsAsync();
         return {
           content: [{
             type: 'text',
@@ -7693,7 +7724,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   const { uri } = request.params;
 
   if (uri === 'magector://stats') {
-    const stats = rustStats();
+    const stats = await rustStatsAsync();
     return {
       contents: [{
         uri,
