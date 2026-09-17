@@ -380,6 +380,13 @@ fn run_index(
     tracing::info!("Saving final index to {:?}...", database);
     indexer.save_atomic(database)?;
 
+    // A save that reports success but produces a file that decodes to fewer
+    // live vectors than were in memory (e.g. clobbered by a concurrent writer
+    // targeting the same path) must never be reported as "Indexing complete" —
+    // an index costs hours of CPU, so a silent empty/partial result is worse
+    // than a loud failure that prompts a re-run.
+    magector_core::vectordb::verify_vector_count(database, stats.vectors_created)?;
+
     println!("Files found:    {}", stats.files_found);
     println!("Files indexed:  {}", stats.files_indexed);
     println!("  PHP files:    {}", stats.php_files);

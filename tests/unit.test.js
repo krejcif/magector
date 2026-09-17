@@ -12,6 +12,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs';
 import { syncOptionalDeps } from '../scripts/sync-optional-deps.mjs';
+import { getRunningIndexPid, writeIndexPidFile, removeIndexPidFile, lockPathFor } from '../src/index-lock.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -4824,6 +4825,7 @@ async function main() {
   testTraceConfigFormatter();
   testToolCountIncludesTraceConfig();
   testSocketQueryDefaultTimeout();
+  testIndexLockConcurrencyGuard();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
@@ -5193,6 +5195,35 @@ function testSocketQueryDefaultTimeout() {
   const undefinedTimeout = setTimeout(() => {}, undefined);
   assertEq(undefinedTimeout._idleTimeout, 1, 'setTimeout(fn, undefined) has 1ms timeout (confirms the bug)');
   clearTimeout(undefinedTimeout);
+}
+
+// ─── Index Lock Tests ───────────────────────────────────────
+
+function testIndexLockConcurrencyGuard() {
+  console.log('\n── Index Lock (concurrent indexer guard) ──');
+
+  const root = path.join(__dirname, 'tmp_index_lock_test');
+  mkdirSync(path.join(root, '.magector'), { recursive: true });
+
+  try {
+    // No lock file yet — no conflict
+    assertEq(getRunningIndexPid(root), null, 'No lock file: no running indexer detected');
+
+    // Our own PID is always "alive" — used as a stand-in for another live process
+    writeIndexPidFile(root, process.pid);
+    assertEq(getRunningIndexPid(root), process.pid, 'Live PID in lock file is detected as a conflict');
+    assert(existsSync(lockPathFor(root)), 'Lock file written at .magector/reindex.pid');
+
+    removeIndexPidFile(root);
+    assertEq(getRunningIndexPid(root), null, 'Lock cleared after removeIndexPidFile');
+
+    // A stale lock (PID that can't be alive) must not block forever
+    writeIndexPidFile(root, 999999999);
+    assertEq(getRunningIndexPid(root), null, 'Dead/impossible PID in lock file is not treated as a conflict');
+    assert(!existsSync(lockPathFor(root)), 'Stale lock file is cleaned up on detection');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 main().catch((e) => {
