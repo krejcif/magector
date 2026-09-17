@@ -1071,10 +1071,13 @@ async function rustSearchAsync(query, limit = 10) {
     return Array.isArray(cached) ? cached : [];
   }
 
-  // Wait for serve process if it's starting up but not yet ready
+  // Wait for serve process if it's starting up but not yet ready. 60s, not
+  // 10s: the HNSW rebuild on a large index routinely takes 45-60s itself, so
+  // a 10s wait gave up before serve was ever going to be ready and fell
+  // through to the (also expensive) cold path anyway.
   if (serveProcess && !serveReady && serveReadyPromise) {
     logToFile('INFO', `Waiting for serve process to become ready...`);
-    await Promise.race([serveReadyPromise, new Promise(r => setTimeout(() => r(false), 10000))]);
+    await Promise.race([serveReadyPromise, new Promise(r => setTimeout(() => r(false), 60000))]);
   }
 
   // Secondary instance: retry socket if not connected (primary may have (re)started serve)
@@ -1125,13 +1128,16 @@ function rustSearchSync(query, limit = 10) {
   if (searchCache.has(cacheKey)) {
     return searchCache.get(cacheKey);
   }
+  // 120s: this cold path rebuilds the entire HNSW graph before it can search
+  // at all (same cost as rustStats()'s cold path), so it needs the same
+  // large-index headroom — 30s was not enough and reliably ETIMEDOUT here too.
   const result = execFileSync(config.rustBinary, [
     'search', query,
     '-d', config.dbPath,
     '-c', config.modelCache,
     '-l', String(limit),
     '-f', 'json'
-  ], { encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
+  ], { encoding: 'utf-8', timeout: 120000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
   const parsed = extractJson(result);
   cacheSet(cacheKey, parsed);
   return parsed;
@@ -1176,10 +1182,13 @@ function rustIndex(magentoRoot) {
 }
 
 function rustStats() {
+  // 120s, matching checkDbFormat()'s own accepted duration for this exact
+  // operation on large indexes ("this takes 30-60s for large indexes" — 30s
+  // was provably not enough headroom and reliably ETIMEDOUT in practice).
   const result = execFileSync(config.rustBinary, [
     'stats',
     '-d', config.dbPath
-  ], { encoding: 'utf-8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
+  ], { encoding: 'utf-8', timeout: 120000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
   // Parse text output: "Total vectors: N" and "Embedding dim: N"
   const vectors = result.match(/Total vectors:\s*(\d+)/)?.[1] || '0';
   const dim = result.match(/Embedding dim:\s*(\d+)/)?.[1] || '384';
@@ -1196,10 +1205,17 @@ function rustStats() {
  * would reliably ETIMEDOUT on exactly the indexes where the answer is most
  * useful, even though `serve` already has the same numbers in memory.
  * Mirrors the socket-first pattern `rustSearchAsync` already uses.
+ *
+ * Waits up to 60s for a starting `serve` process to become ready before
+ * falling through to the cold path — the HNSW rebuild on a large index
+ * (hundreds of thousands of vectors) routinely takes 45-60s itself, so the
+ * previous 10s wait gave up before serve was ever going to be ready, landing
+ * on the cold path anyway right in the startup window where it's most
+ * likely to collide with checkDbFormat()'s own concurrent stats process.
  */
 async function rustStatsAsync() {
   if (serveProcess && !serveReady && serveReadyPromise) {
-    await Promise.race([serveReadyPromise, new Promise((r) => setTimeout(() => r(false), 10000))]);
+    await Promise.race([serveReadyPromise, new Promise((r) => setTimeout(() => r(false), 60000))]);
   }
 
   const queryFn = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
