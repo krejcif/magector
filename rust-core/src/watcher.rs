@@ -13,6 +13,54 @@ use walkdir::WalkDir;
 
 use crate::indexer::{Indexer, INCLUDE_EXTENSIONS, MAX_FILE_SIZE};
 
+/// Path to the cross-entrypoint reindex lock, shared with the JS side
+/// (`src/index-lock.js`) — the same file both `npx magector index` and this
+/// watcher loop check before writing to `index.db`.
+fn reindex_lock_path(magento_root: &Path) -> PathBuf {
+    magento_root.join(".magector").join("reindex.pid")
+}
+
+/// Check whether the PID in `.magector/reindex.pid` belongs to a still-running
+/// process. Mirrors `getRunningIndexPid()` in `src/index-lock.js` — signal 0 /
+/// `kill -0` is an existence check, it does not actually send a signal.
+fn is_pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}")])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+            .unwrap_or(false)
+    }
+}
+
+/// Returns the PID of an external indexer (a manually-invoked `npx magector
+/// index`, or another MCP instance's background reindex) currently holding
+/// the reindex lock for this root, or `None` if the lock is absent or stale.
+/// A stale lock (dead PID) is removed so it doesn't block forever.
+fn external_reindex_pid(magento_root: &Path) -> Option<u32> {
+    let lock_path = reindex_lock_path(magento_root);
+    let contents = std::fs::read_to_string(&lock_path).ok()?;
+    let pid: u32 = contents.trim().parse().ok()?;
+    if is_pid_alive(pid) {
+        Some(pid)
+    } else {
+        let _ = std::fs::remove_file(&lock_path);
+        None
+    }
+}
+
 /// Lock a mutex, recovering from poisoning instead of propagating the panic.
 ///
 /// A poisoned mutex means another thread panicked while holding the lock
@@ -328,6 +376,21 @@ pub fn watcher_loop(
             changes.modified.len(),
             changes.deleted.len()
         );
+
+        // Defer to an external indexer (a manually-invoked `npx magector index`,
+        // or another MCP instance's background reindex) holding the same
+        // reindex.pid lock this watcher never used to check. Without this, the
+        // two could concurrently save_atomic() the same index.db and clobber
+        // each other's write — the exact failure mode that prompted the lock
+        // in the first place. Skip this cycle without touching manifest or
+        // index state; the same changes are re-detected and retried next tick.
+        if let Some(pid) = external_reindex_pid(&magento_root) {
+            tracing::warn!(
+                "Watcher: external indexer (PID {}) holds the reindex lock — deferring this cycle",
+                pid
+            );
+            continue;
+        }
 
         // 1. Tombstone modified and deleted files under a short-lived lock.
         {
@@ -654,5 +717,52 @@ mod tests {
         let db_path = PathBuf::from("/data/.magector/index.db");
         let sidecar = FileManifest::sidecar_path(&db_path);
         assert_eq!(sidecar, PathBuf::from("/data/.magector/index.manifest"));
+    }
+
+    #[test]
+    fn test_is_pid_alive_for_current_process() {
+        assert!(is_pid_alive(std::process::id()));
+    }
+
+    #[test]
+    fn test_is_pid_alive_false_for_impossible_pid() {
+        // PIDs this large cannot exist on Linux (pid_max) or macOS.
+        assert!(!is_pid_alive(999_999_999));
+    }
+
+    #[test]
+    fn test_external_reindex_pid_none_without_lock_file() {
+        let dir = make_temp_dir();
+        assert_eq!(external_reindex_pid(&dir), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_external_reindex_pid_detects_live_process() {
+        // Reproduces the bug: the watcher used to have no way to see the
+        // reindex.pid lock at all, so it would race a concurrent `npx
+        // magector index` writing the same index.db. Our own test process
+        // PID stands in for "another indexer is running".
+        let dir = make_temp_dir();
+        let lock_path = reindex_lock_path(&dir);
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        fs::write(&lock_path, std::process::id().to_string()).unwrap();
+
+        assert_eq!(external_reindex_pid(&dir), Some(std::process::id()));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_external_reindex_pid_cleans_up_stale_lock() {
+        let dir = make_temp_dir();
+        let lock_path = reindex_lock_path(&dir);
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        fs::write(&lock_path, "999999999").unwrap();
+
+        assert_eq!(external_reindex_pid(&dir), None);
+        assert!(!lock_path.exists(), "stale lock file should be removed");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
