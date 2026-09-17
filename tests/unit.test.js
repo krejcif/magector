@@ -4826,6 +4826,7 @@ async function main() {
   testToolCountIncludesTraceConfig();
   testSocketQueryDefaultTimeout();
   testIndexLockConcurrencyGuard();
+  await testRustStatsAsyncSocketFirst();
 
   console.log('\n════════════════════════════════════════════════════════════');
   console.log(`\n  Results: ${passed} passed, ${failed} failed`);
@@ -5224,6 +5225,52 @@ function testIndexLockConcurrencyGuard() {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+// ─── rustStatsAsync Socket-First Tests ──────────────────────
+
+async function testRustStatsAsyncSocketFirst() {
+  console.log('\n── rustStatsAsync (socket-first stats) ──');
+
+  // Inline reimplementation of rustStatsAsync's branching (not exported from
+  // mcp-server.js) — reproduces the bug: magento_stats used to call the cold
+  // execFileSync path unconditionally, rebuilding the whole HNSW graph even
+  // when `serve` already had the answer in memory. On a large index that
+  // rebuild alone can exceed the hardcoded 30s timeout, so `magento_stats`
+  // reliably failed on exactly the indexes where it mattered most.
+  async function rustStatsAsync(queryFn, coldPathFn) {
+    if (queryFn) {
+      try {
+        const resp = await queryFn('stats', {});
+        if (resp.ok && typeof resp.data?.vectors === 'number') {
+          return { totalVectors: resp.data.vectors, embeddingDim: 384, dbPath: 'mock' };
+        }
+      } catch {
+        // fall through
+      }
+    }
+    return coldPathFn();
+  }
+
+  // A warm serve process answers instantly via socket — cold path never runs.
+  let coldPathCalled = false;
+  const warmQueryFn = async () => ({ ok: true, data: { vectors: 221612 } });
+  const coldPathFn = () => { coldPathCalled = true; return { totalVectors: 0, embeddingDim: 384, dbPath: 'mock' }; };
+  const warmResult = await rustStatsAsync(warmQueryFn, coldPathFn);
+  assertEq(warmResult.totalVectors, 221612, 'Socket stats used when serve is warm');
+  assertEq(coldPathCalled, false, 'Cold execFileSync path skipped when socket answers');
+
+  // No serve process (secondary instance, no socket) — falls back to cold path.
+  coldPathCalled = false;
+  const noServeResult = await rustStatsAsync(null, coldPathFn);
+  assertEq(noServeResult.totalVectors, 0, 'Falls back to cold path when no serve/socket available');
+  assertEq(coldPathCalled, true, 'Cold path invoked as fallback when queryFn is null');
+
+  // Serve process exists but the query itself fails (e.g. socket timeout) — falls back.
+  coldPathCalled = false;
+  const failingQueryFn = async () => { throw new Error('Socket query timeout'); };
+  await rustStatsAsync(failingQueryFn, coldPathFn);
+  assertEq(coldPathCalled, true, 'Cold path invoked as fallback when socket query throws');
 }
 
 main().catch((e) => {
