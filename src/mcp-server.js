@@ -22,6 +22,7 @@ import { stat } from 'fs/promises';
 import { glob } from 'glob';
 import path from 'path';
 import { getRunningIndexPid, writeIndexPidFile, removeIndexPidFile } from './index-lock.js';
+import { shouldRespawnServe, RESPAWN_WINDOW_MS } from './serve-respawn.js';
 import {
   analyzeCommit,
   getStagedDiff,
@@ -211,6 +212,14 @@ function extractJson(stdout) {
 
 const PID_PATH = path.join(config.magentoRoot, '.magector', 'serve.pid');
 const SOCK_PATH = path.join(config.magentoRoot, '.magector', 'serve.sock');
+// A (re)load can legitimately take 45-60s on a large index (HNSW rebuild).
+// SERVE_RELOAD_WAIT_MS bounds how long a waiter (proxy handler, local
+// rustSearchAsync/rustStatsAsync) sits on serveReadyPromise before giving up
+// and falling to the cold path; SOCKET_QUERY_TIMEOUT_MS must stay comfortably
+// above it so a secondary's own socket round-trip doesn't time out first and
+// go cold while the proxy is still legitimately waiting.
+const SERVE_RELOAD_WAIT_MS = 75000;
+const SOCKET_QUERY_TIMEOUT_MS = 90000;
 const FORMAT_CACHE_PATH = path.join(config.magentoRoot, '.magector', 'format-ok.json');
 const PRIMARY_LOCK_PATH = path.join(config.magentoRoot, '.magector', 'primary.lock');
 
@@ -301,6 +310,7 @@ function tryAcquirePrimaryLock() {
     // Lock file exists — check if holder is alive
     try {
       const pid = parseInt(readFileSync(PRIMARY_LOCK_PATH, 'utf-8').trim(), 10);
+      if (pid === process.pid) return true; // we already hold it (e.g. re-acquiring after releasing it ourselves)
       if (pid && !isNaN(pid)) {
         process.kill(pid, 0); // throws if dead
         return false; // another instance is alive and primary
@@ -606,9 +616,8 @@ function startBackgroundReindex() {
           startBackgroundReindex();
         } else {
           logToFile('INFO', 'External reindex finished but no .new file found — skipping swap.');
-          if (serveProcess) serveProcess.kill();
           searchCache.clear();
-          startServeProcess();
+          restartServeProcessIntentionally('external reindex finished, refreshing index');
         }
       }
     }, 10000);
@@ -713,9 +722,8 @@ function startBackgroundReindex() {
       }
       logToFile('INFO', 'Background re-index completed. Restarting serve process.');
       console.error('Background re-index completed. Restarting serve process.');
-      if (serveProcess) serveProcess.kill();
       searchCache.clear();
-      startServeProcess();
+      restartServeProcessIntentionally('background re-index completed');
     } else if (signal) {
       // Killed (e.g. our own cleanup() when the MCP session ended before
       // indexing finished) — not a real failure. magector-core saves
@@ -831,6 +839,10 @@ let serveNextId = 1;
 let serveReadline = null;
 let serveReadyPromise = null;
 let serveReadyResolve = null;
+let serveExitTimestamps = []; // unexpected exits, for the respawn rate limit
+let isShuttingDown = false; // set by cleanup() so exit handlers don't respawn during our own shutdown
+let intentionalRestart = false; // set around a deliberate kill+restart (e.g. after reindex) so it isn't counted as a crash
+let isPrimary = false; // true from runAsPrimary() until we step down (budget-exhausted give-up); gates who may start the socket proxy
 
 function startServeProcess() {
   // Guard: if a live serve process already exists (e.g. started by another
@@ -841,7 +853,14 @@ function startServeProcess() {
     return;
   }
 
-  serveReadyPromise = new Promise((resolve) => { serveReadyResolve = resolve; });
+  serveReady = false; // belt-and-suspenders: never enter a spawn with a stale "ready" from a prior process
+  // Reuse a pending ready-promise if scheduleServeRespawn already created one
+  // for this respawn — replacing it here would orphan any caller that
+  // captured the earlier (still-pending) promise object during the delay,
+  // leaving it to hang until its own bounded timeout instead of resolving.
+  if (!serveReadyResolve) {
+    serveReadyPromise = new Promise((resolve) => { serveReadyResolve = resolve; });
+  }
   try {
     const args = [
       'serve',
@@ -866,15 +885,31 @@ function startServeProcess() {
     const proc = spawn(config.rustBinary, args,
       { stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
 
+    // Fail every in-flight query instead of leaving it to time out, and
+    // discard it from the FIFO queue — otherwise a new process's first
+    // reply would resolve this dead request and shift every later reply
+    // to the wrong caller.
+    const failAllPending = (reason) => {
+      for (const [, entry] of servePending) {
+        try { entry.resolve({ ok: false, error: reason }); } catch {}
+      }
+      servePending.clear();
+    };
+
     proc.on('error', (err) => {
+      if (proc !== serveProcess) return; // stale handler from an already-replaced process
       logToFile('ERR', `Serve process error: ${err.message}`);
       serveProcess = null; serveReady = false; removePidFile();
+      failAllPending('Serve process error');
       if (serveReadyResolve) { serveReadyResolve(false); serveReadyResolve = null; }
     });
     proc.on('exit', (code, signal) => {
+      if (proc !== serveProcess) return; // stale handler from an already-replaced process (e.g. intentional restart)
       logToFile('WARN', `Serve process exited (code=${code}, signal=${signal})`);
       serveProcess = null; serveReady = false; removePidFile();
+      failAllPending('Serve process exited');
       if (serveReadyResolve) { serveReadyResolve(false); serveReadyResolve = null; }
+      if (!isShuttingDown && !intentionalRestart) scheduleServeRespawn();
     });
     proc.stderr.on('data', (d) => {
       // Log serve process stderr (watcher events, tracing, errors) to .magector/magector.log
@@ -900,6 +935,15 @@ function startServeProcess() {
         if (serveReadyResolve) { serveReadyResolve(true); serveReadyResolve = null; }
         // Now that serve is up, persist primary lock state to data.db
         persistPrimaryLockToDb();
+        // The single, reliable place to start the proxy: this fires every
+        // time serve becomes ready, however that happened — first start,
+        // a crash respawn, or an intentional restart after reindexing —
+        // unlike waiting on one specific promise race in runAsPrimary,
+        // which only covers the very first start and can miss a slow load.
+        if (isPrimary && !socketServer) {
+          logToFile('INFO', 'Starting socket proxy (serve ready)');
+          startSocketProxy();
+        }
         return;
       }
 
@@ -922,12 +966,94 @@ function startServeProcess() {
   }
 }
 
+/**
+ * Respawn the serve process after an unexpected exit, rate-limited so a
+ * crash loop (e.g. the binary itself failing to start) doesn't burn CPU
+ * forever. The socket proxy keeps running across a respawn — only
+ * startServeProcess() is called here, never startSocketProxy() again.
+ */
+function scheduleServeRespawn() {
+  const now = Date.now();
+  const { respawn, delayMs, prunedTimestamps } = shouldRespawnServe(serveExitTimestamps, now);
+  serveExitTimestamps = [...prunedTimestamps, now];
+  if (!respawn) {
+    // Giving up while still holding the primary lock/proxy would be the
+    // original bug: secondaries stay "connected" to a proxy with nothing
+    // behind it and go cold forever. Step down instead, so their socket
+    // sees a close and attemptTakeover() lets one of them become primary.
+    logToFile('ERR', 'Serve process exited repeatedly — respawn budget exhausted, stepping down as primary (releasing lock + socket proxy; queries use cold-start fallback until a new primary comes up)');
+    isPrimary = false;
+    releasePrimaryLock();
+    stopSocketProxy();
+    serveExitTimestamps = [];
+    setTimeout(() => {
+      if (isShuttingDown || serveProcess) return; // already shutting down, or already primary again
+      if (tryAcquirePrimaryLock()) {
+        logToFile('INFO', 'Retrying primary role after respawn-budget cooldown');
+        runAsPrimary();
+      }
+    }, RESPAWN_WINDOW_MS);
+    return;
+  }
+  logToFile('WARN', `Serve process exited unexpectedly — respawning in ${delayMs}ms`);
+  // Create the next pending ready-promise now, not only once startServeProcess
+  // runs after the delay — otherwise anything that reads serveReadyPromise
+  // during the delay window (the proxy, rustSearchAsync/rustStatsAsync) sees
+  // the OLD, already-settled (false) promise and treats serve as permanently
+  // down for the whole delay, going cold immediately instead of waiting.
+  serveReadyPromise = new Promise((resolve) => { serveReadyResolve = resolve; });
+  setTimeout(() => {
+    if (isShuttingDown) return; // shutdown started while we were waiting
+    startServeProcess();
+  }, delayMs);
+}
+
+/**
+ * Deliberately restart serve (e.g. after a reindex finishes) without it
+ * being counted as a crash. Waits for the actual 'exit' event before
+ * spawning the replacement — starting it right after calling kill() would
+ * race getExistingServePid()'s liveness check (the old PID is often still
+ * alive for a moment after SIGTERM), which silently skipped the new spawn
+ * entirely and left serve down until the next unrelated crash/respawn.
+ * Escalates to SIGKILL if the process doesn't exit in time (e.g. hung
+ * inside save_atomic), and clears intentionalRestart on 'error' too — a
+ * stuck flag would otherwise both skip real crash respawns forever and
+ * never spawn a replacement itself.
+ */
+function restartServeProcessIntentionally(reason) {
+  const proc = serveProcess;
+  if (!proc) { startServeProcess(); return; }
+  intentionalRestart = true;
+  logToFile('INFO', `Restarting serve process (${reason})`);
+
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(killTimer);
+    intentionalRestart = false;
+    startServeProcess();
+  };
+
+  const killTimer = setTimeout(() => {
+    logToFile('WARN', 'Serve process did not exit within 15s of SIGTERM — sending SIGKILL');
+    try { proc.kill('SIGKILL'); } catch { finish(); }
+  }, 15000);
+
+  proc.once('exit', finish);
+  proc.once('error', finish);
+
+  try { proc.kill(); } catch { finish(); }
+}
+
 // ─── Singleton Socket Proxy ──────────────────────────────────────
 // Only one serve process runs per project. Other MCP instances connect
 // to a Unix socket proxy instead of spawning their own serve process.
 
 let socketServer = null;
 let isSocketClient = false; // true if we're a secondary instance using the socket
+let takeoverInProgress = false; // guards attemptTakeover() against concurrent invocations
+const proxyConnections = new Set(); // live client connections, so we can force-drop them on shutdown
 
 /**
  * Start a Unix socket server that proxies queries to the local serve process.
@@ -936,11 +1062,23 @@ let isSocketClient = false; // true if we're a secondary instance using the sock
 function startSocketProxy() {
   try { if (existsSync(SOCK_PATH)) unlinkSync(SOCK_PATH); } catch {}
   socketServer = createNetServer((conn) => {
+    proxyConnections.add(conn);
+    conn.on('close', () => proxyConnections.delete(conn));
     const rl = createInterface({ input: conn });
     rl.on('line', async (line) => {
       try {
         const req = JSON.parse(line);
-        const resp = await serveQuery(req.command, req.params || {}, req.timeout || 30000);
+        // A respawn/spawn may be in flight (serveReady false but serveReadyPromise
+        // pending) — wait for it instead of answering "not ready" immediately,
+        // which would otherwise send every connected secondary into its own
+        // cold execFileSync fallback in parallel with serve coming back up.
+        // Bounded to a realistic reload time (large-index HNSW rebuilds take
+        // 45-60s); the client's own socket timeout (SOCKET_QUERY_TIMEOUT_MS)
+        // is set comfortably above this so it doesn't give up first.
+        if (!serveReady && serveReadyPromise) {
+          await Promise.race([serveReadyPromise, new Promise((r) => setTimeout(() => r(false), SERVE_RELOAD_WAIT_MS))]);
+        }
+        const resp = await serveQuery(req.command, req.params || {}, req.timeout || SOCKET_QUERY_TIMEOUT_MS);
         conn.write(JSON.stringify(resp) + '\n');
       } catch (err) {
         conn.write(JSON.stringify({ ok: false, error: err.message }) + '\n');
@@ -960,6 +1098,56 @@ function startSocketProxy() {
     }
     logToFile('INFO', `Socket proxy listening on ${SOCK_PATH} (mode 0600)`);
   });
+}
+
+/**
+ * Stop the socket proxy and force-drop every connected client. server.close()
+ * alone only stops accepting new connections — existing ones stay open and
+ * would otherwise keep querying a proxy with no serve process behind it
+ * forever. Called when we give up trying to respawn serve, so connected
+ * secondaries see the socket close and run attemptTakeover() themselves.
+ */
+function stopSocketProxy() {
+  if (!socketServer) return;
+  for (const conn of proxyConnections) {
+    try { conn.destroy(); } catch {}
+  }
+  proxyConnections.clear();
+  try { socketServer.close(); } catch {}
+  try { if (existsSync(SOCK_PATH)) unlinkSync(SOCK_PATH); } catch {}
+  socketServer = null;
+}
+
+/**
+ * After losing the socket connection to the primary, try a few times to
+ * either reconnect (another instance may have taken over as primary) or
+ * become primary ourselves (tryAcquirePrimaryLock reclaims a stale lock).
+ * Retries every 5s for ~30s, then falls back to a slow 60s poll so we don't
+ * spin at high frequency forever if nothing else ever comes up.
+ */
+async function attemptTakeover(attempt = 0) {
+  if (globalServeQuery) return; // already reconnected or became primary
+  if (takeoverInProgress) return;
+  takeoverInProgress = true;
+  try {
+    const reconnected = await tryConnectSocket();
+    if (reconnected) {
+      logToFile('INFO', 'Reconnected to serve socket after loss');
+      return;
+    }
+    if (tryAcquirePrimaryLock()) {
+      logToFile('INFO', 'Primary lock acquired after socket loss — taking over as primary');
+      await runAsPrimary();
+      return;
+    }
+  } finally {
+    takeoverInProgress = false;
+  }
+
+  const shortRetries = 6; // ~30s at 5s intervals
+  const nextAttempt = attempt + 1;
+  const nextDelay = attempt < shortRetries ? 5000 : 60000;
+  setTimeout(() => attemptTakeover(attempt < shortRetries ? nextAttempt : attempt), nextDelay);
 }
 
 /**
@@ -990,14 +1178,7 @@ function tryConnectSocket() {
         serveReady = false;
         globalServeQuery = null;
         logToFile('WARN', `Socket ${reason} — cleared globalServeQuery, will use cold-start fallback`);
-        // Try to reconnect after a delay (primary may have restarted)
-        setTimeout(async () => {
-          if (globalServeQuery) return; // already reconnected
-          const reconnected = await tryConnectSocket();
-          if (reconnected) {
-            logToFile('INFO', 'Reconnected to serve socket after loss');
-          }
-        }, 5000);
+        attemptTakeover();
       }
       conn.on('error', () => handleSocketLoss('error'));
       conn.on('close', () => handleSocketLoss('closed'));
@@ -1071,21 +1252,34 @@ async function rustSearchAsync(query, limit = 10) {
     return Array.isArray(cached) ? cached : [];
   }
 
-  // Wait for serve process if it's starting up but not yet ready. 60s, not
-  // 10s: the HNSW rebuild on a large index routinely takes 45-60s itself, so
-  // a 10s wait gave up before serve was ever going to be ready and fell
-  // through to the (also expensive) cold path anyway.
-  if (serveProcess && !serveReady && serveReadyPromise) {
+  // Wait for serve process if it's starting up but not yet ready. Gated on
+  // (serveProcess || isPrimary), not just serveProcess: during a respawn
+  // delay serveProcess is momentarily null even though we're still primary
+  // and a new serve is about to be spawned — gating on serveProcess alone
+  // skipped this wait entirely and went straight to a cold rebuild.
+  if ((serveProcess || isPrimary) && !serveReady && serveReadyPromise) {
     logToFile('INFO', `Waiting for serve process to become ready...`);
-    await Promise.race([serveReadyPromise, new Promise(r => setTimeout(() => r(false), 60000))]);
+    await Promise.race([serveReadyPromise, new Promise(r => setTimeout(() => r(false), SERVE_RELOAD_WAIT_MS))]);
   }
 
-  // Secondary instance: retry socket if not connected (primary may have (re)started serve)
-  if (!serveProcess && !globalServeQuery) {
+  // Secondary instance: retry socket if not connected (primary may have (re)started serve).
+  // Guarded by !socketServer — an instance that owns the proxy (primary, mid
+  // respawn-delay with serveProcess momentarily null) must never connect to
+  // its own socket: that created a self-loop where the primary marked
+  // itself serveReady=true/isSocketClient=true with no real serve behind it.
+  if (!serveProcess && !globalServeQuery && !socketServer) {
     const reconnected = await tryConnectSocket();
     if (reconnected) {
       logToFile('INFO', 'rustSearchAsync: reconnected to serve socket');
       searchCache.clear(); // clear stale empty results before using new serve
+    } else if (takeoverInProgress) {
+      // We may be mid-promotion to primary ourselves (attemptTakeover ran
+      // tryAcquirePrimaryLock and is inside runAsPrimary) — give it a short
+      // beat to set up serveReadyPromise instead of going cold immediately.
+      await new Promise((r) => setTimeout(r, 3000));
+      if ((serveProcess || isPrimary) && !serveReady && serveReadyPromise) {
+        await Promise.race([serveReadyPromise, new Promise((r) => setTimeout(() => r(false), SERVE_RELOAD_WAIT_MS))]);
+      }
     }
   }
 
@@ -1093,7 +1287,7 @@ async function rustSearchAsync(query, limit = 10) {
   const queryFn = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
   if (queryFn) {
     try {
-      const resp = await queryFn('search', { query, limit });
+      const resp = await queryFn('search', { query, limit }, SOCKET_QUERY_TIMEOUT_MS);
       if (resp.ok && Array.isArray(resp.data) && resp.data.length > 0) {
         cacheSet(cacheKey, resp.data);
         return resp.data;
@@ -1214,14 +1408,15 @@ function rustStats() {
  * likely to collide with checkDbFormat()'s own concurrent stats process.
  */
 async function rustStatsAsync() {
-  if (serveProcess && !serveReady && serveReadyPromise) {
-    await Promise.race([serveReadyPromise, new Promise((r) => setTimeout(() => r(false), 60000))]);
+  // Gated on (serveProcess || isPrimary) — see rustSearchAsync for why.
+  if ((serveProcess || isPrimary) && !serveReady && serveReadyPromise) {
+    await Promise.race([serveReadyPromise, new Promise((r) => setTimeout(() => r(false), SERVE_RELOAD_WAIT_MS))]);
   }
 
   const queryFn = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
   if (queryFn) {
     try {
-      const resp = await queryFn('stats', {});
+      const resp = await queryFn('stats', {}, SOCKET_QUERY_TIMEOUT_MS);
       if (resp.ok && typeof resp.data?.vectors === 'number') {
         return { totalVectors: resp.data.vectors, embeddingDim: 384, dbPath: config.dbPath };
       }
@@ -7753,6 +7948,56 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   throw new Error(`Unknown resource: ${uri}`);
 });
 
+/**
+ * Run this instance as the primary: check/build the index, start the
+ * long-lived serve process, wait for it to become ready, then start the
+ * socket proxy other instances connect to. Called (fire-and-forget) both
+ * from main() on initial startup and from attemptTakeover() when a
+ * secondary takes over after the primary disappears.
+ */
+async function runAsPrimary() {
+  isPrimary = true; // gates startServeProcess's 'ready' handler to start the proxy — persists across later respawns/restarts too
+  try {
+    // Check DB format (uses cache → instant if already validated)
+    if (existsSync(config.dbPath)) {
+      if (!(await checkDbFormat())) {
+        logToFile('WARN', 'Database format incompatible — scheduling background re-index');
+        startBackgroundReindex();
+      } else {
+        logToFile('INFO', 'Existing database is compatible — reusing index');
+      }
+    } else if (config.magentoRoot && existsSync(config.magentoRoot)) {
+      logToFile('INFO', 'No index database found — scheduling background index');
+      startBackgroundReindex();
+    }
+
+    const canStartServe = !reindexInProgress || (existsSync(config.dbPath) && (() => { try { return statSync(config.dbPath).size > 100; } catch { return false; } })());
+    if (canStartServe) {
+      startServeProcess();
+      if (serveReadyPromise) {
+        // The actual proxy start lives in startServeProcess's 'ready' handler
+        // (guarded by isPrimary), so it fires no matter how long the load
+        // takes or which path re-spawned serve (crash respawn, reindex
+        // restart, or this first start) — a single fixed-window race here
+        // used to miss a slow 45-60s HNSW rebuild and leave the lock held
+        // with no proxy ever starting. This race is only for logging.
+        const ready = await Promise.race([
+          serveReadyPromise,
+          new Promise(r => setTimeout(() => r(false), 60000))
+        ]);
+        if (ready) {
+          console.error('Serve process ready (primary)');
+        } else {
+          logToFile('WARN', 'Serve process not ready within 60s — still loading, proxy will start once it is');
+          console.error('Serve process not ready in time, will use fallback');
+        }
+      }
+    }
+  } catch {
+    // Non-fatal: falls back to execFileSync per query
+  }
+}
+
 async function main() {
   // Don't kill existing serve processes — other MCP instances may be using them.
   // Each instance starts its own serve process; cleanup happens on exit.
@@ -7793,43 +8038,7 @@ async function main() {
       // Start serve process in background — don't block tool availability
       // Tools with filesystem fallbacks work immediately via execFileSync.
       // Serve process provides faster search once ready.
-      (async () => {
-        try {
-          // Check DB format (uses cache → instant if already validated)
-          if (existsSync(config.dbPath)) {
-            if (!(await checkDbFormat())) {
-              logToFile('WARN', 'Database format incompatible — scheduling background re-index');
-              startBackgroundReindex();
-            } else {
-              logToFile('INFO', 'Existing database is compatible — reusing index');
-            }
-          } else if (config.magentoRoot && existsSync(config.magentoRoot)) {
-            logToFile('INFO', 'No index database found — scheduling background index');
-            startBackgroundReindex();
-          }
-
-          const canStartServe = !reindexInProgress || (existsSync(config.dbPath) && (() => { try { return statSync(config.dbPath).size > 100; } catch { return false; } })());
-          if (canStartServe) {
-            startServeProcess();
-            if (serveReadyPromise) {
-              const ready = await Promise.race([
-                serveReadyPromise,
-                new Promise(r => setTimeout(() => r(false), 60000))
-              ]);
-              if (ready) {
-                logToFile('INFO', 'Serve process ready (primary)');
-                console.error('Serve process ready (primary)');
-                startSocketProxy();
-              } else {
-                logToFile('WARN', 'Serve process not ready in time, will use fallback');
-                console.error('Serve process not ready in time, will use fallback');
-              }
-            }
-          }
-        } catch {
-          // Non-fatal: falls back to execFileSync per query
-        }
-      })();
+      runAsPrimary();
     } else {
       // Another instance is starting up — try socket briefly, then fall through
       logToFile('INFO', 'Another instance is primary — trying socket...');
@@ -7844,7 +8053,8 @@ async function main() {
         }
       }
       if (!globalServeQuery) {
-        logToFile('INFO', 'Socket not available — tools will use cold-start fallback');
+        logToFile('INFO', 'Socket not available — tools will use cold-start fallback, retrying takeover in background');
+        attemptTakeover(); // keep trying to reconnect/become primary instead of parking on cold fallback forever
       }
     }
 
@@ -7864,6 +8074,7 @@ async function main() {
 
 // Cleanup on exit — kill all child processes and remove PID file
 function cleanup(reason) {
+  isShuttingDown = true; // stop the exit handler from respawning serve during our own shutdown
   logToFile('INFO', `Cleanup: ${reason || 'exit'}`);
   if (serveProcess) {
     logToFile('INFO', `Cleanup: killing serve process (PID ${serveProcess.pid})`);

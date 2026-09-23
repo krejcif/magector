@@ -13,6 +13,7 @@ import { fileURLToPath } from 'url';
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs';
 import { syncOptionalDeps } from '../scripts/sync-optional-deps.mjs';
 import { getRunningIndexPid, writeIndexPidFile, removeIndexPidFile, lockPathFor } from '../src/index-lock.js';
+import { shouldRespawnServe, MAX_RESPAWNS_PER_WINDOW, RESPAWN_WINDOW_MS, RESPAWN_BASE_DELAY_MS } from '../src/serve-respawn.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -4826,6 +4827,7 @@ async function main() {
   testToolCountIncludesTraceConfig();
   testSocketQueryDefaultTimeout();
   testIndexLockConcurrencyGuard();
+  testShouldRespawnServe();
   await testRustStatsAsyncSocketFirst();
 
   console.log('\n════════════════════════════════════════════════════════════');
@@ -5271,6 +5273,67 @@ async function testRustStatsAsyncSocketFirst() {
   const failingQueryFn = async () => { throw new Error('Socket query timeout'); };
   await rustStatsAsync(failingQueryFn, coldPathFn);
   assertEq(coldPathCalled, true, 'Cold path invoked as fallback when socket query throws');
+}
+
+// ─── Serve Respawn Rate-Limit Policy Tests ───────────────────
+
+function testShouldRespawnServe() {
+  console.log('\n── shouldRespawnServe (serve process crash-loop guard) ──');
+
+  const now = 1_000_000_000_000;
+
+  // No prior exits — respawn allowed, shortest delay.
+  {
+    const { respawn, delayMs, prunedTimestamps } = shouldRespawnServe([], now);
+    assert(respawn, 'First unexpected exit: respawn allowed');
+    assertEq(delayMs, RESPAWN_BASE_DELAY_MS, 'First respawn uses the base delay');
+    assertEq(prunedTimestamps.length, 0, 'No prior timestamps to keep');
+  }
+
+  // Growing delay as more respawns accumulate within the window.
+  {
+    const oneExit = [now - 1000];
+    const { respawn, delayMs } = shouldRespawnServe(oneExit, now);
+    assert(respawn, 'Second unexpected exit within window: respawn allowed');
+    assertEq(delayMs, RESPAWN_BASE_DELAY_MS * 2, 'Delay grows on second respawn');
+  }
+
+  // Budget exhausted — MAX_RESPAWNS_PER_WINDOW exits already in the window.
+  {
+    const exhausted = Array.from({ length: MAX_RESPAWNS_PER_WINDOW }, (_, i) => now - i * 1000);
+    const { respawn, delayMs } = shouldRespawnServe(exhausted, now);
+    assert(!respawn, `Respawn refused once ${MAX_RESPAWNS_PER_WINDOW} exits already happened in the window`);
+    assertEq(delayMs, 0, 'No delay computed when respawn is refused');
+  }
+
+  // Old exits outside the window are pruned and don't count against the budget.
+  {
+    const stale = Array.from({ length: MAX_RESPAWNS_PER_WINDOW }, () => now - RESPAWN_WINDOW_MS - 1);
+    const { respawn, prunedTimestamps } = shouldRespawnServe(stale, now);
+    assert(respawn, 'Exits outside the window no longer count against the budget');
+    assertEq(prunedTimestamps.length, 0, 'Stale timestamps are pruned from the returned state');
+  }
+
+  // Mixed: some stale, some recent — only recent ones count.
+  {
+    const mixed = [now - RESPAWN_WINDOW_MS - 1, now - 5000, now - 6000];
+    const { respawn, prunedTimestamps } = shouldRespawnServe(mixed, now);
+    assert(respawn, 'Respawn allowed when only 2 of 3 timestamps are within the window');
+    assertEq(prunedTimestamps.length, 2, 'Only the 2 in-window timestamps are kept');
+  }
+
+  // Exactly at the budget boundary: one below the max is still allowed.
+  {
+    const almost = Array.from({ length: MAX_RESPAWNS_PER_WINDOW - 1 }, (_, i) => now - i * 1000);
+    const { respawn } = shouldRespawnServe(almost, now);
+    assert(respawn, `Respawn allowed with ${MAX_RESPAWNS_PER_WINDOW - 1} prior exits (one below the cap)`);
+  }
+
+  // Empty/undefined input doesn't throw.
+  {
+    const { respawn } = shouldRespawnServe(undefined, now);
+    assert(respawn, 'Undefined timestamp history is treated as no prior exits');
+  }
 }
 
 main().catch((e) => {
