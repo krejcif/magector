@@ -321,6 +321,23 @@ pub struct WatcherStatus {
     pub interval_secs: u64,
 }
 
+/// Paths of `chunk` (relative to `magento_root`) that produced no vectors,
+/// paired with empty vector ids, for recording in the manifest.
+fn zero_entry_paths(
+    magento_root: &Path,
+    chunk: &[PathBuf],
+    indexed: &[(String, Vec<usize>)],
+) -> Vec<(String, Vec<usize>)> {
+    let produced: std::collections::HashSet<&str> =
+        indexed.iter().map(|(p, _)| p.as_str()).collect();
+    chunk
+        .iter()
+        .map(|p| p.strip_prefix(magento_root).unwrap_or(p).to_string_lossy().to_string())
+        .filter(|rel| !produced.contains(rel.as_str()))
+        .map(|rel| (rel, Vec::new()))
+        .collect()
+}
+
 /// Run the file watcher loop in a background thread.
 ///
 /// Sleeps for `interval`, then detects changes and incrementally re-indexes.
@@ -393,6 +410,7 @@ pub fn watcher_loop(
         }
 
         // 1. Tombstone modified and deleted files under a short-lived lock.
+        let mut removed_any = false;
         {
             let mut idx = lock_recover(&indexer, "indexer");
             for path in &changes.modified {
@@ -401,13 +419,22 @@ pub fn watcher_loop(
                     .unwrap_or(path)
                     .to_string_lossy()
                     .to_string();
-                idx.remove_vectors_for_path(&relative);
+                if !idx.remove_vectors_for_path(&relative).is_empty() {
+                    removed_any = true;
+                }
             }
             for path in &changes.deleted {
-                idx.remove_vectors_for_path(path);
+                if !idx.remove_vectors_for_path(path).is_empty() {
+                    removed_any = true;
+                }
             }
         }
         manifest.apply_deleted(&changes.deleted);
+
+        // Unsaved vector DB changes (tombstones, inserts). A tick that touched
+        // nothing — e.g. only re-attempted zero-entry files — must not rewrite
+        // the whole index.db.
+        let mut dirty = removed_any;
 
         // 2. Index added and modified files in bounded chunks. After each chunk
         //    we persist to disk (so an interrupted process keeps its progress
@@ -431,13 +458,39 @@ pub fn watcher_loop(
                         manifest.apply_indexed(&magento_root, &indexed);
                         indexed_files += chunk.len();
                         indexed_entries += indexed.len();
-                        // Persist progress for this chunk (crash-safe).
-                        if let Err(e) = idx.save_atomic(&db_path) {
-                            tracing::error!("Failed to persist index during watcher update: {}", e);
+
+                        // A file that matched INCLUDE_EXTENSIONS/size limits but
+                        // produced zero vectors (empty, unparseable, ...) is not
+                        // in `indexed` — index_files only returns paths that got
+                        // at least one vector. Record it in the manifest anyway
+                        // (empty vector_ids) so detect_changes stops reporting
+                        // it as "added" on every tick; a later edit still
+                        // re-triggers it via the mtime/size check.
+                        let zero_entry = zero_entry_paths(&magento_root, chunk, &indexed);
+                        if !zero_entry.is_empty() {
+                            manifest.apply_indexed(&magento_root, &zero_entry);
+                        }
+
+                        if !indexed.is_empty() {
+                            dirty = true;
+                            // Persist progress for this chunk (crash-safe).
+                            if let Err(e) = idx.save_atomic(&db_path) {
+                                tracing::error!("Failed to persist index during watcher update: {}", e);
+                            } else {
+                                dirty = false;
+                            }
                         }
                     }
                     Err(e) => {
                         tracing::error!("Incremental index error: {}", e);
+                        // The whole chunk failed to index (not a per-file zero
+                        // result). Record it as attempted anyway so it isn't
+                        // hot-looped every tick forever; a modification (mtime/
+                        // size change) will re-detect and retry it.
+                        // Earlier embedding batches of this chunk may already be in memory.
+                        dirty = true;
+                        let attempted = zero_entry_paths(&magento_root, chunk, &[]);
+                        manifest.apply_indexed(&magento_root, &attempted);
                     }
                 }
                 // Lock dropped here at end of scope, before the next chunk.
@@ -445,13 +498,16 @@ pub fn watcher_loop(
             tracing::info!("Indexed {} files ({} entries)", indexed_files, indexed_entries);
         }
 
-        // 3. Compact if the tombstone ratio is high, and always persist the
-        //    final state. The chunk loop above already saved after each chunk,
-        //    so only write again when there is something the loop did not cover:
-        //    a compaction, or a tick that only deleted files.
+        // 3. Compact if the tombstone ratio is high, and persist the final
+        //    state only if something is actually dirty: the chunk loop above
+        //    already saved after any chunk that added vectors, so a further
+        //    save here is needed only for unsaved tombstones from step 1
+        //    (e.g. a delete/modify-only tick) or for compaction. A tick where
+        //    every change turned out to be a zero-entry add leaves `dirty`
+        //    false and skips this save entirely.
         {
             let mut idx = lock_recover(&indexer, "indexer");
-            let mut needs_save = files_to_index.is_empty(); // delete-only tick
+            let mut needs_save = dirty;
             if idx.vectordb_tombstone_ratio() > COMPACT_THRESHOLD {
                 tracing::info!("Compacting vector DB (tombstone ratio > {}%)", (COMPACT_THRESHOLD * 100.0) as u32);
                 idx.compact_vectordb();
@@ -666,6 +722,73 @@ mod tests {
         assert!(
             manifest.detect_changes(&dir).unwrap().is_empty(),
             "after all chunks are applied the backlog must converge to empty"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_zero_entry_paths_excludes_indexed_files() {
+        let root = PathBuf::from("/m");
+        let chunk = vec![
+            root.join("app/code/Acme/A/Model/Foo.php"),
+            root.join("app/code/Acme/A/etc/empty.xml"),
+        ];
+        let indexed = vec![("app/code/Acme/A/Model/Foo.php".to_string(), vec![1, 2])];
+        let zero = zero_entry_paths(&root, &chunk, &indexed);
+        assert_eq!(zero, vec![("app/code/Acme/A/etc/empty.xml".to_string(), Vec::new())]);
+        assert_eq!(zero_entry_paths(&root, &chunk, &[]).len(), 2);
+    }
+
+    #[test]
+    fn test_zero_entry_file_not_reported_after_apply() {
+        // Reproduces the production bug: a file that matches INCLUDE_EXTENSIONS
+        // but yields 0 index entries (empty, unparseable, ...) must still be
+        // recorded in the manifest (with empty vector_ids) once the watcher has
+        // attempted it, otherwise detect_changes reports it as "added" forever.
+        let dir = make_temp_dir();
+        let php = dir.join("empty.php");
+        fs::write(&php, "").unwrap();
+
+        let mut manifest = FileManifest::new();
+        let changes = manifest.detect_changes(&dir).unwrap();
+        assert_eq!(changes.added.len(), 1, "empty file should be detected as added the first time");
+
+        // Simulate the watcher recording the attempted file with no vectors
+        // (what apply_indexed now does for zero-entry results).
+        manifest.apply_indexed(&dir, &[("empty.php".to_string(), Vec::new())]);
+
+        let changes_after = manifest.detect_changes(&dir).unwrap();
+        assert!(
+            changes_after.is_empty(),
+            "zero-entry file must not be re-reported once tracked in the manifest"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_zero_entry_file_retried_after_modification() {
+        // A zero-entry file that is later modified (mtime/size changes) must be
+        // re-detected and retried — being tracked with empty vector_ids does not
+        // permanently exempt it from future scans.
+        let dir = make_temp_dir();
+        let php = dir.join("empty.php");
+        fs::write(&php, "").unwrap();
+
+        let mut manifest = FileManifest::new();
+        manifest.apply_indexed(&dir, &[("empty.php".to_string(), Vec::new())]);
+        assert!(manifest.detect_changes(&dir).unwrap().is_empty());
+
+        // Modify the file so its size/mtime changes.
+        std::thread::sleep(Duration::from_millis(10));
+        fs::write(&php, "<?php echo 'now has content';").unwrap();
+
+        let changes = manifest.detect_changes(&dir).unwrap();
+        assert_eq!(
+            changes.modified.len(),
+            1,
+            "modified zero-entry file must be re-detected for retry"
         );
 
         let _ = fs::remove_dir_all(&dir);
