@@ -1,0 +1,30 @@
+{
+    "/V1/acme/notes/:id": {
+        "GET": {
+            "class": "Acme\\Ext\\Api\\ExtendedNoteRepositoryInterface",
+            "method": "get",
+            "resources": [
+                "Acme_Base::notes",
+                "Acme_Ext::notes_read"
+            ]
+        }
+    },
+    "/V1/acme/notes": {
+        "POST": {
+            "class": "Acme\\Base\\Api\\NoteRepositoryInterface",
+            "method": "save",
+            "resources": [
+                "Acme_Base::notes"
+            ]
+        }
+    },
+    "/V1/acme/fix": {
+        "GET": {
+            "class": "Acme\\Fix\\Api\\FixInterface",
+            "method": "get",
+            "resources": [
+                "anonymous"
+            ]
+        }
+    }
+}

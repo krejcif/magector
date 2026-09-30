@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<config>
+    <group id="default">
+        <job name="acme_notes_cleanup" instance="Acme\Ext\Cron\BetterCleanup" method="execute">
+            <schedule>*/15 * * * *</schedule>
+        </job>
+    </group>
+    <group id="acme_group">
+        <job name="acme_group_job" instance="Acme\Ext\Cron\GroupJob" method="run"/>
+    </group>
+</config>

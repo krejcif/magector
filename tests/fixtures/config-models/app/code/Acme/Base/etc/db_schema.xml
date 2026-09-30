@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<schema xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Setup/Declaration/Schema/etc/schema.xsd">
+    <table name="acme_note" resource="default" engine="innodb" comment="Notes">
+        <column xsi:type="int" name="note_id" unsigned="true" nullable="false" identity="true"/>
+        <column xsi:type="int" name="customer_id" unsigned="true" nullable="true"/>
+        <column xsi:type="smallint" name="store_id" unsigned="true" nullable="false" default="0"/>
+        <column xsi:type="timestamp" name="created_at" nullable="false" default="CURRENT_TIMESTAMP"/>
+        <column xsi:type="text" name="body" nullable="true"/>
+        <column xsi:type="varchar" name="legacy_code" length="32" nullable="true"/>
+        <column xsi:type="int" name="retyped" nullable="false" comment="int, disabled here" disabled="true"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY_NOTE"><column name="note_id"/></constraint>
+        <constraint xsi:type="unique" referenceId="ACME_NOTE_UNQ"><column name="customer_id"/><column name="store_id"/><column name="created_at"/></constraint>
+        <constraint xsi:type="foreign" referenceId="ACME_NOTE_CUSTOMER_FK" table="acme_note" column="customer_id" referenceTable="customer_entity" referenceColumn="entity_id" onDelete="CASCADE"/>
+        <index referenceId="ACME_NOTE_STORE" indexType="btree"><column name="store_id"/></index>
+        <index referenceId="ACME_NOTE_BODY_FTI" indexType="fulltext"><column name="body"/></index>
+    </table>
+    <table name="acme_very_long_custom_table_name_without_shortenable_words" resource="checkout" engine="innodb">
+        <column xsi:type="int" name="first_column_xyz"/>
+        <column xsi:type="int" name="second_column_xyz"/>
+        <column xsi:type="int" name="third_column_xyz"/>
+        <constraint xsi:type="unique" referenceId="ACME_LONG_UNQ"><column name="first_column_xyz"/><column name="second_column_xyz"/><column name="third_column_xyz"/></constraint>
+    </table>
+    <table name="acme_note_replica" resource="default" engine="innodb">
+        <column xsi:type="smallint" name="store_id" unsigned="true" nullable="false"/>
+        <index referenceId="ACME_NOTE_REPLICA_STORE" indexType="btree"><column name="store_id"/></index>
+    </table>
+    <table name="customer_entity" resource="default" engine="innodb">
+        <column xsi:type="int" name="entity_id" unsigned="true" nullable="false" identity="true"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY"><column name="entity_id"/></constraint>
+    </table>
+</schema>

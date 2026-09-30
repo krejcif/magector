@@ -42,6 +42,45 @@ Still open:
 | A9 | Built-in: `const` / `init_parameter` arguments (needs PHP's `defined()`); nested-array `SortItems` order is approximated (single-level stable sort) — affects only which of several errors is first. |
 | A10 | Native run over a whole project: ~10 s (3,077 files, 15 areas), no cache between calls. |
 
+## A2. Structural answers — done: `find_api`, `find_graphql`, `find_cron`, `find_db_schema`, `module_structure`
+
+Verified against the installation and against Magento's readers on a synthetic fixture
+(`docs/verification.md`). Found on the way, still open:
+
+| # | Item |
+|---|------|
+| A11 | `validate_config`: Magento-specific GraphQL breakage — a `{` / `}` inside a type body (object default value, description) cuts the type and fails the whole schema; text like `type Foo {` in a comment or description creates or breaks a type. Report it. |
+| A12 | `validate_config`: `xsi:type` without `xmlns:xsi` on the root loads (namespace error, level 2) but the type is lost — a db_schema column then fails `setup:upgrade`. Report it. |
+| A13 | Cron: jobs / schedules from `core_config_data` are only noted; the native path (MAGECTOR_PHP) could read them. |
+| A14 | Supplo: `core_config_data` has cron jobs without any class (`magento_scheduled_import_export_log_clean` from EE, `amasty_xml_sitemap_generate`). |
+| A15 | **Class lookup reads only composer's PSR-4 map** — `autoload_classmap.php` and PSR-0 (`autoload_namespaces.php`) are not read. On the project 1,475 classes load only through the classmap (mostly dev tools, also `Cm_Cache_Backend_Redis`, `Credis_Client`); 67 of them have no namespace and a file named differently from the class, so the file-name fallback does not find them either → a class hierarchy through them is cut (inherited plugins can be missed). Fix: read both maps; verify against `Composer\Autoload\ClassLoader::findFile()` for every class. |
+| A16 | Cron (adversarial review): the `system/default/crontab` of app/etc/config.php and env.php is not read (only config.xml); several `<default>` / `<crontab>` nodes in one config.xml — only the first is read; a later `<schedule>` holding a comment does not replace the earlier one in Magento (Magector replaces it). |
+| A17 | webapi (review): two routes whose url differs only by surrounding whitespace are separate DOM nodes in Magento, and the last wins whole; Magector merges them. |
+| A18 | GraphQL (review): a duplicate definition swallowed into another type's chunk replaces the earlier one in Magento, Magector merges them (more, not less); escapes inside a block string (triple quotes) in `@resolver(class: …)`. |
+| A19 | XML attribute values: libxml turns tabs / newlines into spaces, `parseXml` keeps them (e.g. db_schema comments). |
+| A20 | Returns more, harmless: `implements` forms Magento does not recognise (one-letter interface name, leading `&`); `<schedule>0</schedule>` (Magento drops it); two indexes with the same generated name (Magento keeps the last); a foreign key to a table on another shard (Magento skips it). |
+
+## A3. Performance (measured on the project, see docs/verification.md)
+
+Done: module discovery from the registrations and one listing of the modules' etc/ instead of a walk of
+the tree per pattern (each walk ~1 s); applyModuleOrder computed a file's module per comparison (1.6 s of
+a 2.8 s first call); `find_observer` no longer searches dispatchers (4.9 s per call); the PHP file list
+is walked once per session. First call now 0.15–0.5 s, repeated calls 8–110 ms for the DI / event /
+config tools.
+
+Still slower than grep on a first call (everything reads all PHP files):
+
+| # | Tool | First call | Repeat |
+|---|---|---|---|
+| P1 | `find_implementors` (class hierarchy) | 8.0 s | 1 ms |
+| P2 | `find_event_flow` / `find_event_dispatchers` | 3.0 s | 0.45 s |
+| P3 | `impact_analysis` | 2.5 s | — |
+| P4 | `find_callers` | 1.7 s | — |
+| P5 | `find_di_wiring` | 1.2 s (after the DI model) | — |
+
+Fix: an index of PHP files by content (declared types, extends / implements, dispatch() names) stored
+beside the vector index and refreshed by mtime, so a session does not re-read 73k files.
+
 ## B. Decision needed
 
 | # | Question | Now | Proposal |
@@ -54,7 +93,7 @@ Still open:
 |---|------|
 | C1 | `find_callers`: calls through factory-created instances (`$f->create()->x()`) and untyped variables |
 | C2 | `trace_flow` deep for GraphQL stops at the resolver (does not follow the injected service → preference → plugins) |
-| C3 | Remaining regex readers: `trace_shipping_chain`, `trace_api`, `trace_call_chain` (only comment stripping applied) |
+| C3 | Remaining regex readers: `trace_shipping_chain`, `trace_api`, `trace_call_chain` (only comment stripping applied); semantic-only: `find_config`, `find_template`, `find_block`, `find_trigger`, `performance_profile` |
 | C4 | Generated classes (`generated/`: Factory, Proxy, Interceptor) and classes without a file → hierarchy unknown, inherited plugins can be missed, interceptability "unknown" |
 
 ## D. Not fixed — returns more / behaviour (left on purpose)

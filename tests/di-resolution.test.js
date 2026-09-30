@@ -158,8 +158,11 @@ async function main() {
     check('di.xml: a comment opener inside CDATA does not hide the declarations after it', t, {
       has: ['Runs: `Acme\\Ext\\Plugin\\OverridePlugin`'],
     });
-    check('find_plugin: the semantic block is labelled as not resolved against targetClass', t, {
-      has: ['### Similar plugin code (semantic, not filtered by targetClass)'],
+    // The semantic block keeps its label ("Similar plugin code (semantic, not filtered by targetClass)")
+    // when it has results; without any (no index here) it is left out instead of printing an empty one.
+    check('find_plugin: no empty semantic block (tokens) — only the structural sections', t, {
+      hasNot: ['{"results":[],"count":0}', '### Similar plugin code'],
+      has: ['### DI Plugin Registrations for'],
     });
 
     t = await client.call('magento_find_plugin', { targetClass: 'Acme\\Core\\Model\\Guarded' });

@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<routes>
+    <route url="/V1/acme/fix" method="GET"><service class="Acme\Fix\Api\FixInterface" method="get"/><resources><resource ref="anonymous"/></resources></route>
+</routes>

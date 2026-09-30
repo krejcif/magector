@@ -1,0 +1,2 @@
+<?xml version="1.0"?>
+<schema xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><table name="acme_off" resource="default"><column xsi:type="int" name="id"/></table></schema>

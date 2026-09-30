@@ -42,6 +42,9 @@ import {
   createMemberResolver, interceptionStatus, buildClassHierarchy, instancesOf, applyModuleOrder, parsePhpFile,
   checkXmlWellFormed, checkConfigValues, magentoInvalidXmlMessage,
 } from './di-config.js';
+import {
+  moduleConfigFiles, unreadModuleConfigFiles, buildWebapiModel, buildGraphqlModel, buildCronModel, buildDbSchemaModel,
+} from './magento-config.js';
 import { defaultDbPath, manifestPath, tempDbPathFor, swapInIndex } from './paths.js';
 import { createRequire } from 'module';
 const __pkg = createRequire(import.meta.url)('../package.json');
@@ -1622,7 +1625,7 @@ function readFullMethodBody(filePath, methodName, maxLines = 60) {
  */
 async function parseFieldsetXml(filterFieldset, filterAspect) {
   const root = config.magentoRoot;
-  const fieldsetFiles = await glob('**/etc/fieldset.xml', { cwd: root, absolute: true, nodir: true });
+  const fieldsetFiles = await moduleEtcGlob(root, '**/etc/fieldset.xml', { absolute: true });
   const results = [];
   for (const fsFile of fieldsetFiles) {
     let content;
@@ -1765,7 +1768,7 @@ async function traceShippingChain(carrierOrMethod) {
   }));
 
   // 2. Find plugins on AbstractCarrierInterface::collectRates
-  const diFiles = await glob('**/etc/**/di.xml', { cwd: root, absolute: true, nodir: true });
+  const diFiles = await moduleEtcGlob(root, '**/etc/**/di.xml', { absolute: true });
   for (const diFile of diFiles) {
     let content;
     try { content = readFileSync(diFile, 'utf-8'); } catch { continue; }
@@ -2034,12 +2037,7 @@ async function parseGraphqlSchema(entryPoint) {
 
   let graphqlsFiles;
   try {
-    graphqlsFiles = await glob('**/etc/**/*.graphqls', {
-      cwd: root,
-      absolute: true,
-      nodir: true,
-      ignore: ['**/test/**', '**/tests/**', '**/Test/**', '**/Tests/**', '**/node_modules/**']
-    });
+    graphqlsFiles = await moduleEtcGlob(root, '**/etc/**/*.graphqls', { absolute: true });
   } catch {
     return schemas;
   }
@@ -2419,7 +2417,7 @@ const diXmlCache = {
 async function getDiXmlFiles(root) {
   if (diXmlCache.root !== root || !diXmlCache.paths) {
     diXmlCache.root = root;
-    diXmlCache.paths = await glob('**/etc/**/di.xml', { cwd: root, absolute: true, nodir: true });
+    diXmlCache.paths = await moduleEtcGlob(root, '**/etc/**/di.xml', { absolute: true });
     diXmlCache.files.clear();
   }
   const results = [];
@@ -2505,6 +2503,121 @@ async function getDiModel(root) {
   return diModelCache.model;
 }
 
+// ─── Module discovery and module config files ───────────────────
+// Magento reads configuration only from the etc/ of registered modules and app/etc. Walking the
+// whole tree for every `**/etc/…` pattern cost ~1 s each on a 73k-file project (4–5 walks on the
+// first call); the modules are known from the registrations, so their etc/ directories are listed
+// once per session instead. Files outside them (dev/tests sandboxes, the magento2-base copy of
+// app/etc, unregistered copies of a module) are never read by Magento and are not listed.
+
+// app/etc/registration_globlist.php of Magento 2.4 (used when the project has none)
+const DEFAULT_REGISTRATION_GLOBS = [
+  'app/code/*/*/registration.php', 'app/design/*/*/*/registration.php', 'app/i18n/*/*/registration.php',
+  'lib/internal/*/*/registration.php', 'lib/internal/*/*/*/registration.php', 'setup/src/*/*/registration.php',
+];
+const MODULE_XML_IGNORE = ['**/dev/tests/**', '**/Test/**', '**/node_modules/**'];
+const moduleFilesCache = { root: null, moduleXmls: null, etcFiles: null, installed: false };
+
+/**
+ * etc/module.xml of every registered module: registration.php files composer autoloads
+ * (vendor/composer/autoload_files.php) and those app/etc/registration_globlist.php names — what
+ * Magento's ComponentRegistrar sees. Without a composer install (a partial checkout, a fixture) every
+ * etc/module.xml of the tree counts.
+ */
+async function discoverModuleXmls(root) {
+  if (moduleFilesCache.root === root && moduleFilesCache.moduleXmls) return moduleFilesCache.moduleXmls;
+  const dirs = new Set();
+  let composerList = false;
+  try {
+    const src = readFileSync(path.join(root, 'vendor', 'composer', 'autoload_files.php'), 'utf-8');
+    composerList = true;
+    for (const m of src.matchAll(/\$(vendorDir|baseDir)\s*\.\s*'([^']*\/registration\.php)'/g)) {
+      const abs = path.join(m[1] === 'vendorDir' ? path.join(root, 'vendor') : root, m[2]);
+      dirs.add(path.relative(root, path.dirname(abs)));
+    }
+  } catch { /* no composer install */ }
+  let patterns = DEFAULT_REGISTRATION_GLOBS;
+  try {
+    const list = readFileSync(path.join(root, 'app', 'etc', 'registration_globlist.php'), 'utf-8');
+    const found = [...list.matchAll(/'([^']+\/registration\.php)'/g)].map(m => m[1]);
+    if (found.length) patterns = found;
+  } catch { /* default list */ }
+  for (const p of patterns) {
+    try { for (const f of await glob(p, { cwd: root, nodir: true })) dirs.add(path.dirname(f)); } catch { /* none */ }
+  }
+  // A registration.php may register modules below it (Mirakl's includes */registration.php), so the
+  // modules one and two levels below a registration count too — tests and dev sandboxes excepted
+  const skip = new Set(['Test', 'Tests', 'test', 'tests', 'dev', 'node_modules', 'etc', 'view', 'i18n']);
+  const candidates = new Set();
+  for (const d of dirs) {
+    candidates.add(`${d}/etc/module.xml`);
+    const walk = (rel, depth) => {
+      if (depth > 2) return;
+      let entries;
+      try { entries = readdirSync(path.join(root, rel), { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (!e.isDirectory() || skip.has(e.name)) continue;
+        candidates.add(`${rel}/${e.name}/etc/module.xml`);
+        walk(`${rel}/${e.name}`, depth + 1);
+      }
+    };
+    walk(d, 1);
+  }
+  let rels = [...candidates].filter(r => existsSync(path.join(root, r)));
+  if (!composerList) {
+    rels = [...new Set([...rels, ...await glob('**/etc/module.xml', { cwd: root, nodir: true, ignore: MODULE_XML_IGNORE })])];
+  }
+  moduleFilesCache.root = root;
+  moduleFilesCache.installed = composerList;
+  moduleFilesCache.moduleXmls = rels.sort();
+  moduleFilesCache.etcFiles = null;
+  return moduleFilesCache.moduleXmls;
+}
+
+function listFilesRecursive(absDir, relDir, out) {
+  let entries;
+  try { entries = readdirSync(absDir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    const rel = `${relDir}/${e.name}`;
+    if (e.isDirectory()) listFilesRecursive(path.join(absDir, e.name), rel, out);
+    else if (e.isFile()) out.push(rel);
+  }
+}
+
+/** Every file under the etc/ of each registered module and under app/etc (relative paths). */
+async function getModuleEtcFiles(root) {
+  const idx = await getModuleIndex(root);
+  if (moduleFilesCache.root === root && moduleFilesCache.etcFiles) return moduleFilesCache.etcFiles;
+  const out = [];
+  for (const m of idx.modules.values()) listFilesRecursive(path.join(root, m.dir, 'etc'), `${m.dir}/etc`, out);
+  listFilesRecursive(path.join(root, 'app', 'etc'), 'app/etc', out);
+  moduleFilesCache.etcFiles = [...new Set(out)].sort();
+  return moduleFilesCache.etcFiles;
+}
+
+/** `**\/etc/<rest>` glob pattern → RegExp over a relative path (**, *, {a,b}). */
+function etcPatternRegExp(pattern) {
+  const rest = pattern.replace(/^\*\*\/etc\//, '');
+  let re = '';
+  for (let i = 0; i < rest.length; i++) {
+    const c = rest[i];
+    if (rest.startsWith('**/', i)) { re += '(?:[^/]+/)*'; i += 2; } else if (c === '*') re += '[^/]*';
+    else if (c === '{') { const end = rest.indexOf('}', i); re += `(?:${rest.slice(i + 1, end).split(',').map(s => s.replace(/[.+^$()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*')).join('|')})`; i = end; } else re += c.replace(/[.+^$()|[\]\\?]/g, '\\$&');
+  }
+  return new RegExp(`(?:^|/)etc/${re}$`);
+}
+
+/** Drop-in for glob('**\/etc/…'): the matching files of the registered modules' etc/ and app/etc. */
+async function moduleEtcGlob(root, pattern, { absolute = false } = {}) {
+  await discoverModuleXmls(root);
+  // Not a composer install (a partial checkout, a fixture): which files count is unknown — every match
+  // (tests and dev sandboxes excepted, as Magento never reads them)
+  if (!moduleFilesCache.installed) return glob(pattern, { cwd: root, nodir: true, absolute, ignore: MODULE_XML_IGNORE.concat('**/tests/**') });
+  const re = etcPatternRegExp(pattern);
+  const files = (await getModuleEtcFiles(root)).filter(f => re.test(f));
+  return absolute ? files.map(f => path.join(root, f)) : files;
+}
+
 const moduleIndexCache = { root: null, idx: null };
 
 /** Modules, their load order (app/etc/config.php) and dependencies (<sequence>, composer require). */
@@ -2512,7 +2625,7 @@ async function getModuleIndex(root) {
   if (moduleIndexCache.root === root && moduleIndexCache.idx) return moduleIndexCache.idx;
   let moduleXmls = [];
   try {
-    const files = await glob('**/etc/module.xml', { cwd: root, nodir: true, ignore: ['**/dev/tests/**', '**/Test/**'] });
+    const files = await discoverModuleXmls(root);
     moduleXmls = files.map(rel => {
       try { return { relPath: rel, content: readFileSync(path.join(root, rel), 'utf-8') }; } catch { return null; }
     }).filter(Boolean);
@@ -3633,8 +3746,8 @@ async function findApiReferences(root, className) {
   const model = await getDiModel(root);
   if (apiFilesCache.root !== root) {
     try {
-      apiFilesCache.webapi = await glob('**/etc/webapi.xml', { cwd: root, absolute: true, nodir: true });
-      apiFilesCache.graphql = await glob('**/etc/*.graphqls', { cwd: root, absolute: true, nodir: true });
+      apiFilesCache.webapi = await moduleEtcGlob(root, '**/etc/webapi.xml', { absolute: true });
+      apiFilesCache.graphql = await moduleEtcGlob(root, '**/etc/*.graphqls', { absolute: true });
       apiFilesCache.root = root;
     } catch { return out; }
   }
@@ -3692,7 +3805,7 @@ async function resolveControllerRoute(root, route, area) {
   const [frontName, ctrl = 'index', action = 'index'] = parts;
   const camel = seg => seg.split('_').map(p => p.charAt(0).toUpperCase() + p.slice(1)).join('/');
   let files = [];
-  try { files = await glob('**/etc/{adminhtml,frontend}/routes.xml', { cwd: root, nodir: true }); } catch { return out; }
+  try { files = await moduleEtcGlob(root, '**/etc/{adminhtml,frontend}/routes.xml'); } catch { return out; }
   const idx = await getModuleIndex(root);
   for (const rel of files) {
     const fileArea = areaFromPath(rel);
@@ -3771,7 +3884,7 @@ function formatObserverLine(obs) {
   return `- **${obs.name}** → ${target}${tags} (${obs.file})\n`;
 }
 
-async function traceEventFlow(eventName) {
+async function traceEventFlow(eventName, { dispatchers = true } = {}) {
   const root = config.magentoRoot;
 
   const result = {
@@ -3783,7 +3896,7 @@ async function traceEventFlow(eventName) {
 
   // 1. Parse all events.xml for observer declarations — every declaration, including the ones that
   // only disable or modify an observer declared elsewhere (no `instance`), with the DI area.
-  const eventsFiles = await glob('**/etc/**/events.xml', { cwd: root, absolute: true, nodir: true });
+  const eventsFiles = await moduleEtcGlob(root, '**/etc/**/events.xml', { absolute: true });
   for (const file of eventsFiles) {
     let content;
     try { content = readFileSync(file, 'utf-8'); } catch { continue; }
@@ -3795,7 +3908,7 @@ async function traceEventFlow(eventName) {
   }
 
   // 2. Dispatchers: exact dispatch('event_name') call sites (not semantic neighbours)
-  try {
+  if (dispatchers) try {
     const exact = await findEventDispatchers(eventName);
     result.dispatchers = exact.dispatchers.slice(0, 20).map(d => ({
       path: d.path,
@@ -4044,7 +4157,7 @@ async function findCallers(methodName, className) {
   }
 
   // 2. XML references
-  const xmlFiles = await glob('**/etc/**/*.xml', { cwd: root, absolute: true, nodir: true });
+  const xmlFiles = await moduleEtcGlob(root, '**/etc/**/*.xml', { absolute: true });
   for (const xmlFile of xmlFiles) {
     let content;
     try { content = readFileSync(xmlFile, 'utf-8'); } catch { continue; }
@@ -4341,7 +4454,7 @@ async function traceDataFlow(attributeKey, modelClass) {
   }
 
   // 2. Search XML files (sales.xml, extension_attributes.xml) for attribute references
-  const xmlFiles = await glob('**/etc/**/*.xml', { cwd: root, absolute: true, nodir: true });
+  const xmlFiles = await moduleEtcGlob(root, '**/etc/**/*.xml', { absolute: true });
   const escapedKey = attributeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const xmlRegex = new RegExp(escapedKey);
 
@@ -4376,6 +4489,20 @@ async function traceDataFlow(attributeKey, modelClass) {
 // ─── Find Event Dispatchers ────────────────────────────────────
 // Find all PHP locations where a specific Magento event is dispatched
 
+const phpFileListCache = { root: null, files: null };
+
+/** Every PHP file of the tree except tests — one walk per session (~1.3 s on 73k files). */
+async function getPhpFileList(root) {
+  if (phpFileListCache.root !== root || !phpFileListCache.files) {
+    phpFileListCache.files = await glob('**/*.php', {
+      cwd: root, absolute: true, nodir: true,
+      ignore: ['**/test/**', '**/tests/**', '**/Test/**', '**/Tests/**'],
+    });
+    phpFileListCache.root = root;
+  }
+  return phpFileListCache.files;
+}
+
 async function findEventDispatchers(eventName) {
   const root = config.magentoRoot;
 
@@ -4392,11 +4519,8 @@ async function findEventDispatchers(eventName) {
     `dispatch\\s*\\(\\s*['"]${escaped}['"]`, 'i'
   );
 
-  // 1. Grep PHP files for exact dispatch calls
-  const phpFiles = await glob('**/*.php', {
-    cwd: root, absolute: true, nodir: true,
-    ignore: ['**/test/**', '**/tests/**', '**/Test/**', '**/Tests/**']
-  });
+  // 1. Grep PHP files for exact dispatch calls (the file list is walked once per session)
+  const phpFiles = await getPhpFileList(root);
 
   for (const phpFile of phpFiles) {
     let content;
@@ -4437,7 +4561,7 @@ async function findEventDispatchers(eventName) {
   }
 
   // 2. Count registered observers for context
-  const eventsFiles = await glob('**/etc/**/events.xml', { cwd: root, absolute: true, nodir: true });
+  const eventsFiles = await moduleEtcGlob(root, '**/etc/**/events.xml', { absolute: true });
   for (const file of eventsFiles) {
     let content;
     try { content = readFileSync(file, 'utf-8'); } catch { continue; }
@@ -4531,7 +4655,7 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
 
   // Load events.xml index
   const eventObserverMap = new Map();
-  const eventFiles = await glob('**/etc/**/events.xml', { cwd: root, absolute: true, nodir: true });
+  const eventFiles = await moduleEtcGlob(root, '**/etc/**/events.xml', { absolute: true });
   for (const evFile of eventFiles) {
     let content;
     try { content = readFileSync(evFile, 'utf-8'); } catch { continue; }
@@ -4558,7 +4682,7 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
   async function resolvePreference(interfaceName) {
     if (prefCache.has(interfaceName)) return prefCache.get(interfaceName);
     const shortName = interfaceName.split('\\').pop();
-    const diXmlFiles = await glob('**/etc/di.xml', { cwd: root, absolute: true, nodir: true });
+    const diXmlFiles = await moduleEtcGlob(root, '**/etc/di.xml', { absolute: true });
     for (const diFile of diXmlFiles) {
       let content;
       try { content = readFileSync(diFile, 'utf-8'); } catch { continue; }
@@ -4778,7 +4902,7 @@ async function traceConfig(configPath, keyword) {
     // Search system.xml for the keyword
     const kw = keyword.toLowerCase();
     try {
-      const sysXmlFiles = await glob('**/etc/adminhtml/system.xml', { cwd: root, absolute: true, nodir: true });
+      const sysXmlFiles = await moduleEtcGlob(root, '**/etc/adminhtml/system.xml', { absolute: true });
       for (const f of sysXmlFiles) {
         try {
           const content = readFileSync(f, 'utf-8');
@@ -4817,7 +4941,7 @@ async function traceConfig(configPath, keyword) {
 
     // 1. Find system.xml definition
     try {
-      const sysXmlFiles = await glob('**/etc/adminhtml/system.xml', { cwd: root, absolute: true, nodir: true });
+      const sysXmlFiles = await moduleEtcGlob(root, '**/etc/adminhtml/system.xml', { absolute: true });
       for (const f of sysXmlFiles) {
         try {
           const content = readFileSync(f, 'utf-8');
@@ -5960,7 +6084,9 @@ const _callToolHandler = async (request) => {
     'magento_find_preference', 'magento_find_table_usage', 'magento_find_controller', 'magento_find_implementors',
     // Filesystem only — PHP sources and config files, no vector search
     'magento_trace_call_chain', 'magento_trace_config', 'magento_find_fieldset',
-    'magento_validate_config'];
+    'magento_validate_config',
+    // Structural answers from webapi.xml / schema.graphqls / crontab.xml / db_schema.xml, semantic only added
+    'magento_find_api', 'magento_find_graphql', 'magento_find_cron', 'magento_find_db_schema'];
   if (warmupInProgress && !indexFreeTools.includes(name)) {
     logToFile('REQ', `${name} → blocked (warmup: loading index)`);
     return {
@@ -6317,7 +6443,10 @@ const _callToolHandler = async (request) => {
           : { diRegistrations: [], virtualOf: null, classStatus: null };
 
         // The semantic block ranks plugin code by similarity; only the DI sections below are resolved against targetClass.
-        let text = (args.targetClass ? '### Similar plugin code (semantic, not filtered by targetClass)\n' : '') + formatSearchResults(enrichedResults);
+        // No semantic results (no index, or nothing ranked): no empty block — it only costs tokens
+        let text = enrichedResults.length || !args.targetClass
+          ? (args.targetClass ? '### Similar plugin code (semantic, not filtered by targetClass)\n' : '') + formatSearchResults(enrichedResults)
+          : '';
         const exactRegs = diRegistrations.filter(r => !r.isSubNamespace);
         const subNsRegs = diRegistrations.filter(r => r.isSubNamespace);
         if (diRegistrations.length > 0) {
@@ -6336,6 +6465,7 @@ const _callToolHandler = async (request) => {
             text += `> These intercept classes in the \\${args.targetClass}\\ namespace subtree — operations, state commands, etc.\n\n`;
           }
           const orderedRegs = [...exactRegs, ...subNsRegs];
+          const shownBodies = new Set();          // a plugin class registered in several areas: its code once
           let inSubNs = false;
           for (const reg of orderedRegs) {
             if (!inSubNs && reg.isSubNamespace) {
@@ -6360,7 +6490,11 @@ const _callToolHandler = async (request) => {
               for (const m of reg.methods) {
                 const niTag = m.notIntercepted ? ` **[does not run: ${m.notIntercepted}]**` : '';
                 text += `  - \`${m.type}\` **${m.targetMethod}** → \`${m.name}()\`${niTag}\n`;
-                if (m.body) {
+                const bodyKey = `${reg.resolvedFile}::${m.name}`;
+                if (m.body && shownBodies.has(bodyKey)) {
+                  text += '    _(code shown above)_\n';
+                } else if (m.body) {
+                  shownBodies.add(bodyKey);
                   const indentedBody = m.body.split('\n').join('\n    ');
                   text += '    ' + '```php\n    ' + indentedBody + '\n    ' + '```\n';
                 }
@@ -6380,8 +6514,9 @@ const _callToolHandler = async (request) => {
       }
 
       case 'magento_find_observer': {
-        // Primary: parse events.xml for exact event name match (structural, not semantic)
-        const eventFlow = await traceEventFlow(args.eventName);
+        // Primary: parse events.xml for exact event name match (structural, not semantic).
+        // Dispatchers are not part of this answer — finding them reads every PHP file.
+        const eventFlow = await traceEventFlow(args.eventName, { dispatchers: false });
         let text = '';
 
         if (eventFlow.observers.length > 0) {
@@ -6458,18 +6593,14 @@ const _callToolHandler = async (request) => {
       }
 
       case 'magento_find_api': {
-        let query = `webapi route ${args.query}`;
-        if (args.method) query += ` method="${args.method}"`;
-
-        const raw = await rustSearchAsync(query, 30);
-        let results = rerank(raw.map(normalizeResult), { pathContains: ['webapi.xml'] });
-
-        return {
-          content: [{
-            type: 'text',
-            text: formatSearchResults(results.slice(0, 15))
-          }]
-        };
+        const text = await apiText(config.magentoRoot, args || {});
+        let semantic = '';
+        try {
+          const raw = await rustSearchAsync(`webapi route ${args.query}`, 20);
+          const sem = raw.map(normalizeResult).filter(r => r.path?.includes('webapi.xml') || r.path?.includes('/Api/'));
+          if (sem.length) semantic = `\n### Related files (semantic — candidates, not complete)\n` + formatSearchResults(sem.slice(0, 10));
+        } catch { /* no index: the structural answer stands alone */ }
+        return { content: [{ type: 'text', text: text + semantic }] };
       }
 
       case 'magento_find_controller': {
@@ -6545,90 +6676,40 @@ const _callToolHandler = async (request) => {
       }
 
       case 'magento_find_cron': {
-        const query = `cron job ${args.jobName}`;
-        const raw = await rustSearchAsync(query, 30);
-        let results = raw.map(normalizeResult).filter(r =>
-          r.path?.includes('crontab.xml') || r.path?.includes('/Cron/')
-        );
-        results = rerank(results, { pathContains: ['crontab.xml', '/Cron/'] });
-
-        return {
-          content: [{
-            type: 'text',
-            text: formatSearchResults(results.slice(0, 15))
-          }]
-        };
+        const text = await cronText(config.magentoRoot, args || {});
+        let semantic = '';
+        try {
+          const raw = await rustSearchAsync(`cron job ${args.jobName}`, 20);
+          const sem = raw.map(normalizeResult).filter(r => r.path?.includes('/Cron/'));
+          if (sem.length) semantic = `\n### Related files (semantic — candidates, not complete)\n` + formatSearchResults(sem.slice(0, 10));
+        } catch { /* no index: the structural answer stands alone */ }
+        return { content: [{ type: 'text', text: text + semantic }] };
       }
 
       case 'magento_find_graphql': {
-        let query = `graphql ${args.query}`;
-        if (args.schemaType) query += ` ${args.schemaType}`;
-
-        const raw = await rustSearchAsync(query, 40);
-        let results = raw.map(normalizeResult).filter(r =>
-          r.isResolver || r.path?.includes('/Resolver/') ||
-          r.path?.includes('.graphqls') || r.type === 'graphql'
-        );
-        results = rerank(results, { isResolver: true, pathContains: ['.graphqls', '/Resolver/'] });
-
-        return {
-          content: [{
-            type: 'text',
-            text: formatSearchResults(results.slice(0, 15))
-          }]
-        };
+        const text = await graphqlText(config.magentoRoot, args || {});
+        let semantic = '';
+        try {
+          const raw = await rustSearchAsync(`graphql ${args.query}`, 30);
+          const sem = raw.map(normalizeResult).filter(r => r.isResolver || r.path?.includes('/Resolver/'));
+          if (sem.length) semantic = `\n### Related files (semantic — candidates, not complete)\n` + formatSearchResults(sem.slice(0, 10));
+        } catch { /* no index: the structural answer stands alone */ }
+        return { content: [{ type: 'text', text: text + semantic }] };
       }
 
       case 'magento_find_db_schema': {
-        // Search both declarative schema (db_schema.xml) and legacy Setup scripts
-        const declQuery = `db_schema.xml table ${args.tableName} column declarative schema`;
-        const legacyQuery = `create_table ${args.tableName} legacy_schema table_created ${args.tableName} setup install schema newTable addColumn`;
-        const [declRaw, legacyRaw] = await Promise.all([
-          rustSearchAsync(declQuery, 40),
-          rustSearchAsync(legacyQuery, 30)
-        ]);
-
-        let declResults = declRaw.map(normalizeResult).filter(r =>
-          r.path?.includes('db_schema.xml')
-        );
-        declResults = rerank(declResults, { fileType: 'xml', pathContains: ['db_schema.xml'] });
-
-        let legacyResults = legacyRaw.map(normalizeResult).filter(r => {
-          const p = r.path || '';
-          return (p.includes('/Setup/') || p.includes('InstallSchema') ||
-                  p.includes('UpgradeSchema') || p.includes('/Patch/')) &&
-                 (r.snippet?.toLowerCase().includes(args.tableName.toLowerCase()) ||
-                  r.searchText?.toLowerCase().includes(args.tableName.toLowerCase()));
-        });
-
-        // Deduplicate by path
-        const seen = new Set(declResults.map(r => r.path));
-        for (const r of legacyResults) {
-          if (!seen.has(r.path)) {
-            seen.add(r.path);
-            declResults.push(r);
-          }
-        }
-
-        // Add section headers
-        let output = '';
-        const xmlResults = declResults.filter(r => r.path?.includes('db_schema.xml'));
-        const setupResults = declResults.filter(r => !r.path?.includes('db_schema.xml'));
-
-        if (xmlResults.length > 0) {
-          output += formatSearchResults(xmlResults.slice(0, 10));
-        }
-        if (setupResults.length > 0) {
-          output += `\n\n### Legacy Setup Scripts (InstallSchema/UpgradeSchema)\n`;
-          output += formatSearchResults(setupResults.slice(0, 10));
-        }
-
-        return {
-          content: [{
-            type: 'text',
-            text: output || formatSearchResults([])
-          }]
-        };
+        const text = await dbSchemaText(config.magentoRoot, args || {});
+        let legacy = '';
+        try {
+          const raw = await rustSearchAsync(`create_table ${args.tableName} legacy_schema table_created ${args.tableName} setup install schema newTable addColumn`, 30);
+          const res = raw.map(normalizeResult).filter(r => {
+            const p = r.path || '';
+            return (p.includes('/Setup/') || p.includes('InstallSchema') || p.includes('UpgradeSchema') || p.includes('/Patch/')) &&
+              (r.snippet?.toLowerCase().includes(args.tableName.toLowerCase()) || r.searchText?.toLowerCase().includes(args.tableName.toLowerCase()));
+          });
+          if (res.length) legacy = '\n### Legacy setup scripts and patches (semantic — candidates, not complete; `magento_find_table_usage` lists every file naming the table)\n' + formatSearchResults(res.slice(0, 10));
+        } catch { /* no index */ }
+        return { content: [{ type: 'text', text: text + legacy }] };
       }
 
       case 'magento_find_trigger': {
@@ -6746,130 +6827,8 @@ const _callToolHandler = async (request) => {
       }
 
       case 'magento_module_structure': {
-        const parts = args.moduleName.split('_');
-        // Support both app/code (Magento/Catalog/) and vendor (magento/module-catalog/) paths
-        const modulePath = args.moduleName.replace('_', '/') + '/';
-        // Hyphenate camelCase for vendor path: OrderSplit → order-split
-        const vendorDir = parts.length === 2 ? parts[0].toLowerCase() : '';
-        const vendorPath = parts.length === 2
-          ? `module-${parts[1].replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()}/`
-          : '';
-        let results = [];
-
-        // Primary: filesystem-based (authoritative — avoids mixing cross-references from vector search)
-        if (config.magentoRoot) {
-          const fsGlobs = [];
-          if (parts.length === 2) {
-            // app/code/{Vendor}/{Module}/
-            fsGlobs.push(`app/code/${parts[0]}/${parts[1]}/**/*.{php,xml,phtml}`);
-            // vendor/{vendor-lower}/{module-lower}/ — vendor-specific to avoid false positives
-            if (vendorDir && vendorPath) {
-              fsGlobs.push(`vendor/${vendorDir}/${vendorPath}**/*.{php,xml,phtml}`);
-            }
-          }
-          for (const globPattern of fsGlobs) {
-            try {
-              const files = await glob(globPattern, { cwd: config.magentoRoot, absolute: false, nodir: true });
-              if (files.length > 0) {
-                logToFile('INFO', `module_structure: filesystem found ${files.length} files for "${args.moduleName}" (${globPattern})`);
-                for (const f of files.slice(0, 100)) {
-                  const entry = { path: f, score: 1.0 };
-                  if (f.includes('/Controller/')) entry.isController = true;
-                  if (f.includes('/Model/')) entry.isModel = true;
-                  if (f.includes('/Block/')) entry.isBlock = true;
-                  if (f.includes('/Plugin/')) entry.isPlugin = true;
-                  if (f.includes('/Observer/')) entry.isObserver = true;
-                  if (f.endsWith('.xml')) entry.type = 'xml';
-                  const phpMatch = f.match(/\/([A-Z]\w+)\.php$/);
-                  if (phpMatch) entry.className = phpMatch[1];
-                  results.push(entry);
-                }
-                break; // Found in one location, stop
-              }
-            } catch {}
-          }
-        }
-
-        // Fallback: vector search with strict path/module filtering (only if filesystem found nothing)
-        if (results.length === 0) {
-          logToFile('INFO', `module_structure: filesystem found 0 files for "${args.moduleName}" — falling back to vector search`);
-          const raw = await rustSearchAsync(args.moduleName, 200);
-          results = raw.map(normalizeResult).filter(r => {
-            const p = r.path || '';
-            const mod = r.module || '';
-            // Exact module match or directory-level path match (trailing slash prevents Catalog matching CatalogRule)
-            return mod === args.moduleName ||
-              p.includes(modulePath) ||
-              // Vendor-specific path check to avoid matching other vendors' same-named modules
-              (vendorDir && vendorPath && p.toLowerCase().includes(`${vendorDir}/${vendorPath}`));
-          });
-        }
-
-        const structure = {
-          controllers: results.filter(r => r.isController || r.path?.includes('/Controller/')),
-          models: results.filter(r => r.isModel || (r.path?.includes('/Model/') && !r.path?.includes('ResourceModel'))),
-          blocks: results.filter(r => r.isBlock || r.path?.includes('/Block/')),
-          plugins: results.filter(r => r.isPlugin || r.path?.includes('/Plugin/')),
-          observers: results.filter(r => r.isObserver || r.path?.includes('/Observer/')),
-          apis: results.filter(r => r.path?.includes('/Api/')),
-          configs: results.filter(r => r.type === 'xml'),
-          other: results.filter(r =>
-            !r.isController && !r.isModel && !r.isBlock && !r.isPlugin && !r.isObserver &&
-            !r.path?.includes('/Api/') && r.type !== 'xml' &&
-            !r.path?.includes('/Controller/') && !r.path?.includes('/Model/') &&
-            !r.path?.includes('/Block/') && !r.path?.includes('/Plugin/') &&
-            !r.path?.includes('/Observer/')
-          )
-        };
-
-        // Build structured JSON output for module structure
-        const structureOutput = {
-          module: args.moduleName,
-          totalFiles: results.length,
-          categories: {}
-        };
-        for (const [category, items] of Object.entries(structure)) {
-          if (items.length > 0) {
-            structureOutput.categories[category] = {
-              count: items.length,
-              files: items.slice(0, 10).map(item => ({
-                path: item.path,
-                className: item.className || null,
-                methods: item.methods?.length > 0 ? item.methods : undefined
-              }))
-            };
-          }
-        }
-
-        // Return both JSON and formatted summary
-        const jsonOutput = JSON.stringify({
-          results: results.slice(0, 50).map((r, i) => ({
-            rank: i + 1,
-            path: r.path,
-            className: r.className || undefined,
-            magentoType: r.magentoType || undefined,
-            module: r.module || undefined
-          })),
-          count: results.length,
-          structure: structureOutput.categories
-        });
-
-        // Include README.md if it exists in the module directory
-        let readmeText = '';
-        if (results.length > 0) {
-          // Find module root from first result path
-          const firstPath = results[0].path || '';
-          const moduleRoot = firstPath.split('/').slice(0, 3).join('/');
-          if (moduleRoot) {
-            const readmePath = path.join(config.magentoRoot, moduleRoot, 'README.md');
-            try {
-              const readme = readFileSync(readmePath, 'utf-8');
-              readmeText = '\n\n## README.md\n\n' + readme.slice(0, 2000) + (readme.length > 2000 ? '\n...(truncated)' : '');
-            } catch { /* no README */ }
-          }
-        }
-
-        return { content: [{ type: 'text', text: jsonOutput + readmeText }] };
+        const text = await moduleStructureText(config.magentoRoot, args || {});
+        return { content: [{ type: 'text', text }] };
       }
 
       case 'magento_analyze_diff': {
@@ -7803,6 +7762,7 @@ const _callToolHandler = async (request) => {
                   const { diRegistrations: regs, classStatus: cs } = await collectPluginRegistrations(a.targetClass, a.targetMethod);
                   text += '\n\n### DI Registrations\n';
                   if (cs && cs.interceptable === false) text += `> ⛔ No plugin on this class runs: ${cs.reason}.\n`;
+                  const shown = new Set();
                   for (const reg of regs.slice(0, 12)) {
                     const disabled = reg.disabled ? ' [DISABLED]' : '';
                     const subTag = reg.isSubNamespace ? ` on \`${reg.target.split('\\').pop()}\`` : '';
@@ -7812,14 +7772,17 @@ const _callToolHandler = async (request) => {
                     if (reg.runs) text += `  Runs: \`${reg.runs}\`\n`;
                     for (const m of (reg.methods || []).filter(m => !a.targetMethod || reg.isSubNamespace || m.targetMethod === a.targetMethod)) {
                       text += `  - \`${m.type}\` **${m.targetMethod}** → \`${m.name}()\`${m.notIntercepted ? ` [does not run: ${m.notIntercepted}]` : ''}\n`;
-                      if (m.body) text += '    ' + '```php\n    ' + m.body.split('\n').join('\n    ') + '\n    ' + '```\n';
+                      const bodyKey = `${reg.resolvedFile}::${m.name}`;
+                      if (m.body && shown.has(bodyKey)) text += '    _(code shown above)_\n';
+                      else if (m.body) { shown.add(bodyKey); text += '    ' + '```php\n    ' + m.body.split('\n').join('\n    ') + '\n    ' + '```\n'; }
                     }
                   }
+                  if (regs.length > 12) text += `- … ${regs.length - 12} more registrations — call magento_find_plugin for all of them\n`;
                 }
                 break;
               }
               case 'magento_find_observer': {
-                const flow = await traceEventFlow(a.eventName);
+                const flow = await traceEventFlow(a.eventName, { dispatchers: false });
                 text = `Observers: ${flow.observers.length}\n`;
                 for (const o of flow.observers.slice(0, 10)) {
                   text += `- ${o.name}: ${o.instance}::${o.method} (${o.file})\n`;
@@ -7930,65 +7893,11 @@ const _callToolHandler = async (request) => {
                 break;
               }
               case 'magento_module_structure': {
-                const mParts = a.moduleName.split('_');
-                const modulePath = a.moduleName.replace('_', '/') + '/';
-                const mVendorDir = mParts.length === 2 ? mParts[0].toLowerCase() : '';
-                const vendorPath = mParts.length === 2
-                  ? `module-${mParts[1].replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()}/`
-                  : '';
-                let res = [];
-                // Primary: filesystem-based (avoids mixing cross-references)
-                if (config.magentoRoot) {
-                  const msGlobs = [];
-                  if (mParts.length === 2) {
-                    msGlobs.push(`app/code/${mParts[0]}/${mParts[1]}/**/*.{php,xml,phtml}`);
-                    if (mVendorDir && vendorPath) {
-                      msGlobs.push(`vendor/${mVendorDir}/${vendorPath}**/*.{php,xml,phtml}`);
-                    }
-                  }
-                  for (const gp of msGlobs) {
-                    try {
-                      const files = await glob(gp, { cwd: config.magentoRoot, absolute: false, nodir: true });
-                      if (files.length > 0) {
-                        for (const f of files.slice(0, 100)) {
-                          const entry = { path: f, score: 1.0 };
-                          if (f.includes('/Controller/')) entry.isController = true;
-                          if (f.includes('/Model/')) entry.isModel = true;
-                          if (f.includes('/Plugin/')) entry.isPlugin = true;
-                          if (f.includes('/Observer/')) entry.isObserver = true;
-                          if (f.endsWith('.xml')) entry.type = 'xml';
-                          const phpMatch = f.match(/\/([A-Z]\w+)\.php$/);
-                          if (phpMatch) entry.className = phpMatch[1];
-                          res.push(entry);
-                        }
-                        break;
-                      }
-                    } catch {}
-                  }
-                }
-                // Fallback: vector search with vendor-specific path filtering
-                if (res.length === 0) {
-                  const raw = await rustSearchAsync(a.moduleName, 200);
-                  res = raw.map(normalizeResult).filter(r => {
-                    const p = r.path || '';
-                    const mod = r.module || '';
-                    return mod === a.moduleName ||
-                      p.includes(modulePath) ||
-                      (mVendorDir && vendorPath && p.toLowerCase().includes(`${mVendorDir}/${vendorPath}`));
-                  });
-                }
-                text = `Module: ${a.moduleName} (${res.length} files)\n`;
-                const cats = { controllers: '/Controller/', models: '/Model/', plugins: '/Plugin/', observers: '/Observer/', api: '/Api/' };
-                for (const [cat, pattern] of Object.entries(cats)) {
-                  const matches = res.filter(r => r.path?.includes(pattern));
-                  if (matches.length > 0) {
-                    text += `${cat}: ${matches.length} (${matches.slice(0, 3).map(r => r.className || r.path?.split('/').pop()).join(', ')})\n`;
-                  }
-                }
+                text = await moduleStructureText(config.magentoRoot, a);
                 break;
               }
               case 'magento_find_observer': {
-                const flow = await traceEventFlow(a.eventName);
+                const flow = await traceEventFlow(a.eventName, { dispatchers: false });
                 text = `Observers: ${flow.observers.length}\n`;
                 for (const o of flow.observers.slice(0, 10)) {
                   text += `- ${o.name}: ${o.instance}::${o.method}() (${o.file})\n`;
@@ -8252,7 +8161,7 @@ const _callToolHandler = async (request) => {
         let text = '';
 
         // 1. Find the endpoint in webapi.xml files
-        const webapiFiles = await glob('**/etc/webapi.xml', { cwd: root, absolute: true, nodir: true });
+        const webapiFiles = await moduleEtcGlob(root, '**/etc/webapi.xml', { absolute: true });
         let matchedRoute = null;
         const searchUrl = args.url || '';
         const searchInterface = args.interfaceName || '';
@@ -8566,6 +8475,285 @@ const _callToolHandler = async (request) => {
   }
 };
 
+// ─── Structural config models: webapi, GraphQL, cron, db_schema, modules ─────
+// src/magento-config.js reads the files Magento reads (enabled modules, load order) and merges them
+// as Magento does; verified against Magento with scripts/verify-magento (config-truth.php). Each
+// answer lists the exact part first; semantic results only follow, marked.
+
+const configModelCache = new Map();          // kind → { key, model }
+
+/** The merged model of one config kind, rebuilt when a file is added, removed or changed. */
+async function getConfigModel(root, kind) {
+  const idx = await getModuleIndex(root);
+  const exists = rel => existsSync(path.join(root, rel));
+  const specs = {
+    webapi: [['webapi.xml']],
+    graphql: [['schema.graphqls']],
+    cron: [['crontab.xml'], ['config.xml']],
+    dbschema: [['db_schema.xml']],
+  }[kind];
+  const lists = specs.map(([fileName]) => moduleConfigFiles(idx, exists, fileName));
+  if (kind === 'dbschema' && exists('app/etc/db_schema.xml')) lists[0].push({ relPath: 'app/etc/db_schema.xml', module: null });
+  const stamp = lists.flat().map(f => {
+    try { const st = statSync(path.join(root, f.relPath)); return `${f.relPath}:${st.mtimeMs}:${st.size}`; } catch { return f.relPath; }
+  }).join('|');
+  const hit = configModelCache.get(kind);
+  if (hit && hit.root === root && hit.stamp === stamp) return hit.model;
+  const load = list => list.map(f => {
+    try { return { ...f, content: readFileSync(path.join(root, f.relPath), 'utf-8') }; } catch { return null; }
+  }).filter(Boolean);
+  let model;
+  if (kind === 'webapi') model = buildWebapiModel(load(lists[0]));
+  else if (kind === 'graphql') model = buildGraphqlModel(load(lists[0]));
+  else if (kind === 'cron') model = buildCronModel(load(lists[0]), load(lists[1]));
+  else model = buildDbSchemaModel(load(lists[0]));
+  const unread = specs.flatMap(([fileName]) => unreadModuleConfigFiles(idx, exists, fileName));
+  const result = { model, files: lists.flat(), unread };
+  configModelCache.set(kind, { root, stamp, model: result });
+  return result;
+}
+
+const loc = (relPath, line) => `\`${relPath}${line ? ':' + line : ''}\``;
+const unreadNote = unread => (unread.length
+  ? `\n_Not read — module disabled or not installed: ${unread.slice(0, 8).map(u => `${u.module} (${loc(u.relPath)})`).join(', ')}${unread.length > 8 ? `, … ${unread.length - 8} more` : ''}._\n`
+  : '');
+
+/** One-line summary of a class a service / resolver name resolves to through preferences. */
+function realClassNote(diModel, cls, area) {
+  if (!diModel || !cls) return '';
+  const { real } = resolveInstance(diModel, cls, area);
+  return real && real !== cls ? ` → runs \`${real}\` (preference${area !== 'global' ? `, ${area}` : ''})` : '';
+}
+
+async function apiText(root, { query = '', method } = {}) {
+  const { model, unread } = await getConfigModel(root, 'webapi');
+  const diModel = await getDiModel(root).catch(() => null);
+  const idx = await getModuleIndex(root);
+  const q = String(query).trim();
+  const ql = q.toLowerCase();
+  const fq = q.includes('\\') ? normalizeClassName(q) : null;
+  const routes = [...model.values()].filter(r => {
+    if (method && r.method !== String(method).toUpperCase()) return false;
+    if (!q) return true;
+    if (fq) return r.serviceClass === fq || (diModel && resolveInstance(diModel, r.serviceClass, 'webapi_rest').real === fq);
+    return r.url.toLowerCase().includes(ql) || r.serviceMethod === q || (r.serviceClass || '').split('\\').pop() === q;
+  }).sort((a, b) => a.url.localeCompare(b.url) || a.method.localeCompare(b.method));
+  let text = `## Web API routes${q ? ` matching \`${q}\`` : ''}${method ? ` (${String(method).toUpperCase()})` : ''} — webapi.xml, merged as Magento merges it\n\n`;
+  text += `_Exact: every route whose URL contains the query, whose service method or class short name equals it, or — for a class name — whose service is that class or resolves to it. ${routes.length} of ${model.size} routes._\n\n`;
+  for (const r of routes) {
+    const first = r.declarations[0];
+    text += `- **${r.method} ${r.url}** → \`${r.serviceClass}::${r.serviceMethod}\`${realClassNote(diModel, r.serviceClass, 'webapi_rest')}` +
+      ` · ACL: ${r.resources.map(x => `\`${x}\``).join(', ') || '—'} · ${loc(first.relPath, first.line)}\n`;
+    for (const d of r.declarations.slice(1)) {
+      text += `  - also declared in ${loc(d.relPath, d.line)} (${d.module})${d.serviceClass || d.serviceMethod ? ` — sets ${[d.serviceClass && `class \`${d.serviceClass}\``, d.serviceMethod && `method \`${d.serviceMethod}\``].filter(Boolean).join(', ')}` : ''}\n`;
+    }
+  }
+  if (!routes.length) text += '_No route matches._\n';
+  if (routes.some(r => r.method !== 'GET') && idx.isEnabled('Magento_WebapiAsync')) {
+    text += '\n_Magento_WebapiAsync is enabled: the non-GET routes are also served asynchronously under `/async/V1/…` and `/async/bulk/V1/…`._\n';
+  }
+  return text + unreadNote(unread);
+}
+
+/** Readers of GraphQlSchemaStitching\Reader besides schema.graphqls: they add fields from elsewhere (EAV). */
+function graphqlSchemaReaders(diModel, idx) {
+  const items = new Map();
+  if (!diModel) return items;
+  const decls = [...diModel.virtualTypes, ...diModel.types]
+    .filter(d => d.name === 'Magento\\Framework\\GraphQlSchemaStitching\\Reader')
+    .sort((a, b) => idx.orderOfFile(a.file) - idx.orderOfFile(b.file));
+  for (const d of decls) {
+    if (idx.isEnabled(idx.moduleOf(d.file)) === false) continue;
+    for (const a of d.args.filter(x => x.name === 'readers')) for (const i of a.items) items.set(i.name, { cls: normalizeClassName(i.value), file: d.file });
+  }
+  return items;
+}
+
+async function graphqlText(root, { query = '', schemaType } = {}) {
+  const { model, unread } = await getConfigModel(root, 'graphql');
+  const { types, errors } = model;
+  const diModel = await getDiModel(root).catch(() => null);
+  const idx = await getModuleIndex(root);
+  const q = String(query).trim();
+  const ql = q.toLowerCase();
+  const kindOf = { type: 'graphql_type', interface: 'graphql_interface', input: 'graphql_input', enum: 'graphql_enum' };
+  const fields = [];
+  const matchedTypes = [];
+  for (const t of types.values()) {
+    if (schemaType === 'query' && t.name !== 'Query') continue;
+    if (schemaType === 'mutation' && t.name !== 'Mutation') continue;
+    if (kindOf[schemaType] && t.kind !== kindOf[schemaType]) continue;
+    if (schemaType !== 'query' && schemaType !== 'mutation' && schemaType !== 'resolver' && (!q || t.name.toLowerCase().includes(ql))) matchedTypes.push(t);
+    for (const [name, f] of t.fields) {
+      if (schemaType === 'resolver') {
+        if (f.resolver && (f.resolver === normalizeClassName(q) || f.resolver.toLowerCase().includes(ql))) fields.push({ t, name, f });
+      } else if (q && (name === q || (schemaType === 'query' || schemaType === 'mutation') && name.toLowerCase().includes(ql))) {
+        fields.push({ t, name, f });
+      } else if (!q && (schemaType === 'query' || schemaType === 'mutation')) {
+        fields.push({ t, name, f });
+      }
+    }
+  }
+  let text = `## GraphQL schema${q ? ` matching \`${q}\`` : ''}${schemaType ? ` (${schemaType})` : ''} — schema.graphqls, merged as Magento merges it\n\n`;
+  text += '_Exact over the files: types whose name contains the query, fields named exactly as the query (Query / Mutation: containing it), resolver classes containing it. Interface fields are copied into implementing types, as Magento does._\n\n';
+  if (fields.length) {
+    text += `### Fields (${fields.length})\n`;
+    for (const { t, name, f } of fields.slice(0, 200)) {
+      text += `- **${t.name}.${name}** → ${f.resolver ? `\`${f.resolver}\`${realClassNote(diModel, f.resolver, 'graphql')}` : '_no resolver (parent resolver value)_'}` +
+        `${f.cache ? ` · cache: \`${f.cache}\`` : ''}${f.from ? ` · from interface \`${f.from}\`` : ''} · ${loc(f.relPath, f.line)}\n`;
+    }
+    if (fields.length > 200) text += `- … ${fields.length - 200} more — narrow the query\n`;
+    text += '\n';
+  }
+  if (matchedTypes.length) {
+    text += `### Types (${matchedTypes.length})\n`;
+    for (const t of matchedTypes.slice(0, 60)) {
+      const implementers = t.kind === 'graphql_interface' ? [...types.values()].filter(x => x.implements.includes(t.name)).map(x => x.name) : [];
+      const withResolver = [...t.fields].filter(([, f]) => f.resolver);
+      text += `- **${t.name}** [${t.kind.replace('graphql_', '')}]${t.implements.length ? ` implements ${t.implements.join(', ')}` : ''}` +
+        `${t.typeResolver ? ` · typeResolver \`${t.typeResolver}\`` : ''} · ${t.values ? `${t.values.length} values` : `${t.fields.size} fields, ${withResolver.length} with a resolver`}` +
+        ` · declared in ${t.declarations.map(d => loc(d.relPath, d.line)).join(', ')}\n`;
+      if (implementers.length) text += `  - implemented by: ${implementers.slice(0, 30).join(', ')}${implementers.length > 30 ? `, … ${implementers.length - 30} more` : ''}\n`;
+      if (matchedTypes.length <= 5) for (const [name, f] of withResolver.slice(0, 40)) text += `  - ${name} → \`${f.resolver}\`${f.from ? ` (from ${f.from})` : ''}\n`;
+    }
+    if (matchedTypes.length > 60) text += `- … ${matchedTypes.length - 60} more — narrow the query\n`;
+    text += '\n';
+  }
+  if (!fields.length && !matchedTypes.length) text += '_Nothing matches in schema.graphqls._\n\n';
+  const readers = [...graphqlSchemaReaders(diModel, idx)].filter(([, r]) => r.cls !== 'Magento\\Framework\\GraphQlSchemaStitching\\GraphQlReader');
+  if (readers.length) {
+    text += '> **Other schema readers are registered** — fields (and types) they add come from elsewhere (e.g. EAV attributes flagged for GraphQL) and are not listed above:\n';
+    for (const [name, r] of readers) text += `> - \`${name}\` → \`${r.cls}\` (${loc(r.file)})${name === 'graphql_reader' ? ' — replaces the schema.graphqls reader' : ''}\n`;
+    text += '\n';
+  }
+  if (errors.length) text += `_Unreadable parts of schema.graphqls: ${errors.slice(0, 5).map(e => `${loc(e.relPath, e.line)} ${e.message}`).join('; ')}._\n`;
+  return text + unreadNote(unread);
+}
+
+async function cronText(root, { jobName = '' } = {}) {
+  const { model, unread } = await getConfigModel(root, 'cron');
+  const q = String(jobName).trim().toLowerCase();
+  const jobs = [...model.values()].filter(j => !q || j.name.toLowerCase().includes(q) || j.group.toLowerCase().includes(q) ||
+    (j.instance || '').toLowerCase().includes(q)).sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name));
+  let text = `## Cron jobs${q ? ` matching \`${jobName}\`` : ''} — crontab.xml + crontab defaults of config.xml, merged as Magento merges them\n\n`;
+  text += `_Exact over the files: jobs whose name, group or class contains the query. ${jobs.length} of ${model.size} jobs._\n\n`;
+  for (const j of jobs) {
+    const when = j.schedule ? `schedule \`${j.schedule}\`` : j.configPath ? `schedule from config \`${j.configPath}\`` : '_no schedule in files_';
+    text += `- **${j.group}/${j.name}** → ${j.instance ? `\`${j.instance}::${j.method}\`` : '_no instance (defined only in config.xml)_'} · ${when}` +
+      `${j.runModel ? ` · run model \`${j.runModel}\`` : ''} · ${j.declarations.map(d => `${loc(d.relPath, d.line)}${d.source === 'config.xml' ? ' (config.xml)' : ''}`).join(', ')}\n`;
+  }
+  if (!jobs.length) text += '_No job matches._\n';
+  text += '\n_Schedules and jobs saved in the admin (core_config_data `crontab/<group>/jobs/<job>/…`) are not in any file and can add to or change this list._\n';
+  return text + unreadNote(unread);
+}
+
+async function dbSchemaText(root, { tableName = '' } = {}) {
+  const { model, unread } = await getConfigModel(root, 'dbschema');
+  const q = String(tableName).trim();
+  const exact = model.get(q);
+  let text = '';
+  if (!exact) {
+    const matches = [...model.values()].filter(t => t.name.includes(q.toLowerCase())).sort((a, b) => a.name.localeCompare(b.name));
+    text += `## Tables matching \`${q}\` — db_schema.xml, merged as Magento merges it\n\n`;
+    text += `_Exact over the declarative schema: ${matches.length} of ${model.size} tables contain the name. Pass an exact table name for its columns and keys._\n\n`;
+    for (const t of matches.slice(0, 100)) text += `- \`${t.name}\`${t.disabled ? ' ~~disabled~~' : ''} — ${t.columns.size} columns · ${[...new Set(t.declarations.map(d => d.module || 'app/etc'))].join(', ')}\n`;
+    if (matches.length > 100) text += `- … ${matches.length - 100} more\n`;
+    if (!matches.length) text += '_No declared table matches — it may be created by a legacy setup script or at runtime (e.g. indexer replica / temporary tables)._\n';
+    return text + unreadNote(unread);
+  }
+  const t = exact;
+  const mod = e => e.module || 'app/etc/db_schema.xml';
+  text += `## Table \`${t.name}\`${t.disabled ? ' — **disabled** (dropped)' : ''} — db_schema.xml, merged as Magento merges it\n\n`;
+  text += `- resource: \`${t.resource}\`${t.resource !== 'default' ? ' (without that connection in app/etc/env.php Magento puts the table on `default`)' : ''}\n`;
+  text += `- declared in: ${t.declarations.map(d => `${loc(d.relPath, d.line)} (${mod(d)})`).join(', ')}\n\n`;
+  const col = c => {
+    const a = c.attrs;
+    const bits = [a['xsi:type'], a.length && `(${a.length})`, a.precision && `(${a.precision},${a.scale ?? 0})`, a.unsigned === 'true' && 'unsigned',
+      a.identity === 'true' && 'identity', a.nullable === 'false' ? 'NOT NULL' : 'NULL', a.default !== undefined && `default ${a.default}`].filter(Boolean).join(' ');
+    return bits + (a.comment ? ` — "${a.comment}"` : '');
+  };
+  const who = e => (e.declarations.length > 1 ? ` · ${e.declarations.map(d => mod(d)).join(' → ')}` : ` · ${mod(e)}`);
+  text += `### Columns (${[...t.columns.values()].filter(c => !c.disabled).length})\n`;
+  for (const [name, c] of t.columns) text += `- ${c.disabled ? `~~\`${name}\`~~ disabled` : `\`${name}\``} ${col(c)}${who(c)}\n`;
+  const keys = [...t.constraints.values(), ...t.indexes.values()];
+  text += `\n### Keys and indexes (${keys.filter(k => !k.disabled).length}) — names as Magento creates them\n`;
+  for (const k of keys) {
+    const a = k.attrs;
+    const kind = a['xsi:type'] || (a.indexType ? `index ${a.indexType}` : 'index');
+    const what = a['xsi:type'] === 'foreign'
+      ? `${a.column} → \`${a.referenceTable}\`.${a.referenceColumn}${a.onDelete ? ` ON DELETE ${a.onDelete}` : ''}`
+      : `(${(k.columns || []).join(', ')})`;
+    text += `- ${k.disabled ? '~~' : ''}\`${k.dbName}\`${k.disabled ? '~~ disabled' : ''} [${kind}] ${what}${a.referenceId !== k.dbName ? ` · referenceId \`${a.referenceId}\`` : ''}${who(k)}\n`;
+  }
+  const incoming = [];
+  for (const other of model.values()) {
+    for (const c of other.constraints.values()) {
+      if (c.attrs['xsi:type'] === 'foreign' && c.attrs.referenceTable === t.name && !c.disabled) incoming.push(`\`${other.name}\`.${c.attrs.column} → ${c.attrs.referenceColumn}${c.attrs.onDelete ? ` ON DELETE ${c.attrs.onDelete}` : ''} (\`${c.dbName}\`)`);
+    }
+  }
+  if (incoming.length) text += `\n### Referenced by (${incoming.length} foreign keys)\n${incoming.map(x => `- ${x}`).join('\n')}\n`;
+  return text + unreadNote(unread);
+}
+
+async function moduleStructureText(root, { moduleName = '' } = {}) {
+  const idx = await getModuleIndex(root);
+  const m = idx.modules.get(moduleName) || [...idx.modules.values()].find(x => x.name.toLowerCase() === String(moduleName).toLowerCase());
+  if (!m) {
+    const near = [...idx.modules.keys()].filter(n => n.toLowerCase().includes(String(moduleName).toLowerCase().split('_').pop())).slice(0, 10);
+    return `## Module ${moduleName}\n\n_No module with this name has an etc/module.xml under the Magento root._${near.length ? ` Similar: ${near.join(', ')}` : ''}\n`;
+  }
+  const files = (await glob('**/*', { cwd: path.join(root, m.dir), nodir: true, ignore: ['**/node_modules/**'] })).sort();
+  const enabledCount = [...idx.modules.values()].filter(x => x.enabled === true).length;
+  let text = `## Module ${m.name} — \`${m.dir}\`\n\n`;
+  text += `- state: ${m.enabled === true ? `enabled, load position ${idx.orderOf(m.name) + 1} of ${enabledCount}` : m.enabled === false ? '**disabled** in app/etc/config.php' : 'not in app/etc/config.php (not installed)'}\n`;
+  if (m.sequence.length) text += `- \`<sequence>\`: ${m.sequence.join(', ')}\n`;
+  if (m.package) text += `- composer: \`${m.package}\`\n`;
+  text += `\n### Files (${files.length}) — exact, the whole module directory\n`;
+  const groups = new Map();
+  for (const f of files) {
+    const top = f.includes('/') ? f.split('/')[0] : '.';
+    if (!groups.has(top)) groups.set(top, []);
+    groups.get(top).push(f);
+  }
+  const listAll = files.length <= 300;
+  for (const [top, list] of groups) {
+    text += `- **${top}/** (${list.length})`;
+    if (listAll || top === 'etc' || list.length <= 15) text += `\n${list.map(f => `  - ${f}`).join('\n')}\n`;
+    else text += ` — ${list.slice(0, 8).map(f => f.slice(top.length + 1)).join(', ')}, …\n`;
+  }
+  // what the module declares, from the merged models (each exact over the files)
+  const own = rel => rel && (rel === m.dir || rel.startsWith(m.dir + '/'));
+  const decl = [];
+  const [api, gql, cron, db] = await Promise.all(['webapi', 'graphql', 'cron', 'dbschema'].map(k => getConfigModel(root, k).catch(() => null)));
+  const routes = api ? [...api.model.values()].filter(r => r.declarations.some(d => own(d.relPath))) : [];
+  if (routes.length) decl.push(`- Web API routes (${routes.length}): ${routes.slice(0, 15).map(r => `${r.method} ${r.url}`).join(', ')}${routes.length > 15 ? ', …' : ''}`);
+  if (gql) {
+    const gTypes = [...gql.model.types.values()].filter(t => t.declarations.some(d => own(d.relPath)));
+    const gFields = [...gql.model.types.values()].flatMap(t => [...t.fields].filter(([, f]) => own(f.relPath) && f.resolver && !f.from).map(([n]) => `${t.name}.${n}`));
+    if (gTypes.length) decl.push(`- GraphQL types defined or extended (${gTypes.length}): ${gTypes.slice(0, 20).map(t => t.name).join(', ')}${gTypes.length > 20 ? ', …' : ''}`);
+    if (gFields.length) decl.push(`- GraphQL fields with a resolver here (${gFields.length}): ${gFields.slice(0, 20).join(', ')}${gFields.length > 20 ? ', …' : ''}`);
+  }
+  if (cron) {
+    const jobs = [...cron.model.values()].filter(j => j.declarations.some(d => own(d.relPath)));
+    if (jobs.length) decl.push(`- Cron jobs (${jobs.length}): ${jobs.map(j => `${j.group}/${j.name}`).join(', ')}`);
+  }
+  if (db) {
+    const tables = [...db.model.values()].filter(t => t.declarations.some(d => own(d.relPath)));
+    if (tables.length) decl.push(`- Tables declared or changed (${tables.length}): ${tables.map(t => `\`${t.name}\``).join(', ')}`);
+  }
+  const diModel = await getDiModel(root).catch(() => null);
+  if (diModel) {
+    const prefs = diModel.preferences.filter(p => own(p.file));
+    const plugins = diModel.types.concat(diModel.virtualTypes).filter(t => own(t.file)).flatMap(t => t.plugins.map(p => `${p.name} on \`${t.name}\``));
+    const vts = diModel.virtualTypes.filter(v => own(v.file));
+    if (prefs.length) decl.push(`- Preferences (${prefs.length}): ${prefs.slice(0, 15).map(p => `\`${p.for}\` → \`${p.type}\`${p.area !== 'global' ? ` [${p.area}]` : ''}`).join(', ')}${prefs.length > 15 ? ', …' : ''}`);
+    if (plugins.length) decl.push(`- Plugins (${plugins.length}): ${plugins.slice(0, 15).join(', ')}${plugins.length > 15 ? ', …' : ''}`);
+    if (vts.length) decl.push(`- Virtual types (${vts.length}): ${vts.slice(0, 15).map(v => `\`${v.name}\``).join(', ')}${vts.length > 15 ? ', …' : ''}`);
+  }
+  if (decl.length) text += `\n### Declares (from the merged configuration)\n${decl.join('\n')}\n`;
+  return text;
+}
+
 // ─── Configuration validation ───────────────────────────────────
 // What Magento rejects, or reads differently than written. Native: Magento's own classes through PHP
 // (src/php/validate-config.php). Built-in: checkXmlWellFormed / checkConfigValues (src/di-config.js),
@@ -8632,7 +8820,7 @@ function runNativeConfigCheck(root, relPaths) {
 async function getLoadedConfigPaths(root) {
   if (configPathsCache.root !== root || !configPathsCache.paths) {
     configPathsCache.root = root;
-    configPathsCache.paths = await glob('**/etc/**/{di,events}.xml', { cwd: root, nodir: true, ignore: CONFIG_TEST_DIRS });
+    configPathsCache.paths = await moduleEtcGlob(root, '**/etc/**/{di,events}.xml');
   }
   return configPathsCache.paths;
 }
@@ -8653,7 +8841,7 @@ async function validateConfigText(root, { path: scope, engine = 'auto' }) {
     relPaths = st.isFile() ? [rel] : (await glob(`${rel}/**/*.xml`, { cwd: root, nodir: true, ignore: CONFIG_TEST_DIRS }))
       .filter(f => /(^|\/)etc\//.test(f));
   } else {
-    relPaths = await glob('**/etc/**/*.xml', { cwd: root, nodir: true, ignore: CONFIG_TEST_DIRS });
+    relPaths = await moduleEtcGlob(root, '**/etc/**/*.xml');
   }
   relPaths.sort();
   const idx = await getModuleIndex(root);

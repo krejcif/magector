@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+    <preference for="Acme\Ext\Api\ExtendedNoteRepositoryInterface" type="Acme\Ext\Model\NoteRepository"/>
+    <virtualType name="Magento\Framework\GraphQlSchemaStitching\Reader">
+        <arguments>
+            <argument name="readers" xsi:type="array">
+                <item name="acmeDynamicReader" xsi:type="object">Acme\Base\Model\GraphQl\DynamicAttributeReader</item>
+            </argument>
+        </arguments>
+    </virtualType>
+</config>

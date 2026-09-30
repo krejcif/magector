@@ -6,12 +6,16 @@
  *   node compare.mjs xml     <magento-root> xml-truth.json
  *   node compare.mjs plugins <magento-root> runtime-plugins.json [area]
  *   node compare.mjs config  <magento-root> config-truth.json
+ *   node compare.mjs webapi|graphql|cron|dbschema <magento-root> <kind>-truth.json   (config-truth.php)
  *
  * php     — src/di-config.js class / method reading vs PHP's tokenizer
  * xml     — src/di-config.js di.xml / events.xml reading vs DOMDocument (and files Magento rejects)
  * plugins — magento_find_plugin (MCP server, structural part) vs the plugins Magento runs
  * config  — the built-in configuration check (checkXmlWellFormed, checkConfigValues) vs Magento's
  *           own classes (src/php/validate-config.php): first libxml error, converter exceptions
+ * webapi / graphql / cron / dbschema — src/magento-config.js merged models vs what Magento reads
+ *           (routes → service, type fields → resolver, cron jobs, declared tables / columns / keys).
+ *           Missing = Magector returns less (must be 0); extra = more (listed, should be explainable)
  *
  * Exit code 1 when anything differs.
  */
@@ -23,12 +27,18 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   parsePhpTypes, parsePhpMembers, parseDiXml, parseXml, parseEventsXml, checkXmlWellFormed, checkConfigValues,
+  buildModuleIndex,
 } from '../../src/di-config.js';
+import {
+  moduleConfigFiles, buildWebapiModel, buildGraphqlModel, buildCronModel, buildDbSchemaModel,
+} from '../../src/magento-config.js';
+import { existsSync } from 'fs';
+import { glob } from 'glob';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const [mode, rootArg, truthFile, areaArg] = process.argv.slice(2);
 if (!mode || !rootArg || !truthFile) {
-  console.error('usage: node compare.mjs php|xml|plugins|config <magento-root> <truth.json> [area]');
+  console.error('usage: node compare.mjs php|xml|plugins|config|webapi|graphql|cron|dbschema <magento-root> <truth.json> [area]');
   process.exit(2);
 }
 const root = path.resolve(rootArg);
@@ -195,6 +205,111 @@ if (mode === 'config') {
   show('converter verdict differs', convertDiff);
   show('native only (needs PHP: const / init_parameter arguments)', nativeOnly, 5);
   process.exit(xmlDiff.length + convertDiff.length ? 1 : 0);
+}
+
+if (['webapi', 'graphql', 'cron', 'dbschema', 'modules'].includes(mode)) {
+  const moduleXmls = (await glob('**/etc/module.xml', { cwd: root, nodir: true, ignore: ['**/dev/tests/**', '**/Test/**'] }))
+    .map(rel => ({ relPath: rel, content: readFileSync(path.join(root, rel), 'utf-8') }));
+  let configPhp = null;
+  try { configPhp = readFileSync(path.join(root, 'app/etc/config.php'), 'utf-8'); } catch { /* not installed */ }
+  const idx = buildModuleIndex(moduleXmls, configPhp);
+  const exists = rel => existsSync(path.join(root, rel));
+  const load = fileName => moduleConfigFiles(idx, exists, fileName)
+    .map(f => ({ ...f, content: readFileSync(path.join(root, f.relPath), 'utf-8') }));
+  const missing = [], wrong = [], extra = [], dynamicTypes = [];
+  let compared = 0;
+  if (mode === 'webapi') {
+    const model = buildWebapiModel(load('webapi.xml'));
+    for (const [url, methods] of Object.entries(truth)) {
+      for (const [method, want] of Object.entries(methods)) {
+        compared++;
+        const got = model.get(`${url} ${method}`);
+        if (!got) { missing.push(`${method} ${url}`); continue; }
+        if (got.serviceClass !== want.class || got.serviceMethod !== want.method) wrong.push(`${method} ${url}: Magento ${want.class}::${want.method}, Magector ${got.serviceClass}::${got.serviceMethod}`);
+        const res = [...got.resources].sort().join(','), wantRes = [...want.resources].sort().join(',');
+        if (res !== wantRes) wrong.push(`${method} ${url}: ACL Magento [${wantRes}] Magector [${res}]`);
+      }
+    }
+    for (const r of model.values()) if (!truth[r.url]?.[r.method]) extra.push(`${r.method} ${r.url}`);
+  } else if (mode === 'graphql') {
+    const { types, errors } = buildGraphqlModel(load('schema.graphqls'));
+    for (const e of errors) wrong.push(`parse error ${e.relPath}:${e.line} ${e.message}`);
+    let dynamic = 0;
+    for (const [name, want] of Object.entries(truth)) {
+      dynamic += Object.keys(want.dynamicFields || {}).length;
+      if (want.fromFiles === false) { dynamicTypes.push(name); continue; }
+      const got = types.get(name);
+      if (!got) { missing.push(`type ${name}`); continue; }
+      for (const [field, resolver] of Object.entries(want.fields || {})) {
+        compared++;
+        const f = got.fields.get(field);
+        if (!f) { missing.push(`${name}.${field}`); continue; }
+        if ((f.resolver || null) !== (resolver || null)) wrong.push(`${name}.${field}: Magento ${resolver}, Magector ${f.resolver}`);
+      }
+      if ((want.typeResolver || null) !== (got.typeResolver || null)) wrong.push(`${name} typeResolver: Magento ${want.typeResolver}, Magector ${got.typeResolver}`);
+      for (const field of got.fields.keys()) if (!(field in (want.fields || {}))) extra.push(`${name}.${field}`);
+    }
+    for (const name of types.keys()) if (!truth[name]) extra.push(`type ${name}`);
+    console.log(`graphql: ${dynamic} fields and ${dynamicTypes.length} types come from the other schema readers (EAV), not from files`);
+  } else if (mode === 'cron') {
+    const model = buildCronModel(load('crontab.xml'), load('config.xml'));
+    const db = truth.__core_config_data__ || {};
+    delete truth.__core_config_data__;
+    const fromDb = (group, name) => Object.keys(db).some(p => p.startsWith(`crontab/${group}/jobs/${name}/`));
+    const dbOnly = [];
+    for (const [group, jobs] of Object.entries(truth)) {
+      for (const [name, want] of Object.entries(jobs)) {
+        compared++;
+        const got = model.get(`${group}/${name}`);
+        if (!got) { (fromDb(group, name) ? dbOnly : missing).push(`${group}/${name}`); continue; }
+        for (const [k, gk] of [['instance', 'instance'], ['method', 'method'], ['schedule', 'schedule'], ['config_path', 'configPath']]) {
+          if ((want[k] ?? null) !== (got[gk] ?? null)) {
+            (fromDb(group, name) ? dbOnly : wrong).push(`${group}/${name} ${k}: Magento ${JSON.stringify(want[k])}, Magector ${JSON.stringify(got[gk] ?? null)}`);
+          }
+        }
+      }
+    }
+    for (const j of model.values()) if (!truth[j.group]?.[j.name]) extra.push(`${j.group}/${j.name}`);
+    show('from core_config_data (saved in the admin, not in any file)', dbOnly);
+  } else if (mode === 'modules') {
+    // module directories and load order: every module Magento registers must be found where it is
+    const enabledOrder = Object.entries(truth).filter(([, m]) => m.enabled).sort((a, b) => a[1].order - b[1].order).map(([n]) => n);
+    const ours = [...idx.modules.values()].filter(m => m.enabled === true).sort((a, b) => idx.orderOf(a.name) - idx.orderOf(b.name)).map(m => m.name);
+    for (const [name, want] of Object.entries(truth)) {
+      compared++;
+      const got = idx.modules.get(name);
+      if (!got) { missing.push(`${name} (${want.dir})`); continue; }
+      if (got.dir !== want.dir) wrong.push(`${name}: Magento ${want.dir}, Magector ${got.dir}`);
+      if ((got.enabled === true) !== want.enabled) wrong.push(`${name}: enabled Magento ${want.enabled}, Magector ${got.enabled}`);
+    }
+    if (enabledOrder.join() !== ours.join()) wrong.push('load order of the enabled modules differs');
+    for (const name of idx.modules.keys()) if (!truth[name]) extra.push(`${name} (${idx.modules.get(name).dir}) — module.xml without registration.php`);
+  } else {
+    const files = load('db_schema.xml');
+    if (exists('app/etc/db_schema.xml')) files.push({ relPath: 'app/etc/db_schema.xml', module: null, content: readFileSync(path.join(root, 'app/etc/db_schema.xml'), 'utf-8') });
+    const model = buildDbSchemaModel(files);
+    var shardFallback = 0;
+    for (const [name, want] of Object.entries(truth)) {
+      compared++;
+      const got = model.get(name);
+      if (!got || got.disabled) { missing.push(`table ${name}`); continue; }
+      // A declared resource without a connection in app/etc/env.php falls back to default (Sharding)
+      if (got.resource !== want.resource && want.resource !== 'default') wrong.push(`${name} resource: Magento ${want.resource}, Magector ${got.resource}`);
+      if (got.resource !== want.resource && want.resource === 'default') shardFallback++;
+      for (const [kind, map] of [['columns', got.columns], ['indexes', got.indexes], ['constraints', got.constraints]]) {
+        const live = [...map.values()].filter(v => !v.disabled).map(v => v.dbName);
+        for (const k of want[kind]) if (!live.includes(k)) missing.push(`${name} ${kind} ${k}`);
+        for (const k of live) if (!want[kind].includes(k)) extra.push(`${name} ${kind} ${k}`);
+      }
+    }
+    for (const [name, t] of model) if (!t.disabled && !truth[name]) extra.push(`table ${name}`);
+  }
+  console.log(`${mode}: ${compared} compared`);
+  if (mode === 'dbschema' && shardFallback) console.log(`declared resource without a connection (runs on default): ${shardFallback} tables`);
+  show('missing (Magector returns less)', missing);
+  show('different', wrong);
+  show('extra (Magector returns more)', extra);
+  process.exit(missing.length + wrong.length ? 1 : 0);
 }
 
 console.error(`unknown mode "${mode}"`);

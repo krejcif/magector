@@ -194,7 +194,14 @@ export function buildDiModel(diFiles) {
  * declaration wins" matches Magento's merge. Call once after buildModuleIndex.
  */
 export function applyModuleOrder(model, idx) {
-  const key = d => idx.orderOfFile(d.file);
+  // One lookup per file, not per comparison (sorting ~10k declarations compared each file's module
+  // O(n log n) times — 1.6 s of a 2.8 s first call on a 600-module project)
+  const keys = new Map();
+  const key = d => {
+    let k = keys.get(d.file);
+    if (k === undefined) { k = idx.orderOfFile(d.file); keys.set(d.file, k); }
+    return k;
+  };
   const byOrder = (a, b) => key(a) - key(b);
   model.preferences.sort(byOrder);
   model.virtualTypes.sort(byOrder);
@@ -701,7 +708,8 @@ export function parseConfigPhpModules(content) {
     else if (ch === ')' || ch === ']') { depth--; if (depth === 0) { end = k; break; } }
   }
   const block = code.slice(start.index + start[0].length, end);
-  const re = /(['"])([A-Za-z0-9]+_[A-Za-z0-9]+)\1\s*=>\s*(1|0|true|false)\b/gi;
+  // A module name is whatever registration.php registers — "Amasty_Mage2.4.7Fix" has dots
+  const re = /(['"])([^'"\\\s]+)\1\s*=>\s*(1|0|true|false)\b/gi;
   let m;
   while ((m = re.exec(block)) !== null) out.push({ name: m[2], enabled: m[3] === '1' || m[3].toLowerCase() === 'true' });
   return out;
@@ -754,6 +762,7 @@ export function buildModuleIndex(moduleXmls, configPhp, composerJson = () => nul
   const byPackage = new Map([...modules.values()].filter(m => m.package).map(m => [m.package, m.name]));
   const dirs = [...modules.values()].sort((a, b) => b.dir.length - a.dir.length);
   const depCache = new Map();
+  const moduleOfCache = new Map();
 
   function dependsOn(a, b) {
     if (!a || !b || a === b) return false;
@@ -779,8 +788,11 @@ export function buildModuleIndex(moduleXmls, configPhp, composerJson = () => nul
     modules,
     orderSource,
     moduleOf(relPath) {
+      if (moduleOfCache.has(relPath)) return moduleOfCache.get(relPath);
       const hit = dirs.find(m => relPath === m.dir || relPath.startsWith(m.dir + '/'));
-      return hit ? hit.name : null;
+      const name = hit ? hit.name : null;
+      moduleOfCache.set(relPath, name);
+      return name;
     },
     isEnabled(name) { return name && modules.has(name) ? modules.get(name).enabled : null; },
     orderOf(name) {

@@ -1,0 +1,8 @@
+extend type Query {
+    acmeExtNotes: AcmeNotes @resolver(class: "Acme\\Ext\\Model\\Resolver\\ExtNotes")
+}
+
+type AcmeNote implements AcmeNoteInterface {
+    title: String
+    rating: Int @resolver(class: "Acme\\Ext\\Model\\Resolver\\Rating")
+}

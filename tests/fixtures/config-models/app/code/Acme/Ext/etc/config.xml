@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<config>
+    <default>
+        <crontab>
+            <acme_group>
+                <jobs>
+                    <acme_group_job>
+                        <schedule><cron_expr>5 * * * *</cron_expr></schedule>
+                    </acme_group_job>
+                    <acme_config_only_job>
+                        <schedule><cron_expr>0 1 * * *</cron_expr></schedule>
+                        <run><model>Acme\Ext\Model\Legacy::run</model></run>
+                    </acme_config_only_job>
+                </jobs>
+            </acme_group>
+        </crontab>
+    </default>
+</config>

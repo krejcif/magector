@@ -1,0 +1,44 @@
+# type Commented { ghost: String @resolver(class: "Acme\\Base\\Ghost") }
+type Query {
+    acmeNotes(
+        filter: AcmeNoteFilter
+        pageSize: Int = 20
+    ): AcmeNotes
+        @resolver(
+            class: "Acme\\Base\\Model\\Resolver\\Notes"
+        )
+        @doc(description: "Notes, with a (parenthesis) and a \"quote\"")
+    acmeNote(id: Int!): AcmeNote @resolver(class: "Acme\\Base\\Model\\Resolver\\Note") @cache(cacheIdentity: "Acme\\Base\\Model\\Resolver\\Note\\Identity")
+}
+
+"""
+A note. The words "implements" and "type" in a description are text.
+"""
+interface AcmeNoteInterface @typeResolver(class: "Acme\\Base\\Model\\Resolver\\NoteTypeResolver") {
+    id: Int
+    author: String @resolver(class: "Acme\\Base\\Model\\Resolver\\Author")
+    body: String @resolver(class: "Acme\\Base\\Model\\Resolver\\Body")
+}
+
+interface AcmeRoutable @typeResolver(class: "Acme\\Base\\Model\\Resolver\\RoutableTypeResolver") implements AcmeNoteInterface {
+    url: String
+}
+
+type AcmeNote implements AcmeNoteInterface {
+    title: String @resolver(class: "Acme\\Base\\Model\\Resolver\\Title")
+    body: String
+}
+
+type AcmeNotes {
+    items: [AcmeNote!]!
+    total_count: Int
+}
+
+input AcmeNoteFilter {
+    store_id: Int = 0
+}
+
+enum AcmeNoteState {
+    DRAFT
+    PUBLISHED
+}

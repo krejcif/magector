@@ -1,0 +1,29 @@
+type EdgeBase {
+    a: String @resolver(class: "Acme\\Edge\\A")
+}
+
+type EdgeUsesObject implements EdgeBase {
+    b: Int
+}
+
+interface EdgeIone {
+    x: String @resolver(class: "Acme\\Edge\\FromOne")
+}
+
+interface EdgeItwo {
+    x: String @resolver(class: "Acme\\Edge\\FromTwo")
+}
+
+type EdgeMulti implements EdgeItwo & EdgeIone {
+    y: Int
+}
+
+type EdgeRepeated {
+    rep: String @resolver(class: "Acme\\Edge\\First") @resolver(class: "Acme\\Edge\\Second")
+}
+
+scalar EdgeMoney
+
+type EdgePrice {
+    amount: EdgeMoney @resolver(class: "Acme\\Edge\\Price")
+}

@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<config>
+    <default>
+        <crontab>
+            <default>
+                <jobs>
+                    <acme_edge_job>
+                        <schedule>5 * * * *</schedule>
+                        <instance>Acme\Edge\Cron\Job</instance>
+                        <method>go</method>
+                    </acme_edge_job>
+                </jobs>
+            </default>
+        </crontab>
+    </default>
+</config>

@@ -1,0 +1,153 @@
+{
+    "Commented": {
+        "kind": "graphql_type",
+        "fields": {
+            "ghost": "Acme\\Base\\Ghost"
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    },
+    "Query": {
+        "kind": "graphql_type",
+        "fields": {
+            "acmeNotes": "Acme\\Base\\Model\\Resolver\\Notes",
+            "acmeNote": "Acme\\Base\\Model\\Resolver\\Note",
+            "acmeExtNotes": "Acme\\Ext\\Model\\Resolver\\ExtNotes"
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    },
+    "AcmeNoteInterface": {
+        "kind": "graphql_interface",
+        "fields": {
+            "id": null,
+            "author": "Acme\\Base\\Model\\Resolver\\Author",
+            "body": "Acme\\Base\\Model\\Resolver\\Body"
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": "Acme\\Base\\Model\\Resolver\\NoteTypeResolver"
+    },
+    "AcmeRoutable": {
+        "kind": "graphql_interface",
+        "fields": {
+            "url": null
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": "Acme\\Base\\Model\\Resolver\\RoutableTypeResolver"
+    },
+    "AcmeNote": {
+        "kind": "graphql_type",
+        "fields": {
+            "id": null,
+            "author": "Acme\\Base\\Model\\Resolver\\Author",
+            "body": null,
+            "title": "Acme\\Base\\Model\\Resolver\\Title",
+            "rating": "Acme\\Ext\\Model\\Resolver\\Rating"
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    },
+    "AcmeNotes": {
+        "kind": "graphql_type",
+        "fields": {
+            "items": null,
+            "total_count": null
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    },
+    "AcmeNoteFilter": {
+        "kind": "graphql_input",
+        "fields": {
+            "store_id": null
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    },
+    "AcmeNoteState": {
+        "kind": "graphql_enum",
+        "fields": {},
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    },
+    "EdgeBase": {
+        "kind": "graphql_type",
+        "fields": {
+            "a": "Acme\\Edge\\A"
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    },
+    "EdgeUsesObject": {
+        "kind": "graphql_type",
+        "fields": {
+            "a": "Acme\\Edge\\A",
+            "b": null
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    },
+    "EdgeIone": {
+        "kind": "graphql_interface",
+        "fields": {
+            "x": "Acme\\Edge\\FromOne"
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    },
+    "EdgeItwo": {
+        "kind": "graphql_interface",
+        "fields": {
+            "x": "Acme\\Edge\\FromTwo"
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    },
+    "EdgeMulti": {
+        "kind": "graphql_type",
+        "fields": {
+            "x": "Acme\\Edge\\FromOne",
+            "y": null
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    },
+    "EdgeRepeated": {
+        "kind": "graphql_type",
+        "fields": {
+            "rep": "Acme\\Edge\\First"
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    },
+    "EdgeMoney": {
+        "kind": "graphql_scalar",
+        "fields": {},
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    },
+    "EdgePrice": {
+        "kind": "graphql_type",
+        "fields": {
+            "amount": "Acme\\Edge\\Price"
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    }
+}

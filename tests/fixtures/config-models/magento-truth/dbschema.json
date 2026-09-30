@@ -1,0 +1,65 @@
+{
+    "customer_entity": {
+        "resource": "default",
+        "columns": [
+            "entity_id"
+        ],
+        "indexes": [],
+        "constraints": [
+            "PRIMARY"
+        ]
+    },
+    "acme_note": {
+        "resource": "default",
+        "columns": [
+            "note_id",
+            "customer_id",
+            "store_id",
+            "created_at",
+            "body",
+            "retyped",
+            "rating"
+        ],
+        "indexes": [
+            "ACME_NOTE_STORE_ID_CREATED_AT",
+            "ACME_NOTE_BODY"
+        ],
+        "constraints": [
+            "PRIMARY",
+            "ACME_NOTE_CUSTOMER_ID_STORE_ID_CREATED_AT",
+            "ACME_NOTE_CUSTOMER_ID_CUSTOMER_ENTITY_ENTITY_ID"
+        ]
+    },
+    "acme_very_long_custom_table_name_without_shortenable_words": {
+        "resource": "default",
+        "columns": [
+            "first_column_xyz",
+            "second_column_xyz",
+            "third_column_xyz"
+        ],
+        "indexes": [],
+        "constraints": [
+            "UNQ_1CA9E983663E50E71215551B6DE71FD5"
+        ]
+    },
+    "acme_note_replica": {
+        "resource": "default",
+        "columns": [
+            "store_id"
+        ],
+        "indexes": [
+            "ACME_NOTE_STORE_ID"
+        ],
+        "constraints": []
+    },
+    "patch_list": {
+        "resource": "default",
+        "columns": [
+            "patch_id"
+        ],
+        "indexes": [],
+        "constraints": [
+            "PRIMARY"
+        ]
+    }
+}

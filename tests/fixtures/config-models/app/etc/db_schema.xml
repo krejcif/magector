@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<schema xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <table name="patch_list" resource="default">
+        <column xsi:type="int" name="patch_id" identity="true" nullable="false"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY"><column name="patch_id"/></constraint>
+    </table>
+</schema>

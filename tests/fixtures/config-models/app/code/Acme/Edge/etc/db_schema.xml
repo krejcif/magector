@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<schema xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <table name="acme_note">
+        <column xsi:type="varchar" name="retyped" length="10" nullable="true"/>
+    </table>
+</schema>
