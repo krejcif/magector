@@ -285,6 +285,27 @@ async function main() {
       has: ['**guard_plugin** [global]: `Acme\\Core\\Plugin\\GuardPlugin` — **disabled** by Acme_Ext'],
     });
 
+    // ── Class file lookup by FQCN (two classes named Stock in different modules) ──
+    t = await client.call('magento_find_method', { methodName: 'execute', className: 'Acme\\Core\\Observer\\Stock' });
+    check('find_method: class file resolved by FQCN, not by file name', t, {
+      has: ['app/code/Acme/Core/Observer/Stock.php'],
+      hasNot: ['app/code/Acme/Mix/Observer/Stock.php'],
+    });
+    t = await client.call('magento_trace_call_chain', { className: 'Acme\\Core\\Observer\\Stock', methodName: 'execute' });
+    check('trace_call_chain: start class resolved by FQCN, not by file name', t, {
+      has: ['app/code/Acme/Core/Observer/Stock.php'],
+      hasNot: ['app/code/Acme/Mix/Observer/Stock.php'],
+    });
+
+    t = await client.call('magento_batch', { queries: [
+      { tool: 'magento_find_method', args: { methodName: 'execute', className: 'Acme\\Core\\Observer\\Stock' } },
+      { tool: 'magento_find_class', args: { className: 'Acme\\Core\\Observer\\Stock' } },
+    ] });
+    check('magento_batch: find_method / find_class resolve the class file by FQCN', t, {
+      has: ['app/code/Acme/Core/Observer/Stock.php'],
+      hasNot: ['app/code/Acme/Mix/Observer/Stock.php'],
+    });
+
     // ── Events ───────────────────────────────────────────────────
     t = await client.call('magento_find_observer', { eventName: 'acme_order_place_before' });
     check('find_observer: same-name declarations merged — re-declared observer stays disabled', t, {

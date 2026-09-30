@@ -39,7 +39,7 @@ import {
   virtualTypesResolvingTo, argumentInjectionsOf, effectivePluginDeclarations, resolvePluginType,
   parseEventsXml, parseXml, areaFromPath, createAncestorResolver,
   buildModuleIndex, preferenceCascade, mergeNamedDeclarations, pluginDeclarationsOn,
-  createMemberResolver, interceptionStatus, buildClassHierarchy, instancesOf, applyModuleOrder,
+  createMemberResolver, interceptionStatus, buildClassHierarchy, instancesOf, applyModuleOrder, parsePhpFile,
 } from './di-config.js';
 import { defaultDbPath, manifestPath, tempDbPathFor, swapInIndex } from './paths.js';
 import { createRequire } from 'module';
@@ -1689,6 +1689,34 @@ async function parseFieldsetXml(filterFieldset, filterAspect) {
 /**
  * Resolve a PHP class name to a file path by converting namespace to path.
  */
+/**
+ * PHP files for a class, relative to root. A FQCN resolves to exactly the file that declares it
+ * (composer PSR-4 map, app/code, then a same-named file that declares that FQCN); a short name keeps
+ * the fuzzy match on the file name.
+ */
+async function classFilesFor(root, className) {
+  const n = normalizeClassName(className);
+  if (n.includes('\\')) {
+    const f = findClassFileFast(root, n);
+    return f ? [f.replace(root + '/', '')] : [];
+  }
+  try {
+    return await glob(`**/${n}.php`, { cwd: root, absolute: false, nodir: true });
+  } catch {
+    return [];
+  }
+}
+
+/** Whether a PHP file declares exactly `className` (case-insensitive, like PHP). */
+function fileDeclaresClass(file, className) {
+  try {
+    const wanted = normalizeClassName(className).toLowerCase();
+    return parsePhpFile(readFileSync(file, 'utf-8')).types.some(t => t.fqcn.toLowerCase() === wanted);
+  } catch {
+    return false;
+  }
+}
+
 function findClassFile(root, className) {
   if (!className) return '';
   const parts = className.replace(/\\\\/g, '\\').split('\\');
@@ -1703,13 +1731,13 @@ function findClassFile(root, className) {
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
   }
-  // Glob fallback — search for the class filename
+  // Glob fallback — a file with the class's name that declares exactly this FQCN (two modules
+  // often have classes with the same short name: never take the first file with a matching name).
   const fileName = parts[parts.length - 1] + '.php';
   try {
     const matches = glob.sync(`**/${fileName}`, { cwd: root, absolute: true, nodir: true, ignore: ['**/Test/**', '**/test/**'] });
     for (const m of matches) {
-      const content = readFileSync(m, 'utf-8').slice(0, 500);
-      if (content.includes(parts[parts.length - 1])) return m;
+      if (fileDeclaresClass(m, className)) return m;
     }
   } catch {}
   return '';
@@ -2060,35 +2088,8 @@ async function parseGraphqlSchema(entryPoint) {
 async function resolveClassFileFromRoot(className) {
   const root = config.magentoRoot;
   if (!className) return null;
-  const nsPath = className.replace(/\\/g, '/') + '.php';
-  const candidates = [
-    path.join(root, 'app', 'code', nsPath),
-    path.join(root, 'vendor', nsPath)
-  ];
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
-  }
-
-  const shortName = className.split('\\').pop();
-  let matches;
-  try {
-    matches = await glob(`**/${shortName}.php`, {
-      cwd: root, absolute: true, nodir: true,
-      ignore: ['**/test/**', '**/tests/**', '**/Test/**', '**/Tests/**', '**/node_modules/**']
-    });
-  } catch { return null; }
-
-  for (const match of matches) {
-    let content;
-    try { content = readFileSync(match, 'utf-8'); } catch { continue; }
-    const nsMatch = content.match(/namespace\s+([\w\\]+)/);
-    const classMatch = content.match(/(?:class|abstract\s+class|final\s+class|interface|trait)\s+(\w+)/);
-    if (classMatch && classMatch[1] === shortName) {
-      const fqcn = nsMatch ? `${nsMatch[1]}\\${classMatch[1]}` : classMatch[1];
-      if (fqcn === className) return match;
-    }
-  }
-  return null;
+  // Composer PSR-4 map, app/code, then a file that declares exactly this FQCN
+  return findClassFileFast(root, className) || null;
 }
 
 async function traceGraphql(entryPoint, depth) {
@@ -4484,6 +4485,12 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
   async function resolveClassFile(className) {
     const shortName = className.split('\\').pop();
     if (classFileMap.has(className)) return classFileMap.get(className);
+    // Composer PSR-4 map / app/code / exact-FQCN fallback first
+    const fast = className.includes('\\') ? findClassFileFast(root, className) : '';
+    if (fast) {
+      classFileMap.set(className, fast);
+      return fast;
+    }
 
     // Try common Magento path patterns
     const nsPath = className.replace(/\\/g, '/') + '.php';
@@ -4509,15 +4516,11 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
     for (const match of matches) {
       let content;
       try { content = readFileSync(match, 'utf-8'); } catch { continue; }
-      const nsMatch = content.match(/namespace\s+([\w\\]+)/);
-      const classMatch = content.match(/(?:class|abstract\s+class|trait)\s+(\w+)/);
-      if (classMatch && classMatch[1] === shortName) {
-        const fqcn = nsMatch ? `${nsMatch[1]}\\${classMatch[1]}` : classMatch[1];
-        classFileMap.set(fqcn, match);
-        if (fqcn === className || classMatch[1] === shortName) {
-          classFileMap.set(className, match);
-          return match;
-        }
+      // Only a file that declares exactly this class — never another module's class with the same name
+      const declared = parsePhpFile(content).types.find(t => t.fqcn.toLowerCase() === className.toLowerCase());
+      if (declared) {
+        classFileMap.set(className, match);
+        return match;
       }
     }
 
@@ -5935,7 +5938,9 @@ const _callToolHandler = async (request) => {
     'magento_find_observer', 'magento_find_di_wiring', 'magento_module_structure',
     'magento_batch', 'magento_find_config', 'magento_find_callers', 'magento_grep', 'magento_read', 'magento_trace_api', 'magento_trace_flow', 'magento_ast_search', 'magento_find_null_risks', 'magento_find_dataobject_issues',
     // Structural answers first, semantic results only as an addition
-    'magento_find_preference', 'magento_find_table_usage', 'magento_find_controller', 'magento_find_implementors'];
+    'magento_find_preference', 'magento_find_table_usage', 'magento_find_controller', 'magento_find_implementors',
+    // Filesystem only — PHP sources and config files, no vector search
+    'magento_trace_call_chain', 'magento_trace_config', 'magento_find_fieldset'];
   if (warmupInProgress && !indexFreeTools.includes(name)) {
     logToFile('REQ', `${name} → blocked (warmup: loading index)`);
     return {
@@ -6119,7 +6124,7 @@ const _callToolHandler = async (request) => {
             const classShort = args.className ? args.className.split('\\').pop() : null;
             let files = [];
             if (classShort) {
-              files = await glob(`**/${classShort}.php`, { cwd: config.magentoRoot, absolute: false, nodir: true });
+              files = await classFilesFor(config.magentoRoot, args.className);
             } else {
               // Use grep -rl for fast search across all PHP files (much faster than reading each file)
               try {
@@ -7753,12 +7758,10 @@ const _callToolHandler = async (request) => {
                 // Filesystem fallback for batch find_class
                 if (res.length === 0 && config.magentoRoot) {
                   const shortName = a.className.split('\\').pop();
-                  try {
-                    const files = await glob(`**/${shortName}.php`, { cwd: config.magentoRoot, absolute: false, nodir: true });
-                    for (const f of files.slice(0, 5)) {
-                      res.push({ path: f, className: shortName, score: 0.5 });
-                    }
-                  } catch {}
+                  const files = await classFilesFor(config.magentoRoot, a.className);
+                  for (const f of files.slice(0, 5)) {
+                    res.push({ path: f, className: normalizeClassName(a.className).includes('\\') ? normalizeClassName(a.className) : shortName, score: 0.5 });
+                  }
                 }
                 text = formatSearchResults(res.slice(0, 5));
                 break;
@@ -7871,7 +7874,7 @@ const _callToolHandler = async (request) => {
                   try {
                     let files = [];
                     if (classShort) {
-                      files = await glob(`**/${classShort}.php`, { cwd: config.magentoRoot, absolute: false, nodir: true });
+                      files = await classFilesFor(config.magentoRoot, a.className);
                     } else {
                       const grepResult = execFileSync('grep', ['-rl', '--include=*.php', methodSig, '.'],
                         { cwd: config.magentoRoot, encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] });

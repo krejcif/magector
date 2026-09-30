@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 
 ## [Unreleased]
 
+### Fixed
+- **A class was looked up by its file name**, so with two classes of the same short name in different modules (`…\Core\Observer\Stock`, `…\Mix\Observer\Stock`) `trace_call_chain` traced the other module's class, `find_method` and `magento_batch` (`find_method`, `find_class`) listed its file, and `findClassFile` returned the first file with that name. A fully qualified name now resolves to the file that declares exactly that class (composer PSR-4 map, `app/code`, then a same-named file that declares that FQCN); a short name keeps the fuzzy match.
+- **`trace_call_chain`, `trace_config` and `find_fieldset` refused to answer without an index** (they read only PHP and config files) — they are index-free now.
+
 ## [2.17.5] - 2026-09-30
 
 ### Fixed
