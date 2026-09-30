@@ -205,6 +205,29 @@ async function main() {
     t = await c.call('magento_find_db_schema', { tableName: 'acme' });
     check('find_db_schema: a partial name lists the tables; a disabled module\'s table is not declared', t, { has: ['`acme_note` —', '`acme_note_replica` —'], hasNot: ['`acme_off`'] });
 
+    // Module discovery (the fixture is a composer install: vendor/composer/autoload_files.php)
+    t = await c.call('magento_find_api', { query: '/V1/acme/' });
+    check('modules: a module registered by a registration.php that includes */registration.php is read (Mirakl\'s layout)', t, {
+      has: ['**GET /V1/acme/multi-one**'],
+    });
+    check('modules: an unregistered copy of a module and a dev/tests file are not read — Magento never reads them (was: every etc/ file of the tree)', t, {
+      hasNot: ['/V1/acme/unregistered', '/V1/acme/devtests'],
+    });
+    t = await c.call('magento_module_structure', { moduleName: 'Acme_MultiOne' });
+    check('modules: the nested module is where its registration.php is', t, { has: ['## Module Acme_MultiOne — `vendor/acme/multi/One`'] });
+
+    // Tokens
+    t = await c.call('magento_find_plugin', { targetClass: 'Acme\\Base\\Model\\NoteRepository' });
+    check('find_plugin: a plugin class registered in two areas shows its code once (tokens)', t, {
+      has: ['**acme_note_plugin** → `Acme\\Base\\Plugin\\NotePlugin` [graphql]', '**acme_note_plugin** → `Acme\\Base\\Plugin\\NotePlugin` [webapi_rest]', '_(code shown above)_'],
+    });
+    ok('find_plugin: … the body is printed exactly once', t.split('acme-note-plugin-body').length - 1 === 1, `${t.split('acme-note-plugin-body').length - 1} times`);
+    check('find_plugin: no empty semantic block without an index (tokens)', t, { hasNot: ['{"results":[],"count":0}'] });
+    t = await c.call('magento_batch', { queries: [{ tool: 'magento_find_plugin', args: { targetClass: 'Acme\\Base\\Model\\Busy' } }] });
+    check('batch: says how many plugin registrations it left out (was: cut at 12 silently)', t, {
+      has: ['- … 1 more registrations — call magento_find_plugin for all of them'],
+    });
+
     t = await c.call('magento_module_structure', { moduleName: 'Acme_Weird' });
     check('module_structure: the module directory comes from the module index, not from its name (was: vendor path guessed from the name)', t, {
       has: ['## Module Acme_Weird — `vendor/acme/totally-different-name`'],

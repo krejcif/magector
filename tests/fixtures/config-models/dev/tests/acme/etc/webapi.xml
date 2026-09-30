@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<routes>
+    <route url="/V1/acme/devtests" method="GET"><service class="Acme\Dev\Api\XInterface" method="get"/><resources><resource ref="anonymous"/></resources></route>
+</routes>

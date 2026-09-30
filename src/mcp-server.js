@@ -44,6 +44,7 @@ import {
 } from './di-config.js';
 import {
   moduleConfigFiles, unreadModuleConfigFiles, buildWebapiModel, buildGraphqlModel, buildCronModel, buildDbSchemaModel,
+  discoverModules, listModuleEtcFiles, etcPatternRegExp, MODULE_XML_IGNORE,
 } from './magento-config.js';
 import { defaultDbPath, manifestPath, tempDbPathFor, swapInIndex } from './paths.js';
 import { createRequire } from 'module';
@@ -2504,114 +2505,35 @@ async function getDiModel(root) {
 }
 
 // ─── Module discovery and module config files ───────────────────
-// Magento reads configuration only from the etc/ of registered modules and app/etc. Walking the
-// whole tree for every `**/etc/…` pattern cost ~1 s each on a 73k-file project (4–5 walks on the
-// first call); the modules are known from the registrations, so their etc/ directories are listed
-// once per session instead. Files outside them (dev/tests sandboxes, the magento2-base copy of
-// app/etc, unregistered copies of a module) are never read by Magento and are not listed.
+// Magento reads configuration only from the etc/ of registered modules and app/etc (see
+// discoverModuleXmls in src/magento-config.js). Their etc/ directories are listed once per session
+// instead of walking the whole tree for every `**/etc/…` pattern (~1 s per walk on 73k files).
 
-// app/etc/registration_globlist.php of Magento 2.4 (used when the project has none)
-const DEFAULT_REGISTRATION_GLOBS = [
-  'app/code/*/*/registration.php', 'app/design/*/*/*/registration.php', 'app/i18n/*/*/registration.php',
-  'lib/internal/*/*/registration.php', 'lib/internal/*/*/*/registration.php', 'setup/src/*/*/registration.php',
-];
-const MODULE_XML_IGNORE = ['**/dev/tests/**', '**/Test/**', '**/node_modules/**'];
 const moduleFilesCache = { root: null, moduleXmls: null, etcFiles: null, installed: false };
 
-/**
- * etc/module.xml of every registered module: registration.php files composer autoloads
- * (vendor/composer/autoload_files.php) and those app/etc/registration_globlist.php names — what
- * Magento's ComponentRegistrar sees. Without a composer install (a partial checkout, a fixture) every
- * etc/module.xml of the tree counts.
- */
 async function discoverModuleXmls(root) {
   if (moduleFilesCache.root === root && moduleFilesCache.moduleXmls) return moduleFilesCache.moduleXmls;
-  const dirs = new Set();
-  let composerList = false;
-  try {
-    const src = readFileSync(path.join(root, 'vendor', 'composer', 'autoload_files.php'), 'utf-8');
-    composerList = true;
-    for (const m of src.matchAll(/\$(vendorDir|baseDir)\s*\.\s*'([^']*\/registration\.php)'/g)) {
-      const abs = path.join(m[1] === 'vendorDir' ? path.join(root, 'vendor') : root, m[2]);
-      dirs.add(path.relative(root, path.dirname(abs)));
-    }
-  } catch { /* no composer install */ }
-  let patterns = DEFAULT_REGISTRATION_GLOBS;
-  try {
-    const list = readFileSync(path.join(root, 'app', 'etc', 'registration_globlist.php'), 'utf-8');
-    const found = [...list.matchAll(/'([^']+\/registration\.php)'/g)].map(m => m[1]);
-    if (found.length) patterns = found;
-  } catch { /* default list */ }
-  for (const p of patterns) {
-    try { for (const f of await glob(p, { cwd: root, nodir: true })) dirs.add(path.dirname(f)); } catch { /* none */ }
-  }
-  // A registration.php may register modules below it (Mirakl's includes */registration.php), so the
-  // modules one and two levels below a registration count too — tests and dev sandboxes excepted
-  const skip = new Set(['Test', 'Tests', 'test', 'tests', 'dev', 'node_modules', 'etc', 'view', 'i18n']);
-  const candidates = new Set();
-  for (const d of dirs) {
-    candidates.add(`${d}/etc/module.xml`);
-    const walk = (rel, depth) => {
-      if (depth > 2) return;
-      let entries;
-      try { entries = readdirSync(path.join(root, rel), { withFileTypes: true }); } catch { return; }
-      for (const e of entries) {
-        if (!e.isDirectory() || skip.has(e.name)) continue;
-        candidates.add(`${rel}/${e.name}/etc/module.xml`);
-        walk(`${rel}/${e.name}`, depth + 1);
-      }
-    };
-    walk(d, 1);
-  }
-  let rels = [...candidates].filter(r => existsSync(path.join(root, r)));
-  if (!composerList) {
-    rels = [...new Set([...rels, ...await glob('**/etc/module.xml', { cwd: root, nodir: true, ignore: MODULE_XML_IGNORE })])];
-  }
+  const { moduleXmls, installed } = await discoverModules(root);
   moduleFilesCache.root = root;
-  moduleFilesCache.installed = composerList;
-  moduleFilesCache.moduleXmls = rels.sort();
+  moduleFilesCache.installed = installed;
+  moduleFilesCache.moduleXmls = moduleXmls;
   moduleFilesCache.etcFiles = null;
-  return moduleFilesCache.moduleXmls;
-}
-
-function listFilesRecursive(absDir, relDir, out) {
-  let entries;
-  try { entries = readdirSync(absDir, { withFileTypes: true }); } catch { return; }
-  for (const e of entries) {
-    const rel = `${relDir}/${e.name}`;
-    if (e.isDirectory()) listFilesRecursive(path.join(absDir, e.name), rel, out);
-    else if (e.isFile()) out.push(rel);
-  }
+  return moduleXmls;
 }
 
 /** Every file under the etc/ of each registered module and under app/etc (relative paths). */
 async function getModuleEtcFiles(root) {
   const idx = await getModuleIndex(root);
   if (moduleFilesCache.root === root && moduleFilesCache.etcFiles) return moduleFilesCache.etcFiles;
-  const out = [];
-  for (const m of idx.modules.values()) listFilesRecursive(path.join(root, m.dir, 'etc'), `${m.dir}/etc`, out);
-  listFilesRecursive(path.join(root, 'app', 'etc'), 'app/etc', out);
-  moduleFilesCache.etcFiles = [...new Set(out)].sort();
+  moduleFilesCache.etcFiles = listModuleEtcFiles(root, idx);
   return moduleFilesCache.etcFiles;
-}
-
-/** `**\/etc/<rest>` glob pattern → RegExp over a relative path (**, *, {a,b}). */
-function etcPatternRegExp(pattern) {
-  const rest = pattern.replace(/^\*\*\/etc\//, '');
-  let re = '';
-  for (let i = 0; i < rest.length; i++) {
-    const c = rest[i];
-    if (rest.startsWith('**/', i)) { re += '(?:[^/]+/)*'; i += 2; } else if (c === '*') re += '[^/]*';
-    else if (c === '{') { const end = rest.indexOf('}', i); re += `(?:${rest.slice(i + 1, end).split(',').map(s => s.replace(/[.+^$()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*')).join('|')})`; i = end; } else re += c.replace(/[.+^$()|[\]\\?]/g, '\\$&');
-  }
-  return new RegExp(`(?:^|/)etc/${re}$`);
 }
 
 /** Drop-in for glob('**\/etc/…'): the matching files of the registered modules' etc/ and app/etc. */
 async function moduleEtcGlob(root, pattern, { absolute = false } = {}) {
   await discoverModuleXmls(root);
-  // Not a composer install (a partial checkout, a fixture): which files count is unknown — every match
-  // (tests and dev sandboxes excepted, as Magento never reads them)
+  // Not a composer install (a partial checkout, a fixture): which files count is unknown — every
+  // match (tests and dev sandboxes excepted, as Magento never reads them)
   if (!moduleFilesCache.installed) return glob(pattern, { cwd: root, nodir: true, absolute, ignore: MODULE_XML_IGNORE.concat('**/tests/**') });
   const re = etcPatternRegExp(pattern);
   const files = (await getModuleEtcFiles(root)).filter(f => re.test(f));

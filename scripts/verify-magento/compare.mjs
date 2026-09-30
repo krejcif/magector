@@ -30,7 +30,7 @@ import {
   buildModuleIndex,
 } from '../../src/di-config.js';
 import {
-  moduleConfigFiles, buildWebapiModel, buildGraphqlModel, buildCronModel, buildDbSchemaModel,
+  moduleConfigFiles, buildWebapiModel, buildGraphqlModel, buildCronModel, buildDbSchemaModel, discoverModules,
 } from '../../src/magento-config.js';
 import { existsSync } from 'fs';
 import { glob } from 'glob';
@@ -208,7 +208,8 @@ if (mode === 'config') {
 }
 
 if (['webapi', 'graphql', 'cron', 'dbschema', 'modules'].includes(mode)) {
-  const moduleXmls = (await glob('**/etc/module.xml', { cwd: root, nodir: true, ignore: ['**/dev/tests/**', '**/Test/**'] }))
+  // the module discovery the MCP server uses (registrations), so the check covers it too
+  const moduleXmls = (await discoverModules(root)).moduleXmls
     .map(rel => ({ relPath: rel, content: readFileSync(path.join(root, rel), 'utf-8') }));
   let configPhp = null;
   try { configPhp = readFileSync(path.join(root, 'app/etc/config.php'), 'utf-8'); } catch { /* not installed */ }

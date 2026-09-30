@@ -26,5 +26,14 @@
                 "anonymous"
             ]
         }
+    },
+    "/V1/acme/multi-one": {
+        "GET": {
+            "class": "Acme\\MultiOne\\Api\\OneInterface",
+            "method": "get",
+            "resources": [
+                "anonymous"
+            ]
+        }
     }
 }

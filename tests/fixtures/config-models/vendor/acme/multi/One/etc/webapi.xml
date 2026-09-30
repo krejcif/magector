@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<routes>
+    <route url="/V1/acme/multi-one" method="GET"><service class="Acme\MultiOne\Api\OneInterface" method="get"/><resources><resource ref="anonymous"/></resources></route>
+</routes>

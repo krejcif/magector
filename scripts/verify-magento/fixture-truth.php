@@ -23,11 +23,20 @@ require rtrim($magentoRoot, '/') . '/app/bootstrap.php';
 $om = Bootstrap::create(BP, $_SERVER)->getObjectManager();
 $fixture = rtrim(realpath($fixture), '/');
 
-// The fixture's modules: registration.php → directory; app/etc/config.php → enabled, order
-foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($fixture, FilesystemIterator::SKIP_DOTS)) as $f) {
-    if ($f->getFilename() === 'registration.php') {
-        require $f->getPathname();
-    }
+// The fixture's modules, registered as Magento registers them: the registration.php files composer
+// autoloads (vendor/composer/autoload_files.php) and those app/etc/registration_globlist.php names
+$registrations = [];
+if (is_file("$fixture/vendor/composer/autoload_files.php")) {
+    $registrations = array_filter(require "$fixture/vendor/composer/autoload_files.php", fn($f) => str_ends_with($f, 'registration.php'));
+}
+$globs = is_file("$fixture/app/etc/registration_globlist.php") ? require "$fixture/app/etc/registration_globlist.php"
+    : ['app/code/*/*/registration.php', 'app/design/*/*/*/registration.php', 'app/i18n/*/*/registration.php',
+       'lib/internal/*/*/registration.php', 'lib/internal/*/*/*/registration.php', 'setup/src/*/*/registration.php'];
+foreach ($globs as $pattern) {
+    $registrations = array_merge($registrations, glob("$fixture/$pattern") ?: []);
+}
+foreach (array_unique($registrations) as $file) {
+    require_once $file;
 }
 $config = require $fixture . '/app/etc/config.php';
 $paths = (new ComponentRegistrar())->getPaths(ComponentRegistrar::MODULE);

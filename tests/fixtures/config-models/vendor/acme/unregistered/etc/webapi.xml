@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<routes>
+    <route url="/V1/acme/unregistered" method="GET"><service class="Acme\Unregistered\Api\XInterface" method="get"/><resources><resource ref="anonymous"/></resources></route>
+</routes>

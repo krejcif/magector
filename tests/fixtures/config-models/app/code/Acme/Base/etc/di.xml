@@ -8,4 +8,19 @@
             </argument>
         </arguments>
     </virtualType>
+    <type name="Acme\Base\Model\Busy">
+        <plugin name="acme_busy_01" type="Acme\Base\Plugin\NotePlugin"/>
+        <plugin name="acme_busy_02" type="Acme\Base\Plugin\NotePlugin"/>
+        <plugin name="acme_busy_03" type="Acme\Base\Plugin\NotePlugin"/>
+        <plugin name="acme_busy_04" type="Acme\Base\Plugin\NotePlugin"/>
+        <plugin name="acme_busy_05" type="Acme\Base\Plugin\NotePlugin"/>
+        <plugin name="acme_busy_06" type="Acme\Base\Plugin\NotePlugin"/>
+        <plugin name="acme_busy_07" type="Acme\Base\Plugin\NotePlugin"/>
+        <plugin name="acme_busy_08" type="Acme\Base\Plugin\NotePlugin"/>
+        <plugin name="acme_busy_09" type="Acme\Base\Plugin\NotePlugin"/>
+        <plugin name="acme_busy_10" type="Acme\Base\Plugin\NotePlugin"/>
+        <plugin name="acme_busy_11" type="Acme\Base\Plugin\NotePlugin"/>
+        <plugin name="acme_busy_12" type="Acme\Base\Plugin\NotePlugin"/>
+        <plugin name="acme_busy_13" type="Acme\Base\Plugin\NotePlugin"/>
+    </type>
 </config>
