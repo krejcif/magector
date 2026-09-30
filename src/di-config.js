@@ -24,11 +24,13 @@ function decodeEntities(s) {
 }
 
 /**
- * Parse an XML document into { name, attrs, children, text } nodes. Tolerant: unknown or
- * unbalanced closing tags are ignored rather than thrown, so a broken file yields what it can.
+ * Parse an XML document into { name, attrs, children, text, seq, line } nodes. `seq` keeps the
+ * child elements, text and CDATA sections in document order ({ node } | { text } | { cdata }).
+ * Tolerant: unknown or unbalanced closing tags are ignored rather than thrown, so a broken file
+ * yields what it can (checkXmlWellFormed says whether Magento loads it).
  */
 export function parseXml(content) {
-  const root = { name: '#document', attrs: {}, children: [], text: '' };
+  const root = { name: '#document', attrs: {}, children: [], text: '', seq: [] };
   if (!content) return root;
   const src = content;
   const stack = [root];
@@ -36,14 +38,19 @@ export function parseXml(content) {
   // whichever starts first wins (a "<!--" inside CDATA is text, not the start of a comment).
   const tagRe = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!DOCTYPE(?:[^[>]|\[[\s\S]*?\])*>|<!\[CDATA\[([\s\S]*?)\]\]>|<(\/?)([A-Za-z_][\w:.-]*)((?:\s+[\w:.-]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>|([^<]+)|</g;
   let m;
+  let line = 1, counted = 0;
+  const lineAt = off => { for (; counted < off; counted++) if (src.charCodeAt(counted) === 10) line++; return line; };
   while ((m = tagRe.exec(src)) !== null) {
     const top = stack[stack.length - 1];
     if (m[3] === undefined && m[1] === undefined && m[6] === undefined) {
       continue;                         // comment, PI, DOCTYPE, or a stray "<"
     } else if (m[1] !== undefined) {    // CDATA
       top.text += m[1];
+      top.seq.push({ cdata: m[1] });
     } else if (m[6] !== undefined) {    // text
-      top.text += decodeEntities(m[6]);
+      const text = decodeEntities(m[6]);
+      top.text += text;
+      top.seq.push({ text });
     } else if (m[2] === '/') {          // closing tag
       for (let i = stack.length - 1; i > 0; i--) {
         if (stack[i].name === m[3]) { stack.length = i; break; }
@@ -53,8 +60,9 @@ export function parseXml(content) {
       const attrRe = /([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
       let a;
       while ((a = attrRe.exec(m[4])) !== null) attrs[a[1]] = decodeEntities(a[2] ?? a[3] ?? '');
-      const node = { name: m[3], attrs, children: [], text: '' };
+      const node = { name: m[3], attrs, children: [], text: '', seq: [], line: lineAt(m.index) };
       top.children.push(node);
+      top.seq.push({ node });
       if (m[5] !== '/') stack.push(node);
     }
   }
@@ -1034,6 +1042,426 @@ export function instancesOf(hierarchy, fqcn) {
       out.push({ fqcn: child, kind: decl?.kind || 'class', file: decl?.file || null, relation, via: name, depth: path.length, path: childPath });
       queue.push({ name: child, path: childPath });
     }
+  }
+  return out;
+}
+
+// ─── Configuration validation (what Magento rejects) ────────────
+//
+// Magento\Framework\Config\Dom::_initDom() loads each file with DOMDocument; a file that is not
+// well-formed fails in every mode with Config\Reader\Filesystem's message. Schema (XSD) errors fail
+// only when validation is required (developer mode). Values are then read by the converters:
+// ObjectManager\Config\Mapper\Dom → BooleanUtils::toBoolean() (strict) for plugin disabled / type
+// shared, (int) for sortOrder; Event\Config\Converter disables an observer only on disabled == 'true'.
+
+/** Config\Dom::ERROR_FORMAT_DEFAULT */
+export const MAGENTO_XML_ERROR_FORMAT = '%message%\nLine: %line%\n';
+
+/** The text Config\Reader\Filesystem::_readFiles() throws for a file DOMDocument cannot load. */
+export function magentoInvalidXmlMessage(file, errors) {
+  const body = errors.map(e => MAGENTO_XML_ERROR_FORMAT.replace('%message%', e.message).replace('%line%', String(e.line))).join('\n');
+  return `The XML in file "${file}" is invalid:\n${body}\nVerify the XML and try again.`;
+}
+
+/** var_export() of BooleanUtils' allowed values, as in its exception message. */
+export const BOOLEAN_UTILS_MESSAGE = "Boolean value is expected, supported values: array (\n  0 => true,\n  1 => 1,\n  2 => 'true',\n  3 => '1',\n  4 => false,\n  5 => 0,\n  6 => 'false',\n  7 => '0',\n)";
+
+const XML_NAME = /[A-Za-z_:][\w:.-]*/y;
+
+/**
+ * Well-formedness check without PHP. Returns [] for a well-formed document, otherwise the first error
+ * libxml reports, with libxml's wording and line (checked against libxml 2.9 — see
+ * tests/di-parsing.test.js). libxml usually adds follow-up errors; only a native check lists them all.
+ * An empty file is not an XML error in Magento: DOMDocument::loadXML('') throws a ValueError (PHP 8).
+ */
+export function checkXmlWellFormed(content) {
+  const src = String(content ?? '');
+  const lineAt = (() => {
+    const starts = [0];
+    for (let i = 0; i < src.length; i++) if (src[i] === '\n') starts.push(i + 1);
+    return off => { let lo = 0, hi = starts.length - 1; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid] <= off) lo = mid; else hi = mid - 1; } return lo + 1; };
+  })();
+  const err = (off, message) => [{ line: lineAt(off), message }];
+  if (src === '') return [{ line: 0, message: 'DOMDocument::loadXML(): Argument #1 ($source) must not be empty' }];
+  const skipBlanks = off => { let k = off; while (k < src.length && /[ \t\r\n]/.test(src[k])) k++; return k; };
+  const firstContent = skipBlanks;
+  // <?xml version="…" encoding="…" standalone="…"?> — the checks and messages of xmlParseXMLDecl()
+  const parseXmlDecl = () => {
+    let j = skipBlanks(5);
+    const VALUE_CHARS = { encoding: /[\w.-]/, standalone: /[a-z]/ };
+    const value = (attr, at) => {
+      let k = skipBlanks(at + attr.length);
+      if (src[k] !== '=') return { error: err(k, "expected '='") };
+      k = skipBlanks(k + 1);
+      const q = src[k];
+      if (q !== '"' && q !== "'") return { error: err(k, 'String not started expecting \' or "') };
+      let end = k + 1;
+      if (attr === 'version') {                               // xmlParseVersionNum(): [0-9]+ '.' [0-9]*
+        const num = /^[0-9]+\.[0-9]*/.exec(src.slice(end));
+        end += num ? num[0].length : 0;
+        if (src[end] !== q) return { error: err(end, 'String not closed expecting " or \'') };
+        if (!num) return { error: err(end + 1, 'Malformed declaration expecting version') };
+        return { end: end + 1, value: num[0] };
+      }
+      while (end < src.length && VALUE_CHARS[attr].test(src[end])) end++;
+      if (src[end] !== q) return { error: err(end, 'String not closed expecting " or \'') };
+      return { end: end + 1, value: src.slice(k + 1, end) };
+    };
+    if (!src.startsWith('version', j)) return { error: err(j, 'Malformed declaration expecting version') };
+    let v = value('version', j);
+    if (v.error) return v;
+    j = v.end;
+    // a blank is required after version, and after encoding when it is present
+    let needBlank = true;
+    for (const attr of ['encoding', 'standalone']) {
+      if (needBlank) {
+        if (src.startsWith('?>', j)) return { end: j + 2 };
+        if (skipBlanks(j) === j) return { error: err(j, 'Blank needed here') };
+      }
+      j = skipBlanks(j);
+      needBlank = false;
+      if (!src.startsWith(attr, j)) continue;
+      v = value(attr, j);
+      if (v.error) return v;
+      j = v.end;
+      needBlank = attr === 'encoding';
+    }
+    j = skipBlanks(j);
+    if (src.startsWith('?>', j)) return { end: j + 2 };
+    return { error: err(j, "parsing XML declaration: '?>' expected") };
+  };
+  const stack = [];
+  const declaredEntities = new Set();   // <!ENTITY name …> in the internal DTD subset
+  let rootClosed = false;
+  let sawRoot = false;
+  const checkText = (from, to) => {
+    const t = src.slice(from, to);
+    const amp = /&/g;
+    let m;
+    while ((m = amp.exec(t)) !== null) {
+      const rest = t.slice(m.index + 1);
+      if (/^(#x[0-9a-fA-F]+|#\d+);/.test(rest)) continue;
+      const named = /^([A-Za-z_:][\w.:-]*)(;?)/.exec(rest);
+      if (!named) return err(from + m.index, 'xmlParseEntityRef: no name');
+      if (!named[2]) return err(from + m.index, "EntityRef: expecting ';'");
+      if (!['amp', 'lt', 'gt', 'quot', 'apos'].includes(named[1]) && !declaredEntities.has(named[1])) return err(from + m.index, `Entity '${named[1]}' not defined`);
+    }
+    return null;
+  };
+  let i = 0;
+  while (i < src.length) {
+    const lt = src.indexOf('<', i);
+    const textEnd = lt < 0 ? src.length : lt;
+    if (textEnd > i) {
+      const text = src.slice(i, textEnd);
+      if (text.trim() && (!stack.length)) {
+        return err(firstContent(i), sawRoot ? 'Extra content at the end of the document' : "Start tag expected, '<' not found");
+      }
+      const e = checkText(i, textEnd);
+      if (e) return e;
+    }
+    if (lt < 0) break;
+    i = lt;
+    if (src.startsWith('<!--', i)) {
+      const e = src.indexOf('-->', i + 4);
+      const dash = src.indexOf('--', i + 4);
+      if (dash >= 0 && (e < 0 || dash < e)) {
+        // libxml's fast path (ASCII) and complex path word the same error differently
+        const before = src.slice(i + 4, dash);
+        return err(dash, /[^\x00-\x7f]/.test(before) ? "Comment must not contain '--' (double-hyphen)" : 'Double hyphen within comment: <!--');
+      }
+      if (e < 0) return err(src.length, 'Comment not terminated');
+      i = e + 3; continue;
+    }
+    if (src.startsWith('<![CDATA[', i)) {
+      const e = src.indexOf(']]>', i + 9);
+      if (e < 0) return err(src.length, 'CData section not finished');
+      i = e + 3; continue;
+    }
+    if (src.startsWith('<?', i)) {
+      if (i === 0 && /^<\?xml\s/.test(src)) {                   // xmlParseXMLDecl()
+        const d = parseXmlDecl();
+        if (d.error) return d.error;
+        i = d.end; continue;
+      }
+      XML_NAME.lastIndex = i + 2;
+      const target = XML_NAME.exec(src);
+      if (target && target[0].toLowerCase() === 'xml') return err(i + 2 + target[0].length, 'XML declaration allowed only at the start of the document');
+      if (!target) return err(i + 2, 'xmlParsePI : no target name');
+      const after = i + 2 + target[0].length;
+      if (!src.startsWith('?>', after) && skipBlanks(after) === after) return err(after, `ParsePI: PI ${target[0]} space expected`);
+      const e = src.indexOf('?>', i + 2);
+      if (e < 0) return err(i, 'ParsePI: PI xml never end ...');
+      i = e + 2; continue;
+    }
+    if (src.startsWith('<!DOCTYPE', i)) {
+      const m = /^<!DOCTYPE(?:[^[>]|\[[\s\S]*?\])*>/.exec(src.slice(i));
+      if (!m) return err(i, 'DOCTYPE improperly terminated');
+      for (const d of m[0].matchAll(/<!ENTITY\s+([A-Za-z_][\w.-]*)\s/g)) declaredEntities.add(d[1]);
+      i += m[0].length; continue;
+    }
+    if (src[i + 1] === '/') {                                   // closing tag
+      if (!sawRoot) return err(i + 1, 'StartTag: invalid element name');
+      XML_NAME.lastIndex = i + 2;
+      const nm = XML_NAME.exec(src);
+      const name = nm ? nm[0] : '';
+      let j = nm ? XML_NAME.lastIndex : i + 2;
+      while (/\s/.test(src[j] || '')) j++;
+      if (!name || src[j] !== '>') return err(j, "expected '>'");
+      const open = stack.pop();
+      if (!open) return err(i, 'Extra content at the end of the document');
+      if (open.name !== name) return err(i, `Opening and ending tag mismatch: ${open.name} line ${open.line} and ${name}`);
+      i = j + 1;
+      if (!stack.length) rootClosed = true;
+      continue;
+    }
+    // start tag
+    XML_NAME.lastIndex = i + 1;
+    const nm = XML_NAME.exec(src);
+    if (!nm) return err(i, 'StartTag: invalid element name');
+    if (rootClosed) return err(i, 'Extra content at the end of the document');
+    const name = nm[0];
+    const tagLine = lineAt(i);
+    let j = XML_NAME.lastIndex;
+    const seen = new Set();
+    j = skipBlanks(j);
+    for (;;) {
+      if (src[j] === '>') { stack.push({ name, line: tagLine }); sawRoot = true; j++; break; }
+      if (src[j] === '/' && src[j + 1] === '>') { sawRoot = true; if (!stack.length) rootClosed = true; j += 2; break; }
+      if (j >= src.length) return err(j, `Couldn't find end of Start Tag ${name} line ${tagLine}`);
+      XML_NAME.lastIndex = j;
+      const an = XML_NAME.exec(src);
+      if (!an) return err(j, 'error parsing attribute name');
+      const local = an[0].slice(an[0].indexOf(':') + 1) || an[0];      // libxml names the QName's local part
+      j = skipBlanks(XML_NAME.lastIndex);
+      if (src[j] !== '=') return err(j, 'Specification mandates value for attribute ' + local);
+      j = skipBlanks(j + 1);
+      const q = src[j];
+      if (q !== '"' && q !== "'") return err(j, 'AttValue: " or \' expected');
+      let close = j + 1;
+      while (close < src.length && src[close] !== q && src[close] !== '<') close++;
+      if (src[close] === '<') return err(close, "Unescaped '<' not allowed in attributes values");
+      if (close >= src.length) return err(close, 'AttValue: \' expected');
+      const e = checkText(j + 1, close);
+      if (e) return e;
+      if (seen.has(an[0])) return err(close, `Attribute ${an[0]} redefined`);
+      seen.add(an[0]);
+      j = close + 1;
+      if (src[j] === '>' || (src[j] === '/' && src[j + 1] === '>')) continue;
+      const k = skipBlanks(j);
+      if (k === j) return err(j, 'attributes construct error');
+      j = k;
+    }
+    i = j;
+  }
+  if (stack.length) {
+    const open = stack[stack.length - 1];
+    return err(src.length, `Premature end of data in tag ${open.name} line ${open.line}`);
+  }
+  if (!sawRoot) return err(src.length, "Start tag expected, '<' not found");
+  return [];
+}
+
+// ─── DI arguments, as Magento reads them ─────────────────────────
+// ObjectManager\Config\Mapper\ArgumentParser converts an <argument> with Config\Converter\Dom\Flat
+// (items keyed by name on paths argument(/item)+), then the interpreters of
+// ObjectManagerFactory::createArgumentInterpreter() evaluate it. Both are ported here with their
+// order and messages; `const` / `init_parameter` need PHP's defined() and stay with the native check.
+
+class MagentoException extends Error {
+  constructor(cls, message, node) { super(message); this.cls = cls; this.node = node; }
+}
+
+/**
+ * Config\Converter\Dom\Flat::convert(): element children first (depth-first), the first non-blank
+ * text or CDATA child ends the scan and becomes the value. Returns { data, dropped } — dropped:
+ * element children discarded because a text / CDATA child made the node a scalar.
+ */
+function flatConvert(node, basePath, onDropped) {
+  let value = {};
+  let isScalar = false;
+  let elements = 0;
+  for (const entry of node.seq || []) {
+    if (entry.node) {
+      const child = entry.node;
+      const nodePath = `${basePath}/${child.name}`;
+      const isArrayNode = /^argument(\/item)+$/.test(nodePath);
+      if (value[child.name] !== undefined && !isArrayNode) {
+        throw new MagentoException('UnexpectedValueException', `Node path '${nodePath}' is not unique, but it has not been marked as array.`, child);
+      }
+      const data = flatConvert(child, nodePath, onDropped);
+      elements++;
+      if (isArrayNode) {
+        if (!(data && typeof data === 'object' && data.name !== undefined)) {
+          throw new MagentoException('UnexpectedValueException', "Array is expected to contain value for key 'name'.", child);
+        }
+        (value[child.name] ||= new Map()).set(data.name, data);
+      } else {
+        value[child.name] = data;
+      }
+    } else if (entry.cdata !== undefined || (entry.text !== undefined && entry.text.trim() !== '')) {
+      if (elements) onDropped(node, elements, (entry.cdata ?? entry.text).trim());
+      value = entry.cdata ?? entry.text;
+      isScalar = true;
+      break;
+    }
+  }
+  const attrs = { ...node.attrs };
+  if (!isScalar) {
+    const result = { ...attrs, ...value };
+    return Object.keys(result).length ? result : '';
+  }
+  return Object.keys(attrs).length ? { ...attrs, value: value.trim() } : value.trim();
+}
+
+const BOOLEAN_VALUES = ['true', '1', 'false', '0'];
+const PHP_NUMERIC = /^[ \t\n\r\v\f]*[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?[ \t\n\r\v\f]*$/;
+
+/** Magento\Framework\ObjectManager\Helper\SortItems (single level): stable, by (int) sortOrder. */
+function sortArrayItems(items) {
+  const list = [...items.values()];
+  if (!list.some(i => i && typeof i === 'object' && i.sortOrder !== undefined)) return list;
+  return list.map((item, index) => ({ item, index, order: phpIntCast(item?.sortOrder ?? 0) }))
+    .sort((a, b) => a.order - b.order || a.index - b.index).map(x => x.item);
+}
+
+/** Data\Argument\Interpreter\Composite and the interpreters it dispatches to. */
+function evaluateArgument(data, node) {
+  if (!data || typeof data !== 'object' || data['xsi:type'] === undefined) {
+    throw new MagentoException('InvalidArgumentException', 'Value for key "xsi:type" is missing in the argument data.', node);
+  }
+  const type = data['xsi:type'];
+  const has = k => data[k] !== undefined && data[k] !== null;
+  switch (type) {
+    case 'boolean':
+      if (!has('value')) throw new MagentoException('InvalidArgumentException', 'Boolean value is missing.', node);
+      if (!BOOLEAN_VALUES.includes(data.value)) throw new MagentoException('InvalidArgumentException', BOOLEAN_UTILS_MESSAGE, node);
+      return;
+    case 'string':
+      if (has('value') && typeof data.value !== 'string') throw new MagentoException('InvalidArgumentException', 'String value is expected.', node);
+      return;
+    case 'number':
+      if (!has('value') || typeof data.value !== 'string' || !PHP_NUMERIC.test(data.value)) {
+        throw new MagentoException('InvalidArgumentException', 'Numeric value is expected.', node);
+      }
+      return;
+    case 'null':
+      return;
+    case 'object':
+      if (!has('value')) throw new MagentoException('Exception', 'Warning: Undefined array key "value"', node);
+      if (has('shared') && !BOOLEAN_VALUES.includes(data.shared)) throw new MagentoException('InvalidArgumentException', BOOLEAN_UTILS_MESSAGE, node);
+      return;
+    case 'const':
+    case 'init_parameter':
+      if (!has('value')) throw new MagentoException('InvalidArgumentException', 'Constant name is expected.', node);
+      return;                                                   // defined() — native check only
+    case 'array': {
+      const items = data.item ?? new Map();
+      if (!(items instanceof Map)) throw new MagentoException('InvalidArgumentException', 'Array items are expected.', node);
+      for (const item of sortArrayItems(items)) evaluateArgument(item, node);
+      return;
+    }
+    default:
+      throw new MagentoException('InvalidArgumentException', `Argument interpreter named '${type}' has not been defined.`, node);
+  }
+}
+
+/** PHP's (int) cast of a string: leading whitespace, numeric prefix (exponent included), truncated. */
+export function phpIntCast(value) {
+  const m = /^[ \t\n\r\v\f]*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)/.exec(String(value));
+  return m ? Math.trunc(Number(m[1])) : 0;
+}
+
+const nullAttributeMessage = (converter) =>
+  `Warning: Attempt to read property "nodeValue" on null in ${converter} (Magento's ErrorHandler throws it as an exception)`;
+
+/**
+ * Checks a well-formed di.xml / events.xml the way Magento's converters read it
+ * (ObjectManager\Config\Mapper\Dom, Event\Config\Converter). Returns [{ severity, line, message }]:
+ * 'error' — Magento throws in every mode; 'warning' — loads, but not as written. Schema (XSD)
+ * validation, which only runs in developer mode, is not reproduced here — the native check does it.
+ */
+export function checkConfigValues(content, relPath) {
+  const out = [];
+  const doc = parseXml(String(content ?? ''));
+  const root = doc.children[0];
+  if (!root) return out;
+  const isEvents = /(^|\/)events\.xml$/.test(relPath || '');
+  const add = (severity, node, message) => out.push({ severity, line: node.line || 0, message });
+  const label = n => (n.attrs.name ? `<${n.name} name="${n.attrs.name}">` : `<${n.name}>`);
+  const BOOLEAN = ['true', '1', 'false', '0'];
+  if (isEvents) {
+    const CONVERTER = 'Magento\\Framework\\Event\\Config\\Converter';
+    for (const ev of walk(root)) {
+      if (ev.name !== 'event') continue;
+      if (ev.attrs.name === undefined) add('error', ev, `<event> without name: ${nullAttributeMessage(CONVERTER)}`);
+      for (const o of ev.children.filter(c => c.name === 'observer')) {
+        if (o.attrs.name === undefined) { add('error', o, "<observer> without name: InvalidArgumentException 'Attribute name is missed'"); continue; }
+        if (o.attrs.disabled !== undefined && o.attrs.disabled !== 'true' && o.attrs.disabled !== 'false') {
+          add('warning', o, `${label(o)} disabled="${o.attrs.disabled}" does not disable the observer — ${CONVERTER} disables only on disabled="true"`);
+        }
+        if (o.attrs.shared !== undefined && o.attrs.shared !== 'true' && o.attrs.shared !== 'false') {
+          add('warning', o, `${label(o)} shared="${o.attrs.shared}" is ignored — ${CONVERTER} reads only shared="false"`);
+        }
+      }
+    }
+    return out;
+  }
+  const MAPPER = 'Magento\\Framework\\ObjectManager\\Config\\Mapper\\Dom';
+  const thrown = (e, node, where) => {
+    if (!(e instanceof MagentoException)) throw e;
+    add('error', e.node || node, `${where}: ${e.cls} '${e.message}'`);
+  };
+  // Mapper\Dom::convert() order: direct children of <config>; per type shared, then its children in
+  // order, then its name; per plugin disabled, then its name; per argument its name, then Flat, then
+  // the interpreters.
+  for (const node of root.children) {
+    if (node.name === 'preference') {
+      if (node.attrs.for === undefined || node.attrs.type === undefined) {
+        add('error', node, `<preference> without ${node.attrs.for === undefined ? 'for' : 'type'}: ${nullAttributeMessage(MAPPER)}`);
+      }
+      continue;
+    }
+    if (node.name !== 'type' && node.name !== 'virtualType') {
+      add('error', node, `Exception 'Invalid application config. Unknown node: ${node.name}.'`);
+      continue;
+    }
+    if (node.attrs.shared !== undefined && !BOOLEAN.includes(node.attrs.shared)) {
+      add('error', node, `${label(node)} shared="${node.attrs.shared}": InvalidArgumentException '${BOOLEAN_UTILS_MESSAGE}'`);
+    }
+    for (const child of node.children) {
+      if (child.name === 'arguments') {
+        for (const arg of child.children) {
+          if (arg.attrs.name === undefined) {
+            add('error', arg, `<${arg.name}> without name in ${label(node)}: ${nullAttributeMessage(MAPPER)}`);
+            continue;
+          }
+          const where = `${label(node)} argument "${arg.attrs.name}"`;
+          try {
+            const dropped = [];
+            const data = flatConvert(arg, 'argument', (n, count, text) => dropped.push({ n, count, text }));
+            for (const d of dropped) {
+              add('warning', d.n, `${where}: text "${d.text.slice(0, 40)}" next to ${d.count} child element(s) — Magento's Config\\Converter\\Dom\\Flat reads the text as the value and drops the elements`);
+            }
+            evaluateArgument(data, arg);
+          } catch (e) {
+            thrown(e, arg, where);
+          }
+        }
+      } else if (child.name === 'plugin') {
+        const a = child.attrs;
+        if (a.sortOrder !== undefined && !/^[+-]?\d+$/.test(a.sortOrder)) {
+          add('warning', child, `${label(child)} sortOrder="${a.sortOrder}" is read as (int) ${phpIntCast(a.sortOrder)}`);
+        }
+        if (a.disabled !== undefined && !BOOLEAN.includes(a.disabled)) {
+          add('error', child, `${label(child)} disabled="${a.disabled}": InvalidArgumentException '${BOOLEAN_UTILS_MESSAGE}'`);
+        }
+        if (a.name === undefined) add('error', child, `<plugin> without name in ${label(node)}: ${nullAttributeMessage(MAPPER)}`);
+      } else {
+        add('error', child, `Exception 'Invalid application config. Unknown node: ${child.name}.'`);
+      }
+    }
+    if (node.attrs.name === undefined) add('error', node, `<${node.name}> without name: ${nullAttributeMessage(MAPPER)}`);
   }
   return out;
 }

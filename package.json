@@ -20,7 +20,7 @@
     "validate:verbose": "node src/cli.js validate --verbose",
     "validate:keep": "node src/cli.js validate --verbose --keep",
     "benchmark": "node src/cli.js benchmark",
-    "test": "node tests/unit.test.js && node tests/mcp-server.test.js && node tests/mcp-reindex-lock.test.js && node tests/trace-graphql.test.js && node tests/di-resolution.test.js && node tests/di-parsing.test.js",
+    "test": "node tests/unit.test.js && node tests/mcp-server.test.js && node tests/mcp-reindex-lock.test.js && node tests/trace-graphql.test.js && node tests/di-resolution.test.js && node tests/di-parsing.test.js && node tests/validate-config.test.js",
     "test:unit": "node tests/unit.test.js",
     "test:integration": "node tests/mcp-server.test.js",
     "test:reindex-lock": "node tests/mcp-reindex-lock.test.js",
@@ -28,6 +28,7 @@
     "test:trace-graphql": "node tests/trace-graphql.test.js",
     "test:di-resolution": "node tests/di-resolution.test.js",
     "test:di-parsing": "node tests/di-parsing.test.js",
+    "test:validate-config": "node tests/validate-config.test.js",
     "version": "node scripts/sync-optional-deps.mjs && git add package.json"
   },
   "dependencies": {

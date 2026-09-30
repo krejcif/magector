@@ -16,6 +16,7 @@ import {
   interceptionStatus, buildClassHierarchy, instancesOf, parseXml, parseDiXml, buildDiModel,
   applyModuleOrder, resolveInstance, resolveVirtualType, argumentInjectionsOf, parseEventsXml,
   parseConfigPhpModules, buildModuleIndex, effectivePluginDeclarations,
+  checkXmlWellFormed, checkConfigValues, magentoInvalidXmlMessage, phpIntCast,
 } from '../src/di-config.js';
 
 let passed = 0;
@@ -179,6 +180,138 @@ return Array(
   ),
   'system' => [],
 );`).map(m => `${m.name}:${m.enabled}`), ['A_One:true', 'B_Two:false', 'C_Three:true', 'D_Four:false']);
+
+// ── Configuration validation (what Magento rejects) ─────────────
+// Expected first fatal error = libxml 2.9.14 / PHP 8.3 (DOMDocument::loadXML, as Config\Dom does);
+// for comment / CDATA errors libxml appends the start of the section, the check reports the prefix.
+const WELL_FORMED_CASES = [
+  ["amp_attr", "<?xml version=\"1.0\"?>\n<config>\n  <type name=\"A&B\"/>\n</config>\n", [3, "EntityRef: expecting ';'"]],
+  ["amp_text", "<?xml version=\"1.0\"?>\n<config>\n  <x>a & b</x>\n</config>\n", [3, "xmlParseEntityRef: no name"]],
+  ["badname", "<?xml version=\"1.0\"?>\n<config>\n  <1x/>\n</config>\n", [3, "StartTag: invalid element name"]],
+  ["blank", "   \n", [2, "Start tag expected, '<' not found"]],
+  ["cdata", "<?xml version=\"1.0\"?>\n<config>\n  <x><![CDATA[ a\n</config>\n", [5, "CData section not finished"]],
+  ["comment", "<?xml version=\"1.0\"?>\n<config>\n  <!-- open\n</config>\n", [5, "Comment not terminated"]],
+  ["decl_not_first", "\n<?xml version=\"1.0\"?>\n<config/>\n", [2, "XML declaration allowed only at the start of the document"]],
+  ["empty", "", [0, "DOMDocument::loadXML(): Argument #1 ($source) must not be empty"]],
+  ["entity_nosemi", "<?xml version=\"1.0\"?>\n<config>\n  <x>&amp</x>\n</config>\n", [3, "EntityRef: expecting ';'"]],
+  ["lt_attr", "<?xml version=\"1.0\"?>\n<config>\n  <type name=\"a<b\"/>\n</config>\n", [3, "Unescaped '<' not allowed in attributes values"]],
+  ["mismatch", "<?xml version=\"1.0\"?>\n<config>\n  <type name=\"A\">\n    <plugin name=\"p\" type=\"B\"/>\n  </typ>\n</config>\n", [5, "Opening and ending tag mismatch: type line 3 and typ"]],
+  ["nospace", "<?xml version=\"1.0\"?>\n<config>\n  <type name=\"A\" shared=\"false\"shared=\"true\"/>\n</config>\n", [3, "attributes construct error"]],
+  ["notxml", "text\n", [1, "Start tag expected, '<' not found"]],
+  ["novalue", "<?xml version=\"1.0\"?>\n<config>\n  <type name/>\n</config>\n", [3, "Specification mandates value for attribute name"]],
+  ["ns_ok", "<?xml version=\"1.0\"?>\n<config>\n  <a:b xmlns:a=\"u\"/>\n</config>\n", null],
+  ["premature", "<?xml version=\"1.0\"?>\n<config>\n  <type name=\"A\">\n    <plugin name=\"p\" type=\"B\"/>\n", [5, "Premature end of data in tag type line 3"]],
+  ["redefined", "<?xml version=\"1.0\"?>\n<config>\n  <type name=\"A\" name=\"B\"/>\n</config>\n", [3, "Attribute name redefined"]],
+  ["space_slash", "<?xml version=\"1.0\"?>\n<config>\n  <x a=\"1\" / >\n</config>\n", [3, "error parsing attribute name"]],
+  ["stray_close", "<?xml version=\"1.0\"?>\n<config>\n  </x>\n</config>\n", [3, "Opening and ending tag mismatch: config line 2 and x"]],
+  ["trailing", "<?xml version=\"1.0\"?>\n<config/>\ntrailing\n", [3, "Extra content at the end of the document"]],
+  ["tworoots", "<?xml version=\"1.0\"?>\n<config/>\n<config/>\n", [3, "Extra content at the end of the document"]],
+  ["unclosed_tag", "<?xml version=\"1.0\"?>\n<config>\n  <type name=\"A\"\n</config>\n", [4, "error parsing attribute name"]],
+  ["undefined_entity", "<?xml version=\"1.0\"?>\n<config>\n  <x>&nbsp;</x>\n</config>\n", [3, "Entity 'nbsp' not defined"]],
+  ["unquoted", "<?xml version=\"1.0\"?>\n<config>\n  <type name=A/>\n</config>\n", [3, "AttValue: \" or ' expected"]],
+  ["valid", "<?xml version=\"1.0\"?>\n<config>\n  <type name=\"A\"/>\n</config>\n", null],
+  ["decl_gt", "<?xml version=\"1.0\" >\n<config/>\n", [1, "parsing XML declaration: '?>' expected"]],
+  ["decl_no_blank", "<?xml version=\"1.0\"encoding=\"UTF-8\"?>\n<config/>\n", [1, "Blank needed here"]],
+  ["decl_version_bad", "<?xml version=\"1.0:\"?>\n<config/>\n", [1, "String not closed expecting \" or '"]],
+  ["decl_version_empty", "<?xml version=\"\"?>\n<config/>\n", [1, "Malformed declaration expecting version"]],
+  ["double_hyphen", "<?xml version=\"1.0\"?>\n<!--\n a -- b\n-->\n<config/>\n", [3, "Double hyphen within comment: <!--"]],
+  ["double_hyphen_nonascii", "<?xml version=\"1.0\"?>\n<!--\n \u00a9 a -- b\n-->\n<config/>\n", [3, "Comment must not contain '--' (double-hyphen)"]],
+  ["dtd_entity", "<?xml version=\"1.0\"?>\n<!DOCTYPE config [ <!ENTITY acme \"x\"> ]>\n<config>&acme;</config>\n", null],
+  ["entity_colon", "<?xml version=\"1.0\"?>\n<config a=\"urn&:x/y\"/>\n", [2, "EntityRef: expecting ';'"]],
+  ["pi_xml_prefix", "<?xmlversion=\"1.0\"?>\n<config/>\n", [1, "ParsePI: PI xmlversion space expected"]],
+  ["qname_empty_local", "<?xml version=\"1.0\"?>\n<config xsi:/>\n", [2, "Specification mandates value for attribute xsi:"]],
+];
+for (const [name, src, expected] of WELL_FORMED_CASES) {
+  const got = checkXmlWellFormed(src)[0] || null;
+  eq(`well-formedness as libxml: ${name}`, got && [got.line, got.message], expected);
+}
+eq('Magento\'s message for a file Config\\Dom rejects (Config\\Reader\\Filesystem, ERROR_FORMAT_DEFAULT)',
+  magentoInvalidXmlMessage('/m/etc/di.xml', [{ line: 5, message: 'Opening and ending tag mismatch: type line 3 and typ' }]),
+  'The XML in file "/m/etc/di.xml" is invalid:\nOpening and ending tag mismatch: type line 3 and typ\nLine: 5\n\nVerify the XML and try again.');
+eq('PHP (int) cast of sortOrder', ['10', '10abc', 'abc', ' 5', '1e2', '0x1A', '+5', '5.9', '-3', ''].map(phpIntCast), [10, 10, 0, 5, 100, 0, 5, 5, -3, 0]);
+
+const DI_HEAD = '<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><type name="A\\B">';
+const diValues = body => checkConfigValues(`${DI_HEAD}${body}</type></config>`, 'etc/di.xml')
+  .map(p => `${p.severity}:${p.message.slice(p.message.indexOf('": ') + 3).split('\n')[0]}`);
+// Expected = what Magento's DI argument interpreters throw (ObjectManagerFactory::createArgumentInterpreter),
+// checked in PHP 8.3 / Mage-OS 2.4.9
+eq('DI argument values as Magento\'s interpreters read them', [
+  '<arguments><argument name="x" xsi:type="boolean"> true </argument></arguments>',
+  '<arguments><argument name="x" xsi:type="boolean">yes</argument></arguments>',
+  '<arguments><argument name="x" xsi:type="boolean">   </argument></arguments>',
+  '<arguments><argument name="x" xsi:type="number"> 12 </argument></arguments>',
+  '<arguments><argument name="x" xsi:type="number">1e3</argument></arguments>',
+  '<arguments><argument name="x" xsi:type="number">0x1A</argument></arguments>',
+  '<arguments><argument name="x">v</argument></arguments>',
+  '<arguments><argument name="x" xsi:type="foo">v</argument></arguments>',
+  '<arguments><argument name="x" xsi:type="object" shared="nope">A\\B</argument></arguments>',
+  '<arguments><argument name="x" xsi:type="array"><item xsi:type="string">v</item></argument></arguments>',
+  '<arguments><argument name="x" xsi:type="array"><item name="a" xsi:type="array"><item name="b" xsi:type="number">n</item></item></argument></arguments>',
+  '<arguments><argument name="x" xsi:type="boolean">&#49;</argument></arguments>',
+  '<arguments><argument name="x" xsi:type="boolean"><![CDATA[]]></argument></arguments>',
+  '<arguments><argument name="x" xsi:type="boolean">a<!--c-->true</argument></arguments>',
+  '<arguments><argument name="x" xsi:type="object"></argument></arguments>',
+  '<arguments><argument name="x" xsi:type="init_parameter"></argument></arguments>',
+  '<arguments><argument name="x" xsi:type="array"><foo>1</foo><foo>2</foo></argument></arguments>',
+  '<arguments><argument name="x" xsi:type="array" item="z"/></arguments>',
+  '<arguments><argument name="x" xsi:type="bool"><item xsi:type="string">v</item></argument></arguments>',
+  '<arguments><argument name="x" xsi:type="array"><item name="a" xsi:type="number" sortOrder="20">n</item><item name="b" xsi:type="boolean" sortOrder="10">q</item></argument></arguments>',
+  '<arguments><argument name="x" xsi:type="array"><item name="a" xsi:type="bool">v</item>!</argument></arguments>',
+].map(diValues), [
+  [],
+  ["error:InvalidArgumentException 'Boolean value is expected, supported values: array ("],
+  ["error:InvalidArgumentException 'Boolean value is missing.'"],
+  [],
+  [],
+  ["error:InvalidArgumentException 'Numeric value is expected.'"],
+  ["error:InvalidArgumentException 'Value for key \"xsi:type\" is missing in the argument data.'"],
+  ["error:InvalidArgumentException 'Argument interpreter named 'foo' has not been defined.'"],
+  ["error:InvalidArgumentException 'Boolean value is expected, supported values: array ("],
+  ["error:UnexpectedValueException 'Array is expected to contain value for key 'name'.'"],
+  ["error:InvalidArgumentException 'Numeric value is expected.'"],
+  [],
+  ["error:InvalidArgumentException 'Boolean value is expected, supported values: array ("],
+  ["error:InvalidArgumentException 'Boolean value is expected, supported values: array ("],
+  ["error:Exception 'Warning: Undefined array key \"value\"'"],
+  ["error:InvalidArgumentException 'Constant name is expected.'"],
+  ["error:UnexpectedValueException 'Node path 'argument/foo' is not unique, but it has not been marked as array.'"],
+  ["error:InvalidArgumentException 'Array items are expected.'"],
+  ["error:UnexpectedValueException 'Array is expected to contain value for key 'name'.'"],
+  ["error:InvalidArgumentException 'Boolean value is expected, supported values: array ("],
+  ['warning:text "!" next to 1 child element(s) — Magento\'s Config\\Converter\\Dom\\Flat reads the text as the value and drops the elements'],
+]);
+const diMessages = body => checkConfigValues(`${DI_HEAD}${body}</type></config>`, 'etc/di.xml')
+  .map(p => `${p.severity}:${p.message.split('\n')[0]}`);
+eq('DI nodes and attributes as ObjectManager\\Config\\Mapper\\Dom reads them', [
+  '<plugin name="p" type="P" disabled="1"/>',
+  '<plugin name="p" type="P" disabled="yes"/>',
+  '<plugin type="P"/>',
+  '<plugin name="p" type="P" sortOrder="10abc"/>',
+  '<plugin name="p" type="P" sortOrder="-5"/>',
+  '<foo/>',
+].map(diMessages), [
+  [],
+  ['error:<plugin name="p"> disabled="yes": InvalidArgumentException \'Boolean value is expected, supported values: array ('],
+  ['error:<plugin> without name in <type name="A\\B">: Warning: Attempt to read property "nodeValue" on null in Magento\\Framework\\ObjectManager\\Config\\Mapper\\Dom (Magento\'s ErrorHandler throws it as an exception)'],
+  ['warning:<plugin name="p"> sortOrder="10abc" is read as (int) 10'],
+  [],
+  ["error:Exception 'Invalid application config. Unknown node: foo.'"],
+]);
+const eventValues = body => checkConfigValues(`<config>${body}</config>`, 'etc/events.xml')
+  .map(p => `${p.severity}:${p.message.split(' — ')[0]}`);
+eq('events as Event\\Config\\Converter reads them', [
+  '<event name="e"><observer name="o" instance="O" disabled="true"/></event>',
+  '<event name="e"><observer name="o" instance="O" disabled="1"/></event>',
+  '<event name="e"><observer instance="O"/></event>',
+  '<event><observer name="o" instance="O"/></event>',
+].map(eventValues), [
+  [],
+  ['warning:<observer name="o"> disabled="1" does not disable the observer'],
+  ["error:<observer> without name: InvalidArgumentException 'Attribute name is missed'"],
+  ['error:<event> without name: Warning: Attempt to read property "nodeValue" on null in Magento\\Framework\\Event\\Config\\Converter (Magento\'s ErrorHandler throws it as an exception)'],
+]);
+eq('problems carry the line of the element',
+  checkConfigValues('<config>\n  <type name="A">\n    <plugin name="p" disabled="x"/>\n  </type>\n</config>', 'etc/di.xml').map(p => p.line), [3]);
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 process.exit(failed ? 1 : 0);

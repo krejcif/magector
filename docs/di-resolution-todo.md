@@ -3,41 +3,44 @@
 Follow-ups to the structural DI / event resolution (`src/di-config.js`). Verification against a
 Magento installation: `scripts/verify-magento/`.
 
-## A. Invalid XML / values — report as an error, ideally with Magento's native message
+## A. Invalid XML / values — done: `magento_validate_config` + notice in the DI / event tools
 
-Magento behaviour (Mage-OS 2.4.9 source):
-- Not well-formed XML → `Config\Dom::_initDom()` fails in **every mode** → `LocalizedException`
-  `The XML in file "<file>" is invalid:\n<errors>\nVerify the XML and try again.` — the area's configuration
-  does not load. Error format `Config\Dom::ERROR_FORMAT_DEFAULT` = `"%message%\nLine: %line%\n"` (libxml messages).
-- XSD validation only when validation is required (developer mode); production skips it and the
-  converters decide.
-- Plugin `disabled`: `BooleanUtils::toBoolean()` strict — `true`, `1`, `'true'`, `'1'` / `false`, `0`, `'false'`, `'0'`;
-  anything else → `InvalidArgumentException: Boolean value is expected, supported values: array (…)` in
-  every mode. `sortOrder` → `(int)` cast.
-- Observer `disabled`: only `'true'` disables; anything else is silently "not disabled".
+Magento behaviour (Mage-OS 2.4.9 source, each point checked in PHP 8.3 / libxml 2.9.14):
+- Not well-formed XML → `Config\Dom::_initDom()` fails in **every mode** → `The XML in file "<file>" is
+  invalid:\n<errors>\nVerify the XML and try again.`, errors in `ERROR_FORMAT_DEFAULT` (`%message%\nLine: %line%\n`).
+  An empty file is a `ValueError` of `DOMDocument::loadXML()` (PHP 8), not wrapped.
+- The converters run on the **merged** configuration of an area, under Magento's `ErrorHandler` (a PHP
+  warning is an exception): plugin `disabled` / type `shared` → `BooleanUtils` strict; missing `name` /
+  `for` / `type` → `Warning: Attempt to read property "nodeValue" on null`; unknown node → `Invalid
+  application config. Unknown node`; DI arguments → `Config\Converter\Dom\Flat` + the interpreters of
+  `ObjectManagerFactory::createArgumentInterpreter()`. All of this fails in **every mode**, not only in
+  developer mode (the plan had A5 as developer-only — wrong).
+- Developer mode adds schema validation: per file where the reader has a per-file schema (`events.xml`),
+  of the **merged** document otherwise (`di.xml`: `getPerFileSchema()` is `null`). The outcome depends on
+  file order — duplicate `<argument name>` fails only when no earlier file declared that argument; a bad
+  value can be overridden by a later file. Only Magento's reader gives the answer, so the native check
+  reads every area with `ObjectManager\Config\Reader\Dom` / `Event\Config\Reader` in both modes.
+- Observer `disabled`: only `'true'` disables. `sortOrder` → PHP `(int)` (`"10abc"` → 10, `"1e2"` → 100).
+- Text (or CDATA) next to `<item>`s in an argument: `Flat` takes the first non-blank text as the value and
+  drops the items (an array argument becomes empty) — found by the value mutations.
 
-| # | Variant | Magento | Branch now | To do |
-|---|---------|---------|------------|-------|
-| A1 | Not well-formed (`/ >`, unclosed / mismatched tag, bare `&`, `<` in attribute, unquoted attribute, duplicate attribute, extra content after root) | error in every mode, area not loaded | tolerant parser salvages part of the data silently | report the file as broken with the native message; do not use its declarations; flag effective state as unreliable |
-| A2 | Plugin `disabled=" true "`, `TRUE`, `yes` | `InvalidArgumentException`, DI config fails | accepted as true / ignored | error with the native message |
-| A3 | Observer `disabled="1"`, `" true"`, `TRUE` | not disabled | not disabled (no warning) | warning |
-| A4 | `sortOrder="abc"` / `"10x"` | `(int)` → 0 / 10 | kept as text | cast like PHP + warning |
-| A5 | Missing required attribute (plugin / observer / type `name`, preference `for` / `type`, virtualType `name` / `type`) | XSD error in developer mode | ignored | warning ("developer mode: fails") |
-| A6 | Unknown element / attribute (XSD-invalid) | XSD error in developer mode only | ignored | warning |
+| # | Variant | Now |
+|---|---------|-----|
+| A1 | Not well-formed | error, Magento's message; built-in: libxml's first fatal error (message, line) |
+| A2 | Plugin `disabled` / type `shared` outside `true/false/1/0` | error, `BooleanUtils` message |
+| A3 | Observer `disabled="1"` etc. | warning ("does not disable") |
+| A4 | Non-integer `sortOrder` | warning with the `(int)` value |
+| A5 | Missing `name` / `for` / `type`, unknown node, invalid DI argument value | error in every mode, converter / interpreter message |
+| A6 | Schema (XSD) errors | native only: developer-mode failure per area from Magento's reader; other files against their declared schema, as its own section |
 
-Implementation plan:
-- **Native mode** (when `php` is available — `MAGECTOR_PHP` or PATH; Warden / DDEV PHP containers have it):
-  one PHP process per session runs `DOMDocument::loadXML()` + `schemaValidate()` like `Config\Dom::_initDom()`,
-  resolving `urn:magento:module:…` / `urn:magento:framework…:…` like `Config\Dom\UrnResolver` (module dirs
-  from module.xml / registration, framework from the composer PSR-4 map) → exact libxml messages in
-  Magento's format and wrapper text.
-- **Built-in fallback** (no PHP): well-formedness checks with libxml's wording for the common cases (A1),
-  value checks (A2–A4) with Magento's exact texts, required attributes (A5); schema validation (A6) only
-  in native mode.
-- New tool **`magento_validate_config`** — all config files that Magento would reject, by severity
-  (every mode / developer mode only), like a build check; DI and event tools show errors of the files
-  they read and a one-line notice when any config file in the project is broken.
-- Tests: one fixture file per variant, native and fallback paths.
+Still open:
+
+| # | Item |
+|---|------|
+| A7 | The DI / event tools warn about a rejected file (notice) but still list its declarations and use them for the effective state; they could mark them "file not loaded". |
+| A8 | Native developer-mode verdicts cover DI and events only; other readers (`crontab.xml`, `routes.xml`, `webapi.xml`, `system.xml`, …) get the declared-schema check, which Magento's reader may not apply (`module.xml` is read without a schema). |
+| A9 | Built-in: `const` / `init_parameter` arguments (needs PHP's `defined()`); nested-array `SortItems` order is approximated (single-level stable sort) — affects only which of several errors is first. |
+| A10 | Native run over a whole project: ~10 s (3,077 files, 15 areas), no cache between calls. |
 
 ## B. Decision needed
 
