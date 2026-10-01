@@ -16,7 +16,7 @@ import {
   interceptionStatus, buildClassHierarchy, instancesOf, parseXml, parseDiXml, buildDiModel,
   applyModuleOrder, resolveInstance, resolveVirtualType, argumentInjectionsOf, parseEventsXml,
   parseConfigPhpModules, buildModuleIndex, effectivePluginDeclarations,
-  checkXmlWellFormed, magentoInvalidXmlMessage,
+  checkXmlWellFormed,
 } from '../src/di-config.js';
 
 let passed = 0;
@@ -225,8 +225,7 @@ for (const [name, src, expected] of WELL_FORMED_CASES) {
   const got = checkXmlWellFormed(src)[0] || null;
   eq(`well-formedness as libxml: ${name}`, got && [got.line, got.message], expected);
 }
-eq('Magento\'s message for a file Config\\Dom rejects (Config\\Reader\\Filesystem, ERROR_FORMAT_DEFAULT)',
-  magentoInvalidXmlMessage('/m/etc/di.xml', [{ line: 5, message: 'Opening and ending tag mismatch: type line 3 and typ' }]),
-  'The XML in file "/m/etc/di.xml" is invalid:\nOpening and ending tag mismatch: type line 3 and typ\nLine: 5\n\nVerify the XML and try again.');
+eq('well-formedness as libxml: a UTF-8 byte-order mark before the declaration is skipped',
+  checkXmlWellFormed('\uFEFF<?xml version="1.0" encoding="UTF-8"?>\n<config/>\n'), []);
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 process.exit(failed ? 1 : 0);

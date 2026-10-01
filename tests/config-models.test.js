@@ -215,6 +215,10 @@ async function main() {
     check('impact_analysis: a route whose service resolves to the class through a webapi_rest preference is listed (was: global preferences only)', t, {
       has: ['POST /V1/acme/notes → Acme\\Base\\Api\\NoteRepositoryInterface::save (preference → Acme\\Base\\Model\\RestNoteRepository)'],
     });
+    t = await c.call('magento_trace_api', { url: '/rest/default/V1/acme/notes?searchCriteria=1' });
+    check('trace_api: a URL as logged (/rest/<store>/V1/…, query string) finds the route (was: no endpoint)', t, {
+      has: ['**URL:** `POST /V1/acme/notes`'],
+    });
     t = await c.call('magento_trace_api', { url: '/V1/acme/notes' });
     check('trace_api: the exact URL wins over a longer one declared first (was: first substring match, both ways)', t, {
       has: ['**URL:** `POST /V1/acme/notes`', 'Other routes matching (1)'],

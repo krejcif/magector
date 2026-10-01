@@ -104,10 +104,13 @@ function listFilesRecursive(absDir, relDir, out) {
   }
 }
 
+/** `dir/rest`, or `rest` for a module at the root of the tree (dir ''). */
+const under = (dir, rest) => (dir ? `${dir}/${rest}` : rest);
+
 /** Every file under the etc/ of each module of the index and under app/etc (relative paths, sorted). */
 export function listModuleEtcFiles(root, idx) {
   const out = [];
-  for (const m of idx.modules.values()) listFilesRecursive(path.join(root, m.dir, 'etc'), `${m.dir}/etc`, out);
+  for (const m of idx.modules.values()) listFilesRecursive(path.join(root, m.dir, 'etc'), under(m.dir, 'etc'), out);
   listFilesRecursive(path.join(root, 'app', 'etc'), 'app/etc', out);
   return [...new Set(out)].sort();
 }
@@ -136,7 +139,7 @@ export function moduleConfigFiles(idx, exists, fileName, scope = 'global') {
   return [...idx.modules.values()]
     .filter(m => (withConfig ? m.enabled === true : true))
     .sort((a, b) => idx.orderOf(a.name) - idx.orderOf(b.name))
-    .map(m => ({ module: m.name, relPath: `${m.dir}/etc/${scope === 'global' ? '' : scope + '/'}${fileName}` }))
+    .map(m => ({ module: m.name, relPath: under(m.dir, `etc/${scope === 'global' ? '' : scope + '/'}${fileName}`) }))
     .filter(f => exists(f.relPath));
 }
 
@@ -145,7 +148,7 @@ export function unreadModuleConfigFiles(idx, exists, fileName, scope = 'global')
   if (idx.orderSource !== 'config.php') return [];
   return [...idx.modules.values()]
     .filter(m => m.enabled !== true)
-    .map(m => ({ module: m.name, enabled: m.enabled, relPath: `${m.dir}/etc/${scope === 'global' ? '' : scope + '/'}${fileName}` }))
+    .map(m => ({ module: m.name, enabled: m.enabled, relPath: under(m.dir, `etc/${scope === 'global' ? '' : scope + '/'}${fileName}`) }))
     .filter(f => exists(f.relPath));
 }
 

@@ -23,7 +23,7 @@ Verified against the installation and against Magento's readers on a synthetic f
 Done: module discovery from the registrations and one listing of the modules' etc/ instead of a walk of
 the tree per pattern (each walk ~1 s); applyModuleOrder computed a file's module per comparison (1.6 s of
 a 2.8 s first call); `find_observer` no longer searches dispatchers (4.9 s per call); the PHP file list
-is walked once per session. First call now 0.15–0.5 s, repeated calls 8–110 ms for the DI / event /
+is reused for `MAGECTOR_PHP_LIST_TTL_MS` (30 s). First call now 0.15–0.5 s, repeated calls 8–110 ms for the DI / event /
 config tools.
 
 Still slower than grep on a first call (everything reads all PHP files):

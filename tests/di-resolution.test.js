@@ -305,6 +305,9 @@ async function main() {
     check('find_plugin: a plugin on the class a preference substitutes for the target runs too (was: missing)', t, {
       has: ['**better_importer_plugin** → `Acme\\Ext\\Plugin\\BetterImporterPlugin` [global] (on `Acme\\Ext\\Model\\BetterImporter` — the class that runs for this type, preference)'],
     });
+    check('find_plugin: … also a plugin declared for one area on that class, when the preference is global (was: missing)', t, {
+      has: ['**better_importer_frontend_plugin** → `Acme\\Ext\\Plugin\\BetterImporterPlugin` [frontend] (on `Acme\\Ext\\Model\\BetterImporter` — the class that runs for this type, preference [frontend])'],
+    });
     t = await client.call('magento_find_plugin', { targetClass: 'Acme\\Core\\Model\\AbstractSource' });
     check('find_plugin: an abstract class is marked — its plugins run on its concrete subclasses, not on it (was: reported as running)', t, {
       has: ['**abstract_source_plugin**', '[abstract class — does not run on it directly; runs on its concrete subclasses]'],

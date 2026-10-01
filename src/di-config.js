@@ -24,13 +24,12 @@ function decodeEntities(s) {
 }
 
 /**
- * Parse an XML document into { name, attrs, children, text, seq, line } nodes. `seq` keeps the
- * child elements, text and CDATA sections in document order ({ node } | { text } | { cdata }).
+ * Parse an XML document into { name, attrs, children, text, line } nodes.
  * Tolerant: unknown or unbalanced closing tags are ignored rather than thrown, so a broken file
  * yields what it can (checkXmlWellFormed says whether Magento loads it).
  */
 export function parseXml(content) {
-  const root = { name: '#document', attrs: {}, children: [], text: '', seq: [] };
+  const root = { name: '#document', attrs: {}, children: [], text: '' };
   if (!content) return root;
   const src = content;
   const stack = [root];
@@ -46,11 +45,8 @@ export function parseXml(content) {
       continue;                         // comment, PI, DOCTYPE, or a stray "<"
     } else if (m[1] !== undefined) {    // CDATA
       top.text += m[1];
-      top.seq.push({ cdata: m[1] });
     } else if (m[6] !== undefined) {    // text
-      const text = decodeEntities(m[6]);
-      top.text += text;
-      top.seq.push({ text });
+      top.text += decodeEntities(m[6]);
     } else if (m[2] === '/') {          // closing tag
       for (let i = stack.length - 1; i > 0; i--) {
         if (stack[i].name === m[3]) { stack.length = i; break; }
@@ -60,9 +56,8 @@ export function parseXml(content) {
       const attrRe = /([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
       let a;
       while ((a = attrRe.exec(m[4])) !== null) attrs[a[1]] = decodeEntities(a[2] ?? a[3] ?? '');
-      const node = { name: m[3], attrs, children: [], text: '', seq: [], line: lineAt(m.index) };
+      const node = { name: m[3], attrs, children: [], text: '', line: lineAt(m.index) };
       top.children.push(node);
-      top.seq.push({ node });
       if (m[5] !== '/') stack.push(node);
     }
   }
@@ -739,7 +734,7 @@ export function buildModuleIndex(moduleXmls, configPhp, composerJson = () => nul
     let parsed;
     try { parsed = parseModuleXml(content); } catch { parsed = null; }
     if (!parsed || modules.has(parsed.name)) continue;
-    const dir = relPath.replace(/\/etc\/module\.xml$/, '');
+    const dir = relPath.replace(/(^|\/)etc\/module\.xml$/, '');   // '' — a module at the root (an extension repo)
     let composer = null;
     try { composer = composerJson(dir); } catch { composer = null; }
     modules.set(parsed.name, {
@@ -799,7 +794,7 @@ export function buildModuleIndex(moduleXmls, configPhp, composerJson = () => nul
     orderSource,
     moduleOf(relPath) {
       if (moduleOfCache.has(relPath)) return moduleOfCache.get(relPath);
-      const hit = dirs.find(m => relPath === m.dir || relPath.startsWith(m.dir + '/'));
+      const hit = dirs.find(m => (m.dir === '' ? !relPath.startsWith('vendor/') : relPath === m.dir || relPath.startsWith(m.dir + '/')));
       const name = hit ? hit.name : null;
       moduleOfCache.set(relPath, name);
       return name;
@@ -1075,15 +1070,6 @@ export function instancesOf(hierarchy, fqcn) {
 // configuration (all its files) fails with it. The tolerant parseXml still reads such a file, so the
 // structural answers mark it instead of presenting its declarations as loaded.
 
-/** Config\Dom::ERROR_FORMAT_DEFAULT */
-export const MAGENTO_XML_ERROR_FORMAT = '%message%\nLine: %line%\n';
-
-/** The text Config\Reader\Filesystem::_readFiles() throws for a file DOMDocument cannot load. */
-export function magentoInvalidXmlMessage(file, errors) {
-  const body = errors.map(e => MAGENTO_XML_ERROR_FORMAT.replace('%message%', e.message).replace('%line%', String(e.line))).join('\n');
-  return `The XML in file "${file}" is invalid:\n${body}\nVerify the XML and try again.`;
-}
-
 const XML_NAME = /[A-Za-z_:][\w:.-]*/y;
 
 /**
@@ -1093,7 +1079,7 @@ const XML_NAME = /[A-Za-z_:][\w:.-]*/y;
  * An empty file is not an XML error in Magento: DOMDocument::loadXML('') throws a ValueError (PHP 8).
  */
 export function checkXmlWellFormed(content) {
-  const src = String(content ?? '');
+  const src = String(content ?? '').replace(/^\uFEFF/, '');   // a UTF-8 BOM, which libxml skips
   const lineAt = (() => {
     const starts = [0];
     for (let i = 0; i < src.length; i++) if (src[i] === '\n') starts.push(i + 1);
