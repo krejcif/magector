@@ -84,9 +84,12 @@ export async function discoverModules(root) {
     rels = [...new Set([...rels, ...await glob('**/etc/module.xml', { cwd: root, nodir: true, ignore: MODULE_XML_IGNORE })])];
   }
   // A module is where PHP's __DIR__ puts it — the real path: a composer path repository links
-  // vendor/<pkg> to the project's own directory (e.g. ../../modules/<pkg>)
+  // vendor/<pkg> to the project's own directory (e.g. ../../modules/<pkg>). The root is resolved too,
+  // or a root reached through a symlink (macOS /var, /tmp; a deploy's `current`) makes every path ../…
+  let realRoot = root;
+  try { realRoot = realpathSync(root); } catch { /* keep root */ }
   const real = new Set(rels.map(rel => {
-    try { return path.relative(root, realpathSync(path.join(root, rel))).split(path.sep).join('/'); } catch { return rel; }
+    try { return path.relative(realRoot, realpathSync(path.join(root, rel))).split(path.sep).join('/'); } catch { return rel; }
   }));
   return { moduleXmls: [...real].sort(), installed: composerList };
 }

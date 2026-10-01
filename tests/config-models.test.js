@@ -19,11 +19,11 @@
 
 import { spawn, spawnSync } from 'child_process';
 import { createInterface } from 'readline';
-import { mkdtempSync, rmSync, cpSync, writeFileSync, mkdirSync, readFileSync } from 'fs';
+import { mkdtempSync, rmSync, cpSync, writeFileSync, mkdirSync, readFileSync, symlinkSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { shortenEntityName, dbElementName, magentoGraphqlChunks } from '../src/magento-config.js';
+import { shortenEntityName, dbElementName, magentoGraphqlChunks, discoverModules } from '../src/magento-config.js';
 import { parseConfigPhpModules } from '../src/di-config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -231,6 +231,15 @@ async function main() {
     check('modules: a module of a composer path repository (vendor/ symlink) is read where it really is', t, {
       has: ['**GET /V1/acme/linked**', '`modules/linked/etc/webapi.xml:3`'], hasNot: ['vendor/acme/linked/etc/webapi.xml'],
     });
+    const linkDir = mkdtempSync(path.join(os.tmpdir(), 'magector-link-'));
+    try {
+      symlinkSync(FIXTURE, path.join(linkDir, 'root'), 'junction');
+      const { moduleXmls } = await discoverModules(path.join(linkDir, 'root'));
+      ok('modules: a Magento root reached through a symlink keeps root-relative module paths (was: ../../…/modules/linked)',
+        moduleXmls.includes('modules/linked/etc/module.xml') && !moduleXmls.some(m => m.startsWith('..')));
+    } finally {
+      rmSync(linkDir, { recursive: true, force: true });
+    }
     t = await c.call('magento_module_structure', { moduleName: 'Acme_Linked' });
     check('module_structure: a path-repository module lists its files (was: 0 — glob does not descend into a symlinked cwd)', t, {
       has: ['## Module Acme_Linked — `modules/linked`', 'Model/Thing.php'],
