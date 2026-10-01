@@ -234,6 +234,15 @@ async function main() {
     check('module_structure: a path-repository module lists its files (was: 0 — glob does not descend into a symlinked cwd)', t, {
       has: ['## Module Acme_Linked — `modules/linked`', 'Model/Thing.php'],
     });
+    check('module_structure: the module\'s README.md is included (as on main)', t, { has: ['## README.md', 'installed through a composer path repository'] });
+    t = await c.call('magento_module_structure', { moduleName: 'Acme_Base' });
+    check('module_structure: load position counts enabled modules only (was: config.php index, e.g. "461 of 445")', t, { has: ['enabled, load position 1 of 7'] });
+    t = await c.call('magento_module_structure', { moduleName: 'Acme_Unregistered' });
+    check('module_structure: a module listed in config.php without a registration is reported as not registered', t, { has: ['No registered module has this name'] });
+    t = await c.call('magento_batch', { queries: [{ tool: 'magento_module_structure', args: { moduleName: 'Acme_Weird' } }] });
+    check('batch: module_structure is compact — counts per directory, no file list (the 40k cap)', t, { has: ['**Model/** (130)'], hasNot: ['Model/Part/Part001.php'] });
+    t = await c.call('magento_find_plugin', { targetClass: 'Acme\\Base\\Model\\NoPlugins' });
+    check('find_plugin: no registrations → says so instead of an empty answer', t, { has: ['No plugin is registered on `Acme\\Base\\Model\\NoPlugins`'] });
     t = await c.call('magento_module_structure', { moduleName: 'Acme_MultiOne' });
     check('modules: the nested module is where its registration.php is', t, { has: ['## Module Acme_MultiOne — `vendor/acme/multi/One`'] });
 

@@ -39,6 +39,7 @@ Two layers, each against Magento itself — never against Magector's own idea of
 | Cron jobs | 81/81; 3 differ only through `core_config_data` (noted in the answer) |
 | Declared tables | 507/507 with every column, key and index under Magento's name |
 | Modules | 598/598 directories, enabled state and load order |
+| `trace_api` vs Magento | 446/446 routes: same route, service class and method |
 
 ## Use cases and time (the project above, no vector index, `MAGECTOR_AUTO_INDEX=0`)
 

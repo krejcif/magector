@@ -37,7 +37,9 @@ Still slower than grep on a first call (everything reads all PHP files):
 | P5 | `find_di_wiring` | 1.2 s (after the DI model) | — |
 
 Fix: an index of PHP files by content (declared types, extends / implements, dispatch() names) stored
-beside the vector index and refreshed by mtime, so a session does not re-read 73k files.
+beside the vector index and refreshed by mtime, so a session does not re-read 73k files. Until then the
+class hierarchy behind `find_implementors` is built once per session (a class added mid-session is not
+seen until restart).
 
 ## B. Decision needed
 

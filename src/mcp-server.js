@@ -6373,6 +6373,9 @@ const _callToolHandler = async (request) => {
             text += `\n#### Effective state (merged by plugin name in module load order)\n${eff}`;
           }
         }
+        if (!text.trim() && args.targetClass) {
+          text = `### DI Plugin Registrations for ${args.targetClass} (0)\n_No plugin is registered on \`${normalizeClassName(args.targetClass)}\`, its parents or interfaces in any di.xml of any area._\n`;
+        }
 
         return { content: [{ type: 'text', text }] };
       }
@@ -7752,7 +7755,7 @@ const _callToolHandler = async (request) => {
                 break;
               }
               case 'magento_module_structure': {
-                text = await moduleStructureText(config.magentoRoot, a);
+                text = await moduleStructureText(config.magentoRoot, a, { compact: true });
                 break;
               }
               case 'magento_find_observer': {
@@ -8541,17 +8544,19 @@ async function dbSchemaText(root, { tableName = '' } = {}) {
   return text + unreadNote(unread);
 }
 
-async function moduleStructureText(root, { moduleName = '' } = {}) {
+async function moduleStructureText(root, { moduleName = '' } = {}, { compact = false } = {}) {
   const idx = await getModuleIndex(root);
   const m = idx.modules.get(moduleName) || [...idx.modules.values()].find(x => x.name.toLowerCase() === String(moduleName).toLowerCase());
   if (!m) {
     const near = [...idx.modules.keys()].filter(n => n.toLowerCase().includes(String(moduleName).toLowerCase().split('_').pop())).slice(0, 10);
-    return `## Module ${moduleName}\n\n_No module with this name has an etc/module.xml under the Magento root._${near.length ? ` Similar: ${near.join(', ')}` : ''}\n`;
+    return `## Module ${moduleName}\n\n_No registered module has this name — Magento loads a module through its registration.php${moduleFilesCache.installed ? ' (composer autoload_files.php or app/etc/registration_globlist.php)' : ''}; an etc/module.xml alone is not enough._${near.length ? ` Similar: ${near.join(', ')}` : ''}\n`;
   }
   const files = (await glob('**/*', { cwd: path.join(root, m.dir), nodir: true, ignore: ['**/node_modules/**'] })).sort();
-  const enabledCount = [...idx.modules.values()].filter(x => x.enabled === true).length;
+  // Load position among the enabled modules (config.php also lists the disabled ones)
+  const enabled = [...idx.modules.values()].filter(x => x.enabled === true);
+  const position = enabled.filter(x => idx.orderOf(x.name) < idx.orderOf(m.name)).length + 1;
   let text = `## Module ${m.name} — \`${m.dir}\`\n\n`;
-  text += `- state: ${m.enabled === true ? `enabled, load position ${idx.orderOf(m.name) + 1} of ${enabledCount}` : m.enabled === false ? '**disabled** in app/etc/config.php' : 'not in app/etc/config.php (not installed)'}\n`;
+  text += `- state: ${m.enabled === true ? `enabled, load position ${position} of ${enabled.length}` : m.enabled === false ? '**disabled** in app/etc/config.php' : 'not in app/etc/config.php (not installed)'}\n`;
   if (m.sequence.length) text += `- \`<sequence>\`: ${m.sequence.join(', ')}\n`;
   if (m.package) text += `- composer: \`${m.package}\`\n`;
   text += `\n### Files (${files.length}) — exact, the whole module directory\n`;
@@ -8561,10 +8566,11 @@ async function moduleStructureText(root, { moduleName = '' } = {}) {
     if (!groups.has(top)) groups.set(top, []);
     groups.get(top).push(f);
   }
-  const listAll = files.length <= 300;
+  const listAll = files.length <= 300 && !compact;
   for (const [top, list] of groups) {
     text += `- **${top}/** (${list.length})`;
-    if (listAll || top === 'etc' || list.length <= 15) text += `\n${list.map(f => `  - ${f}`).join('\n')}\n`;
+    if (compact) text += '\n';                // batch: counts only (magento_module_structure lists the files)
+    else if (listAll || top === 'etc' || list.length <= 15) text += `\n${list.map(f => `  - ${f}`).join('\n')}\n`;
     else text += ` — ${list.slice(0, 8).map(f => f.slice(top.length + 1)).join(', ')}, …\n`;
   }
   // what the module declares, from the merged models (each exact over the files)
@@ -8597,6 +8603,12 @@ async function moduleStructureText(root, { moduleName = '' } = {}) {
     if (vts.length) decl.push(`- Virtual types (${vts.length}): ${vts.slice(0, 15).map(v => `\`${v.name}\``).join(', ')}${vts.length > 15 ? ', …' : ''}`);
   }
   if (decl.length) text += `\n### Declares (from the merged configuration)\n${decl.join('\n')}\n`;
+  if (!compact) {
+    try {
+      const readme = readFileSync(path.join(root, m.dir, 'README.md'), 'utf-8');
+      text += `\n## README.md\n\n${readme.slice(0, 2000)}${readme.length > 2000 ? '\n...(truncated)' : ''}\n`;
+    } catch { /* no README */ }
+  }
   return text;
 }
 
