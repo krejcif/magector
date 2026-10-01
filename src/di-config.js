@@ -1058,13 +1058,12 @@ export function instancesOf(hierarchy, fqcn) {
   return out;
 }
 
-// ─── Configuration validation (what Magento rejects) ────────────
+// ─── Files Magento rejects ──────────────────────────────────────
 //
 // Magento\Framework\Config\Dom::_initDom() loads each file with DOMDocument; a file that is not
-// well-formed fails in every mode with Config\Reader\Filesystem's message. Schema (XSD) errors fail
-// only when validation is required (developer mode). Values are then read by the converters:
-// ObjectManager\Config\Mapper\Dom → BooleanUtils::toBoolean() (strict) for plugin disabled / type
-// shared, (int) for sortOrder; Event\Config\Converter disables an observer only on disabled == 'true'.
+// well-formed fails in every mode with Config\Reader\Filesystem's message, and the reader of that
+// configuration (all its files) fails with it. The tolerant parseXml still reads such a file, so the
+// structural answers mark it instead of presenting its declarations as loaded.
 
 /** Config\Dom::ERROR_FORMAT_DEFAULT */
 export const MAGENTO_XML_ERROR_FORMAT = '%message%\nLine: %line%\n';
@@ -1074,9 +1073,6 @@ export function magentoInvalidXmlMessage(file, errors) {
   const body = errors.map(e => MAGENTO_XML_ERROR_FORMAT.replace('%message%', e.message).replace('%line%', String(e.line))).join('\n');
   return `The XML in file "${file}" is invalid:\n${body}\nVerify the XML and try again.`;
 }
-
-/** var_export() of BooleanUtils' allowed values, as in its exception message. */
-export const BOOLEAN_UTILS_MESSAGE = "Boolean value is expected, supported values: array (\n  0 => true,\n  1 => 1,\n  2 => 'true',\n  3 => '1',\n  4 => false,\n  5 => 0,\n  6 => 'false',\n  7 => '0',\n)";
 
 const XML_NAME = /[A-Za-z_:][\w:.-]*/y;
 
@@ -1272,208 +1268,4 @@ export function checkXmlWellFormed(content) {
   }
   if (!sawRoot) return err(src.length, "Start tag expected, '<' not found");
   return [];
-}
-
-// ─── DI arguments, as Magento reads them ─────────────────────────
-// ObjectManager\Config\Mapper\ArgumentParser converts an <argument> with Config\Converter\Dom\Flat
-// (items keyed by name on paths argument(/item)+), then the interpreters of
-// ObjectManagerFactory::createArgumentInterpreter() evaluate it. Both are ported here with their
-// order and messages; `const` / `init_parameter` need PHP's defined() and stay with the native check.
-
-class MagentoException extends Error {
-  constructor(cls, message, node) { super(message); this.cls = cls; this.node = node; }
-}
-
-/**
- * Config\Converter\Dom\Flat::convert(): element children first (depth-first), the first non-blank
- * text or CDATA child ends the scan and becomes the value. Returns { data, dropped } — dropped:
- * element children discarded because a text / CDATA child made the node a scalar.
- */
-function flatConvert(node, basePath, onDropped) {
-  let value = {};
-  let isScalar = false;
-  let elements = 0;
-  for (const entry of node.seq || []) {
-    if (entry.node) {
-      const child = entry.node;
-      const nodePath = `${basePath}/${child.name}`;
-      const isArrayNode = /^argument(\/item)+$/.test(nodePath);
-      if (value[child.name] !== undefined && !isArrayNode) {
-        throw new MagentoException('UnexpectedValueException', `Node path '${nodePath}' is not unique, but it has not been marked as array.`, child);
-      }
-      const data = flatConvert(child, nodePath, onDropped);
-      elements++;
-      if (isArrayNode) {
-        if (!(data && typeof data === 'object' && data.name !== undefined)) {
-          throw new MagentoException('UnexpectedValueException', "Array is expected to contain value for key 'name'.", child);
-        }
-        (value[child.name] ||= new Map()).set(data.name, data);
-      } else {
-        value[child.name] = data;
-      }
-    } else if (entry.cdata !== undefined || (entry.text !== undefined && entry.text.trim() !== '')) {
-      if (elements) onDropped(node, elements, (entry.cdata ?? entry.text).trim());
-      value = entry.cdata ?? entry.text;
-      isScalar = true;
-      break;
-    }
-  }
-  const attrs = { ...node.attrs };
-  if (!isScalar) {
-    const result = { ...attrs, ...value };
-    return Object.keys(result).length ? result : '';
-  }
-  return Object.keys(attrs).length ? { ...attrs, value: value.trim() } : value.trim();
-}
-
-const BOOLEAN_VALUES = ['true', '1', 'false', '0'];
-const PHP_NUMERIC = /^[ \t\n\r\v\f]*[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?[ \t\n\r\v\f]*$/;
-
-/** Magento\Framework\ObjectManager\Helper\SortItems (single level): stable, by (int) sortOrder. */
-function sortArrayItems(items) {
-  const list = [...items.values()];
-  if (!list.some(i => i && typeof i === 'object' && i.sortOrder !== undefined)) return list;
-  return list.map((item, index) => ({ item, index, order: phpIntCast(item?.sortOrder ?? 0) }))
-    .sort((a, b) => a.order - b.order || a.index - b.index).map(x => x.item);
-}
-
-/** Data\Argument\Interpreter\Composite and the interpreters it dispatches to. */
-function evaluateArgument(data, node) {
-  if (!data || typeof data !== 'object' || data['xsi:type'] === undefined) {
-    throw new MagentoException('InvalidArgumentException', 'Value for key "xsi:type" is missing in the argument data.', node);
-  }
-  const type = data['xsi:type'];
-  const has = k => data[k] !== undefined && data[k] !== null;
-  switch (type) {
-    case 'boolean':
-      if (!has('value')) throw new MagentoException('InvalidArgumentException', 'Boolean value is missing.', node);
-      if (!BOOLEAN_VALUES.includes(data.value)) throw new MagentoException('InvalidArgumentException', BOOLEAN_UTILS_MESSAGE, node);
-      return;
-    case 'string':
-      if (has('value') && typeof data.value !== 'string') throw new MagentoException('InvalidArgumentException', 'String value is expected.', node);
-      return;
-    case 'number':
-      if (!has('value') || typeof data.value !== 'string' || !PHP_NUMERIC.test(data.value)) {
-        throw new MagentoException('InvalidArgumentException', 'Numeric value is expected.', node);
-      }
-      return;
-    case 'null':
-      return;
-    case 'object':
-      if (!has('value')) throw new MagentoException('Exception', 'Warning: Undefined array key "value"', node);
-      if (has('shared') && !BOOLEAN_VALUES.includes(data.shared)) throw new MagentoException('InvalidArgumentException', BOOLEAN_UTILS_MESSAGE, node);
-      return;
-    case 'const':
-    case 'init_parameter':
-      if (!has('value')) throw new MagentoException('InvalidArgumentException', 'Constant name is expected.', node);
-      return;                                                   // defined() — native check only
-    case 'array': {
-      const items = data.item ?? new Map();
-      if (!(items instanceof Map)) throw new MagentoException('InvalidArgumentException', 'Array items are expected.', node);
-      for (const item of sortArrayItems(items)) evaluateArgument(item, node);
-      return;
-    }
-    default:
-      throw new MagentoException('InvalidArgumentException', `Argument interpreter named '${type}' has not been defined.`, node);
-  }
-}
-
-/** PHP's (int) cast of a string: leading whitespace, numeric prefix (exponent included), truncated. */
-export function phpIntCast(value) {
-  const m = /^[ \t\n\r\v\f]*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)/.exec(String(value));
-  return m ? Math.trunc(Number(m[1])) : 0;
-}
-
-const nullAttributeMessage = (converter) =>
-  `Warning: Attempt to read property "nodeValue" on null in ${converter} (Magento's ErrorHandler throws it as an exception)`;
-
-/**
- * Checks a well-formed di.xml / events.xml the way Magento's converters read it
- * (ObjectManager\Config\Mapper\Dom, Event\Config\Converter). Returns [{ severity, line, message }]:
- * 'error' — Magento throws in every mode; 'warning' — loads, but not as written. Schema (XSD)
- * validation, which only runs in developer mode, is not reproduced here — the native check does it.
- */
-export function checkConfigValues(content, relPath) {
-  const out = [];
-  const doc = parseXml(String(content ?? ''));
-  const root = doc.children[0];
-  if (!root) return out;
-  const isEvents = /(^|\/)events\.xml$/.test(relPath || '');
-  const add = (severity, node, message) => out.push({ severity, line: node.line || 0, message });
-  const label = n => (n.attrs.name ? `<${n.name} name="${n.attrs.name}">` : `<${n.name}>`);
-  const BOOLEAN = ['true', '1', 'false', '0'];
-  if (isEvents) {
-    const CONVERTER = 'Magento\\Framework\\Event\\Config\\Converter';
-    for (const ev of walk(root)) {
-      if (ev.name !== 'event') continue;
-      if (ev.attrs.name === undefined) add('error', ev, `<event> without name: ${nullAttributeMessage(CONVERTER)}`);
-      for (const o of ev.children.filter(c => c.name === 'observer')) {
-        if (o.attrs.name === undefined) { add('error', o, "<observer> without name: InvalidArgumentException 'Attribute name is missed'"); continue; }
-        if (o.attrs.disabled !== undefined && o.attrs.disabled !== 'true' && o.attrs.disabled !== 'false') {
-          add('warning', o, `${label(o)} disabled="${o.attrs.disabled}" does not disable the observer — ${CONVERTER} disables only on disabled="true"`);
-        }
-        if (o.attrs.shared !== undefined && o.attrs.shared !== 'true' && o.attrs.shared !== 'false') {
-          add('warning', o, `${label(o)} shared="${o.attrs.shared}" is ignored — ${CONVERTER} reads only shared="false"`);
-        }
-      }
-    }
-    return out;
-  }
-  const MAPPER = 'Magento\\Framework\\ObjectManager\\Config\\Mapper\\Dom';
-  const thrown = (e, node, where) => {
-    if (!(e instanceof MagentoException)) throw e;
-    add('error', e.node || node, `${where}: ${e.cls} '${e.message}'`);
-  };
-  // Mapper\Dom::convert() order: direct children of <config>; per type shared, then its children in
-  // order, then its name; per plugin disabled, then its name; per argument its name, then Flat, then
-  // the interpreters.
-  for (const node of root.children) {
-    if (node.name === 'preference') {
-      if (node.attrs.for === undefined || node.attrs.type === undefined) {
-        add('error', node, `<preference> without ${node.attrs.for === undefined ? 'for' : 'type'}: ${nullAttributeMessage(MAPPER)}`);
-      }
-      continue;
-    }
-    if (node.name !== 'type' && node.name !== 'virtualType') {
-      add('error', node, `Exception 'Invalid application config. Unknown node: ${node.name}.'`);
-      continue;
-    }
-    if (node.attrs.shared !== undefined && !BOOLEAN.includes(node.attrs.shared)) {
-      add('error', node, `${label(node)} shared="${node.attrs.shared}": InvalidArgumentException '${BOOLEAN_UTILS_MESSAGE}'`);
-    }
-    for (const child of node.children) {
-      if (child.name === 'arguments') {
-        for (const arg of child.children) {
-          if (arg.attrs.name === undefined) {
-            add('error', arg, `<${arg.name}> without name in ${label(node)}: ${nullAttributeMessage(MAPPER)}`);
-            continue;
-          }
-          const where = `${label(node)} argument "${arg.attrs.name}"`;
-          try {
-            const dropped = [];
-            const data = flatConvert(arg, 'argument', (n, count, text) => dropped.push({ n, count, text }));
-            for (const d of dropped) {
-              add('warning', d.n, `${where}: text "${d.text.slice(0, 40)}" next to ${d.count} child element(s) — Magento's Config\\Converter\\Dom\\Flat reads the text as the value and drops the elements`);
-            }
-            evaluateArgument(data, arg);
-          } catch (e) {
-            thrown(e, arg, where);
-          }
-        }
-      } else if (child.name === 'plugin') {
-        const a = child.attrs;
-        if (a.sortOrder !== undefined && !/^[+-]?\d+$/.test(a.sortOrder)) {
-          add('warning', child, `${label(child)} sortOrder="${a.sortOrder}" is read as (int) ${phpIntCast(a.sortOrder)}`);
-        }
-        if (a.disabled !== undefined && !BOOLEAN.includes(a.disabled)) {
-          add('error', child, `${label(child)} disabled="${a.disabled}": InvalidArgumentException '${BOOLEAN_UTILS_MESSAGE}'`);
-        }
-        if (a.name === undefined) add('error', child, `<plugin> without name in ${label(node)}: ${nullAttributeMessage(MAPPER)}`);
-      } else {
-        add('error', child, `Exception 'Invalid application config. Unknown node: ${child.name}.'`);
-      }
-    }
-    if (node.attrs.name === undefined) add('error', node, `<${node.name}> without name: ${nullAttributeMessage(MAPPER)}`);
-  }
-  return out;
 }

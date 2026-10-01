@@ -6,7 +6,7 @@ work: the missing plugin, route or column is the one nobody checks.
 
 ## Method
 
-Three layers, each against Magento itself — never against Magector's own idea of Magento:
+Two layers, each against Magento itself — never against Magector's own idea of Magento:
 
 1. **A real installation** (`scripts/verify-magento`). PHP scripts ask the running Magento what it
    loaded, `compare.mjs` checks Magector against it and prints *missing* (must be 0), *different* and
@@ -17,7 +17,6 @@ Three layers, each against Magento itself — never against Magector's own idea 
    | `php` | PHP's tokenizer | class / method reading |
    | `xml` | DOMDocument | di.xml / events.xml reading, files Magento rejects |
    | `plugins` | `PluginListInterface::getNext()` per area | `magento_find_plugin` |
-   | `config` | Magento's `Config\Dom`, converters, interpreters (`src/php/validate-config.php`) | built-in config check |
    | `webapi` `graphql` `cron` `dbschema` `modules` | `config-truth.php`: `Webapi\Model\Config`, `GraphQlSchemaStitching\Reader`, `Cron\Model\ConfigInterface` (+ `core_config_data`), `SchemaConfig::getDeclarationConfig()`, `ComponentRegistrar` / `ModuleList` | `src/magento-config.js` models |
 
 2. **Synthetic fixtures with Magento's answer pinned.** Every fixture case is an unusual but valid (or
@@ -27,10 +26,6 @@ Three layers, each against Magento itself — never against Magector's own idea 
    `compare.mjs` used on real projects, then check the MCP answers. Each test name says the Magento
    behaviour and what the tool did before (`was: …`); every new test is run on the previous code and
    must fail there.
-
-3. **Mutations of real files against Magento** (`mutate-xml.mjs` → `validate-config.php` →
-   `compare.mjs config`): thousands of syntax and value edits of the project's own config files, so
-   the ported rules meet shapes nobody thought of. This found most of the non-obvious behaviour below.
 
 ## Results (Mage-OS 2.4.9 project, ~190 custom modules, PHP 8.3, libxml 2.9.14)
 
@@ -44,7 +39,6 @@ Three layers, each against Magento itself — never against Magector's own idea 
 | Cron jobs | 81/81; 3 differ only through `core_config_data` (noted in the answer) |
 | Declared tables | 507/507 with every column, key and index under Magento's name |
 | Modules | 598/598 directories, enabled state and load order |
-| Config check (built-in vs native) | same first fatal error on 3,835 syntax-edited files, same converter verdict on 3,500 value-edited files |
 
 ## Use cases and time (the project above, no vector index, `MAGECTOR_AUTO_INDEX=0`)
 
@@ -78,14 +72,6 @@ non-public, `NoninterceptableInterface`), comments in XML read as data. Tests: `
 | Magento | Before | Test |
 |---|---|---|
 | A class is the file its FQCN autoloads (composer PSR-4) | looked up by file name: with two `Stock` observers the other module's file | `di-resolution`: find_method / trace_call_chain / batch by FQCN |
-
-### Configuration Magento rejects
-| Magento | Before | Test |
-|---|---|---|
-| Not well-formed XML fails in every mode, with `Config\Dom`'s message | read as far as possible, shown as if it applied | `validate-config`, `di-parsing` (libxml-pinned cases) |
-| Converters run under Magento's ErrorHandler: missing name, unknown node, bad argument value fail in every mode | silently ignored | `validate-config`, `di-parsing` |
-| Developer-mode schema validation of di.xml is on the merged document; outcome depends on file order | — (a per-file check gave 26 false alarms, so the native check asks Magento's readers) | `validate-config` (native path) |
-| Text next to `<item>`s makes the argument that text — the items are dropped | not visible | `di-parsing` |
 
 ### Structural answers for API, GraphQL, cron, schema, modules
 | Magento | Before | Test (`tests/config-models.test.js`) |

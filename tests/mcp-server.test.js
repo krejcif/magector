@@ -157,7 +157,7 @@ async function main() {
       'magento_performance_profile',
       'magento_find_layout', 'magento_impact_analysis',
       'magento_find_event_flow', 'magento_find_test',
-      'magento_find_implementors', 'magento_find_callers', 'magento_validate_config',
+      'magento_find_implementors', 'magento_find_callers',
       'magento_find_di_wiring', 'magento_trace_call_chain',
       'magento_trace_data_flow', 'magento_find_event_dispatchers',
     ];

@@ -356,8 +356,6 @@ The `describe` command and `magento_describe` MCP tool require an Anthropic API 
 | `MAGECTOR_BATCH_SIZE` | Embedding batch size (higher = faster, more RAM). Equivalent to `--batch-size`. | `256` |
 | `MAGECTOR_MAX_OUTPUT_CHARS` | Cap on one MCP tool answer, in characters; a longer answer is cut at a line boundary with a note to narrow the query. | `40000` (~10k tokens) |
 | `MAGECTOR_AUTO_INDEX` | `0`: the MCP server never starts an index (none, or an incompatible one) — for CI and agent jobs that bring their own index. The structural tools work without one; semantic search reports it is missing. | `1` (index in the background) |
-| `MAGECTOR_PHP` | Command that runs PHP 8.1+ able to load the Magento root, for the native `magento_validate_config` (the PHP program is piped to its stdin), e.g. `docker exec -i -u www-data <container> php`, `warden env exec -T php-fpm php`, `ddev exec php`. Without it, `php` on `PATH` is used when it is 8.1+ and `app/autoload.php` exists; otherwise the built-in check. | — |
-| `MAGECTOR_PHP_ROOT` | The Magento root as `MAGECTOR_PHP` sees it (inside the container) | `MAGENTO_ROOT` |
 | `ANTHROPIC_API_KEY` | API key for description generation (`describe` command) | — |
 
 These defaults apply to the Node.js CLI and the MCP server. The Rust core's own `-d` flag (see above) defaults to `./.magector/index.db` in its working directory.
@@ -503,24 +501,6 @@ with an update.
 | `magento_trace_config` | system.xml definition and PHP readers (constant or literal path) | the path is concatenated at runtime |
 | `magento_grep`, `magento_ast_search` | Exact text / AST matches | — |
 
-#### Configuration Magento rejects
-
-The DI and event tools read what the files **say**. When Magento cannot load a file, or reads a value
-differently than written, they say so first: the answers of `find_plugin`, `find_observer`,
-`find_preference`, `find_di_wiring`, `find_event_flow`, `trace_dependency`, `impact_analysis`,
-`find_class` and `batch` start with a notice listing the rejected files of enabled modules, and
-values in the answer's files that do not take effect as written. `magento_validate_config` gives the
-details, with Magento's own messages:
-
-| Engine | Checks | Verified |
-|--------|--------|----------|
-| **native** (`MAGECTOR_PHP`, or `php` 8.1+ on `PATH`) | Magento's classes on every file (`Config\Dom` — not well-formed XML fails in every mode; the DI / events converters and argument interpreters under Magento's `ErrorHandler`), then Magento's readers (`ObjectManager\Config\Reader\Dom`, `Event\Config\Reader`) on every area in production **and developer mode** — the merged configuration, as Magento validates it; other files against the schema they declare | is Magento |
-| **built-in** (no PHP) | per file: the first libxml error (message and line), the converter and argument-interpreter rules ported from Magento, values read differently than written (observer `disabled="1"`, non-integer `sortOrder`, text next to `<item>`s) | against libxml 2.9.14 / Mage-OS 2.4.9 (`scripts/verify-magento`, mode `config`): same first fatal error on 3,835 files with syntax edits; same converter verdict on 3,500 files with value edits (3,049 converter exceptions); nothing reported on the 3,075 unmodified config files of the project |
-
-The built-in check does not validate schemas (developer mode), does not merge files (a later file can
-override a value that fails alone — the native check reports that case as masked), and cannot check
-`const` / `init_parameter` arguments (PHP's `defined()`).
-
 The results are static analysis of the files. For a running installation, the object manager
 configuration read at runtime remains the reference — note that `bin/magento dev:di:info` lists plugins
 disabled with `disabled="true"` as active.
@@ -581,7 +561,6 @@ Auto-detects entry type from pattern (`/V1/...` → API, `snake_case` → event,
 |------|-------------|
 | `magento_error_parser` | Parse Magento error messages and map to root cause, affected files, and fix suggestions (10 known patterns) |
 | `magento_performance_profile` | Profile a Magento subsystem (checkout_totals, order_place, product_save, etc.) for performance bottlenecks -- plugins, observers, and complexity hotspots |
-| `magento_validate_config` | Configuration XML the way Magento loads it: files it rejects in every mode, developer-mode (schema) failures per area, values read differently than written — with Magento's messages. Native through PHP (`MAGECTOR_PHP`), otherwise built-in. See [Configuration Magento rejects](#configuration-magento-rejects) |
 
 ### Analysis Tools
 
