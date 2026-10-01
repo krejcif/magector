@@ -213,6 +213,13 @@ async function main() {
     check('modules: an unregistered copy of a module and a dev/tests file are not read — Magento never reads them (was: every etc/ file of the tree)', t, {
       hasNot: ['/V1/acme/unregistered', '/V1/acme/devtests'],
     });
+    check('modules: a module of a composer path repository (vendor/ symlink) is read where it really is', t, {
+      has: ['**GET /V1/acme/linked**', '`modules/linked/etc/webapi.xml:3`'], hasNot: ['vendor/acme/linked/etc/webapi.xml'],
+    });
+    t = await c.call('magento_module_structure', { moduleName: 'Acme_Linked' });
+    check('module_structure: a path-repository module lists its files (was: 0 — glob does not descend into a symlinked cwd)', t, {
+      has: ['## Module Acme_Linked — `modules/linked`', 'Model/Thing.php'],
+    });
     t = await c.call('magento_module_structure', { moduleName: 'Acme_MultiOne' });
     check('modules: the nested module is where its registration.php is', t, { has: ['## Module Acme_MultiOne — `vendor/acme/multi/One`'] });
 

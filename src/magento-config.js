@@ -19,7 +19,7 @@
  */
 
 import { createHash } from 'crypto';
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, realpathSync } from 'fs';
 import path from 'path';
 import { glob } from 'glob';
 import { parseXml, normalizeClassName } from './di-config.js';
@@ -83,7 +83,12 @@ export async function discoverModules(root) {
   if (!composerList) {
     rels = [...new Set([...rels, ...await glob('**/etc/module.xml', { cwd: root, nodir: true, ignore: MODULE_XML_IGNORE })])];
   }
-  return { moduleXmls: rels.sort(), installed: composerList };
+  // A module is where PHP's __DIR__ puts it — the real path: a composer path repository links
+  // vendor/<pkg> to the project's own directory (e.g. ../../modules/<pkg>)
+  const real = new Set(rels.map(rel => {
+    try { return path.relative(root, realpathSync(path.join(root, rel))).split(path.sep).join('/'); } catch { return rel; }
+  }));
+  return { moduleXmls: [...real].sort(), installed: composerList };
 }
 
 function listFilesRecursive(absDir, relDir, out) {

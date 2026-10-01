@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<routes>
+    <route url="/V1/acme/linked" method="GET"><service class="Acme\Linked\Api\LinkedInterface" method="get"/><resources><resource ref="anonymous"/></resources></route>
+</routes>

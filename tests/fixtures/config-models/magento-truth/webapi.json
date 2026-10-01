@@ -35,5 +35,14 @@
                 "anonymous"
             ]
         }
+    },
+    "/V1/acme/linked": {
+        "GET": {
+            "class": "Acme\\Linked\\Api\\LinkedInterface",
+            "method": "get",
+            "resources": [
+                "anonymous"
+            ]
+        }
     }
 }
