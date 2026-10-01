@@ -1283,12 +1283,25 @@ function serveQuery(command, params = {}, timeoutMs = 30000) {
   });
 }
 
+/** The index database exists and is not an empty placeholder. */
+function hasUsableDbFile() {
+  try { return statSync(config.dbPath).size > 100; } catch { return false; }
+}
+
 async function rustSearchAsync(query, limit = 10) {
   const cacheKey = `${query}|${limit}`;
   if (searchCache.has(cacheKey)) {
     logToFile('CACHE', `HIT: "${query}" (limit=${limit})`);
     const cached = searchCache.get(cacheKey);
     return Array.isArray(cached) ? cached : [];
+  }
+
+  // No index database (none built yet, or a first build still running): there is nothing to
+  // search. Answer empty at once instead of waiting for a serve process that has no index to load —
+  // a structural tool's semantic addition otherwise waited out the serve respawn delay (5–15 s).
+  if (!hasUsableDbFile()) {
+    logToFile('INFO', `rustSearchAsync: no index database at ${config.dbPath} — semantic search skipped`);
+    return [];
   }
 
   // Wait for serve process if it's starting up but not yet ready. Gated on
@@ -5991,7 +6004,7 @@ const _callToolHandler = async (request) => {
 
   // Block search tools only when re-indexing AND no usable old DB exists.
   // If old DB is preserved, searches keep running against it during rebuild.
-  const hasUsableDb = existsSync(config.dbPath) && (() => { try { return statSync(config.dbPath).size > 100; } catch { return false; } })();
+  const hasUsableDb = hasUsableDbFile();
   if (!config.autoIndex && !hasUsableDb && !reindexInProgress && !indexFreeTools.includes(name)) {
     logToFile('REQ', `${name} → no index (MAGECTOR_AUTO_INDEX=0)`);
     return {

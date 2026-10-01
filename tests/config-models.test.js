@@ -322,6 +322,22 @@ async function main() {
     rmSync(live, { recursive: true, force: true });
   }
 
+  // ── No index database: the semantic addition must not wait for a serve process ──
+  // Seen on a project without an index: a serve process with nothing to load exits, and every
+  // find_cron / find_api / find_plugin call waited out its respawn delay (5 s, then 10 s, 15 s).
+  const nc = new McpClient(FIXTURE, { MAGECTOR_BIN: '/bin/true' });
+  await nc.start();
+  try {
+    for (const round of ['first', 'second']) {
+      const t0 = Date.now();
+      const t = await nc.call('magento_find_cron', { jobName: 'acme' });
+      const ms = Date.now() - t0;
+      ok(`no index: find_cron ${round} call answers at once (${ms} ms; was 5 s / 10 s — the serve respawn delay)`, ms < 3000 && t.includes('acme'));
+    }
+  } finally {
+    nc.stop();
+  }
+
   console.log(`\n  ${passed} passed, ${failed} failed\n`);
   process.exit(failed ? 1 : 0);
 }

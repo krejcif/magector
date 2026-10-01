@@ -17,7 +17,7 @@ Paths in the file lists are relative to the Magento root.
 
 ```bash
 # in the Magento root, inside the PHP container
-find app/code vendor -name '*.php' -not -path '*/Test/*' -not -path '*/tests/*' | shuf -n 20000 > files.txt
+find app/code vendor -name '*.php' -type f -not -path '*/Test/*' -not -path '*/tests/*' | shuf -n 20000 > files.txt
 find app/code vendor -path '*/etc/*' \( -name di.xml -o -name events.xml \) > xml-files.txt
 printf '%s\n' 'Magento\Quote\Model\QuoteRepository' 'Magento\Customer\Model\ResourceModel\CustomerRepository' > classes.txt
 

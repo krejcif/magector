@@ -41,6 +41,25 @@ Two layers, each against Magento itself — never against Magector's own idea of
 | Modules | 598/598 directories, enabled state and load order |
 | `trace_api` vs Magento | 446/446 routes: same route, service class and method |
 
+## Results (Magento Open Source 2.4.5-p14 project, ~110 custom modules, PHP 8.1, libxml 2.9.14)
+
+A second, older installation, checked with the same scripts. Its plugin check found the two
+`find_plugin` gaps fixed below (a preference's own plugins, abstract classes).
+
+| Check | Result |
+|---|---|
+| PHP classes / methods | 0 differences on 19,339 classes |
+| di.xml / events.xml | 0 differences on 753 files |
+| Plugins Magento runs | 62/62 global, 61/61 graphql, 74/74 adminhtml (34 classes); before the fix 2 missed, 1 reported on an abstract class |
+| Web API routes | 409/409 |
+| GraphQL fields → resolver | 2,179/2,179 from schema.graphqls; 28 more from EAV attribute readers (named) |
+| Cron jobs | 75/75; 3 differ only through `core_config_data` (noted) |
+| Declared tables | 379/379 |
+| Modules | 449/449 |
+
+Use cases on it (as below): every answer complete; cold 0.15–0.44 s, warm 3–82 ms;
+`find_plugin` 4 of 4 where grep finds 2 of 4; columns of sales_order 4.1k tokens instead of 46.3k.
+
 ## Use cases and time (the project above, no vector index, `MAGECTOR_AUTO_INDEX=0`)
 
 Magector: *cold* = a new MCP server and the first call of the session, *warm* = the same call again.
@@ -85,6 +104,13 @@ non-public, `NoninterceptableInterface`), comments in XML read as data. Tests: `
 | Cron: crontab.xml merged by group + job, then the crontab system config (config.xml defaults, `run/model` → instance::method) | — | find_cron cases |
 | Declarative schema merged by table / column / referenceId; disabled elements dropped; keys named PRIMARY / by `ExpressionConverter` (map, md5); `_replica` named after the origin table | — | find_db_schema cases, db names |
 | A module is where registration.php registers it; a name can contain dots (`Amasty_Mage2.4.7Fix`) | vendor path guessed from the name, 100-file cap; a dotted name read as "not installed" | module_structure cases, config.php case |
+
+### Plugins and semantic search
+| Magento | Before | Test |
+|---|---|---|
+| Code that asks for X gets X's preference, and the preference class's own plugins run (`Import\Product` → a module's `Rewrite\Product`) | only plugins declared on X and its ancestors | `di-resolution`: Importer / BetterImporter |
+| An abstract class is never instantiated; its plugins run on its concrete subclasses | listed as running on the abstract class | `di-resolution`: AbstractSource / TableSource |
+| — (no index database: nothing to search) | each structural tool's semantic addition waited out the serve respawn delay, 5 s then 10 s per call | `config-models`: no index |
 
 ## Not structural yet
 
