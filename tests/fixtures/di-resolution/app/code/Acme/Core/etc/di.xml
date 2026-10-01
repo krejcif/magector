@@ -65,4 +65,7 @@
         />
     </type>
     <preference for="Acme\Core\Api\ClockInterface" type="Acme\Core\Model\ModuleClock"/>
+    <!-- another interface with the same short name, declared first: matching by short name picks it -->
+    <preference for="Acme\Api\Api\BasketRepositoryInterface" type="Acme\Api\Model\GiftBasketRepository"/>
+    <preference for="Acme\Core\Api\BasketRepositoryInterface" type="Acme\Core\Model\BasketRepository"/>
 </config>

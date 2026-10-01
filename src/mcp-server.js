@@ -39,7 +39,7 @@ import {
   virtualTypesResolvingTo, argumentInjectionsOf, effectivePluginDeclarations, resolvePluginType,
   parseEventsXml, parseXml, areaFromPath, createAncestorResolver,
   buildModuleIndex, preferenceCascade, mergeNamedDeclarations, pluginDeclarationsOn,
-  createMemberResolver, interceptionStatus, buildClassHierarchy, instancesOf, applyModuleOrder, parsePhpFile,
+  createMemberResolver, interceptionStatus, buildClassHierarchy, instancesOf, applyModuleOrder, parsePhpFile, qualifyPhpName,
   checkXmlWellFormed,
 } from './di-config.js';
 import {
@@ -4511,22 +4511,15 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
   const classFileMap = new Map();
   const parentClassCache = new Map();
 
-  // Resolve parent class from extends declaration in PHP file content
-  function resolveParentFromContent(content) {
-    const extendsMatch = content.match(/class\s+\w+\s+extends\s+([\w\\]+)/);
-    if (!extendsMatch) return null;
-    const parent = extendsMatch[1];
-    // If it's a short name, resolve using use statements
-    if (!parent.includes('\\')) {
-      const useMatch = content.match(new RegExp(`use\\s+([\\w\\\\]+\\\\${parent})\\s*;`));
-      if (useMatch) return useMatch[1];
-      // Check namespace-relative
-      const nsMatch = content.match(/namespace\s+([\w\\]+)/);
-      if (nsMatch) return `${nsMatch[1]}\\${parent}`;
-      return parent;
-    }
-    // Leading backslash = fully qualified
-    return parent.replace(/^\\/, '');
+  // The type a file declares (by FQCN), as parsed — namespace, `use` imports, parents
+  function declaredType(content, fqcn) {
+    const types = parsePhpFile(content).types;
+    return types.find(t => t.fqcn.toLowerCase() === String(fqcn).toLowerCase()) || types[0] || null;
+  }
+
+  // Parent class of `cls`, resolved by its file's namespace and imports
+  function resolveParentFromContent(content, cls) {
+    return declaredType(content, cls)?.parents[0] || null;
   }
 
   async function resolveClassFile(className) {
@@ -4563,8 +4556,10 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
     for (const match of matches) {
       let content;
       try { content = readFileSync(match, 'utf-8'); } catch { continue; }
-      // Only a file that declares exactly this class — never another module's class with the same name
-      const declared = parsePhpFile(content).types.find(t => t.fqcn.toLowerCase() === className.toLowerCase());
+      // A FQCN: only the file that declares exactly this class — never another module's class with
+      // the same short name. A short name (not qualifiable): fuzzy, the first class of that name.
+      const declared = parsePhpFile(content).types.find(t => (className.includes('\\')
+        ? t.fqcn.toLowerCase() === className.toLowerCase() : t.shortName.toLowerCase() === shortName.toLowerCase()));
       if (declared) {
         classFileMap.set(className, match);
         return match;
@@ -4599,26 +4594,16 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
     }
   }
 
-  // Resolve DI preference for an interface
+  // The class that runs for a type: preferences (chains, virtual types) as Magento merges them —
+  // module load order, the global area — not the first <preference> whose name ends the same
+  const diModel = await getDiModel(root).catch(() => null);
   const prefCache = new Map();
-  async function resolvePreference(interfaceName) {
-    if (prefCache.has(interfaceName)) return prefCache.get(interfaceName);
-    const shortName = interfaceName.split('\\').pop();
-    const diXmlFiles = await moduleEtcGlob(root, '**/etc/di.xml', { absolute: true });
-    for (const diFile of diXmlFiles) {
-      let content;
-      try { content = readFileSync(diFile, 'utf-8'); } catch { continue; }
-      const prefRegex = /<preference\s+for="([^"]+)"\s+type="([^"]+)"\s*\/?>/g;
-      let m;
-      while ((m = prefRegex.exec(content)) !== null) {
-        if (m[1] === interfaceName || m[1].endsWith('\\' + shortName)) {
-          prefCache.set(interfaceName, m[2]);
-          return m[2];
-        }
-      }
-    }
-    prefCache.set(interfaceName, null);
-    return null;
+  async function resolvePreference(typeName) {
+    if (prefCache.has(typeName)) return prefCache.get(typeName);
+    const real = diModel ? resolveInstance(diModel, typeName, 'global').real : null;
+    const impl = real && real !== normalizeClassName(typeName) ? real : null;
+    prefCache.set(typeName, impl);
+    return impl;
   }
 
   async function traceMethod(className, methodName, depth) {
@@ -4647,10 +4632,11 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
     let resolvedFilePath = filePath;
     if (methodStart === -1) {
       let currentContent = content;
+      let currentClass = className;
       let found = false;
       const visited = new Set([className]);
       for (let i = 0; i < 10; i++) { // max 10 parent levels
-        const parentFqcn = resolveParentFromContent(currentContent);
+        const parentFqcn = resolveParentFromContent(currentContent, currentClass);
         if (!parentFqcn || visited.has(parentFqcn)) break;
         visited.add(parentFqcn);
         const parentFile = await resolveClassFile(parentFqcn);
@@ -4667,6 +4653,7 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
           break;
         }
         currentContent = parentContent;
+        currentClass = parentFqcn;
       }
       if (!found) {
         result.chain.push({ depth, class: className, method: methodName, file: relativePath, status: 'method_not_found' });
@@ -4716,13 +4703,15 @@ async function traceCallChain(startClass, startMethod, maxDepth = 3) {
       if (resolvedClass !== className) {
         try { originalContent = readFileSync(filePath, 'utf-8'); } catch { originalContent = content; }
       }
-      const contentSources = (resolvedClass !== className) ? [originalContent, content] : [content];
-      for (const src of contentSources) {
+      const contentSources = (resolvedClass !== className)
+        ? [[originalContent, className], [content, resolvedClass]] : [[content, className]];
+      for (const [src, owner] of contentSources) {
         const ctorMatch = src.match(/function\s+__construct\s*\(([\s\S]*?)\)\s*[{:]/);
         if (ctorMatch) {
           const paramRegex = new RegExp(`([\\w\\\\]+)\\s+\\$${property}\\b`);
           const pm = ctorMatch[1].match(paramRegex);
-          if (pm) { resolvedType = pm[1]; break; }
+          // The hint as written (usually a `use`-imported short name) → FQCN, by the owner's file
+          if (pm) { resolvedType = qualifyPhpName(pm[1], declaredType(src, owner)); break; }
         }
       }
       chainEntry.calls.push({ type: 'dependency', property, method: calledMethod, typeHint: resolvedType || null });

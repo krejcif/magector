@@ -504,6 +504,15 @@ function resolvePhpName(name, namespace, uses) {
   return namespace ? `${namespace}\\${n}` : n;
 }
 
+/**
+ * A class name as written inside a type (a type hint, a `new`, an `extends`) → its FQCN, resolved
+ * with the namespace and the `use` imports of the file that wrote it — as PHP resolves it.
+ */
+export function qualifyPhpName(name, type) {
+  if (!type) return String(name || '').replace(/^\\/, '');
+  return resolvePhpName(name, type.namespace, type.uses || new Map());
+}
+
 /** One `use …;` statement: plain, aliased, several, group (`A\{B, C as D}`, `A \{…}`); functions/consts skipped. */
 function parseUseStatement(raw, uses) {
   const body = raw.replace(/\s+/g, ' ').trim();
@@ -609,6 +618,7 @@ export function parsePhpFile(source) {
         fqcn: seg.ns ? `${seg.ns}\\${shortName}` : shortName,
         shortName,
         namespace: seg.ns,
+        uses,                                  // the `use` imports of its namespace (for qualifyPhpName)
         kind,
         isFinal: /\bfinal\b/i.test(m[1]),
         isAbstract,

@@ -300,6 +300,18 @@ async function main() {
       hasNot: ['app/code/Acme/Mix/Observer/Stock.php'],
     });
 
+    // Review of #31: dependencies come from constructor hints as written — short names imported by
+    // `use` (here one aliased) — and must be qualified by the file's namespace and imports
+    t = await client.call('magento_trace_call_chain', { className: 'Acme\\Core\\Model\\Checkout', methodName: 'place', depth: 3 });
+    check('trace_call_chain: a dependency hinted by a `use`-imported (aliased) short name resolves', t, {
+      has: ['**Acme\\Core\\Model\\Validator\\BasketValidator::validate**'],
+      hasNot: ['BasketValidator::validate** [unresolved]', 'Validator::validate** [unresolved]'],
+    });
+    check('trace_call_chain: an interface hint follows its own preference in module order, not another module\'s interface with the same short name', t, {
+      has: ['**Acme\\Core\\Model\\BasketRepository::save**', '**Acme\\Core\\Model\\BasketRepository::persist**'],
+      hasNot: ['GiftBasketRepository'],
+    });
+
     t = await client.call('magento_batch', { queries: [
       { tool: 'magento_find_method', args: { methodName: 'execute', className: 'Acme\\Core\\Observer\\Stock' } },
       { tool: 'magento_find_class', args: { className: 'Acme\\Core\\Observer\\Stock' } },
