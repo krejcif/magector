@@ -2033,51 +2033,26 @@ async function traceApi(entryPoint, depth) {
  * @returns {Promise<Array<{path, line, resolverClass, snippet}>>}
  */
 async function parseGraphqlSchema(entryPoint) {
+  // The merged schema (getConfigModel 'graphql', as find_graphql answers): the field's effective
+  // resolver, root operation types first — not the first line of any file that names the field
   const root = config.magentoRoot;
-  const schemas = [];
-
-  let graphqlsFiles;
-  try {
-    graphqlsFiles = await moduleEtcGlob(root, '**/etc/**/*.graphqls', { absolute: true });
-  } catch {
-    return schemas;
+  let model;
+  try { ({ model } = await getConfigModel(root, 'graphql')); } catch { return []; }
+  const ROOTS = ['Query', 'Mutation', 'Subscription'];
+  const rank = t => (ROOTS.includes(t.name) ? ROOTS.indexOf(t.name) : ROOTS.length);
+  const out = [];
+  const seen = new Set();
+  for (const t of [...model.types.values()].sort((x, y) => rank(x) - rank(y))) {
+    const f = t.fields.get(entryPoint);
+    if (!f || !f.resolver) continue;
+    const key = `${t.name}.${entryPoint}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    let snippet = '';
+    try { snippet = readFileSync(path.join(root, f.relPath), 'utf-8').split('\n').slice(Math.max(0, f.line - 1), f.line + 9).join('\n'); } catch { /* gone */ }
+    out.push({ path: f.relPath, line: f.line, resolverClass: f.resolver, type: t.name, snippet: snippet.trim().slice(0, 400) });
   }
-
-  const escapedName = entryPoint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const lineRe = new RegExp(`^\\s*${escapedName}\\s*(?:\\(|:)`);
-
-  for (const file of graphqlsFiles) {
-    let content;
-    try { content = readFileSync(file, 'utf-8'); } catch { continue; }
-    if (!content.includes(entryPoint)) continue;
-
-    const lines = content.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      if (!lineRe.test(lines[i])) continue;
-
-      // Accumulate up to 10 lines (covers multi-line operation signatures) until
-      // we find the @resolver directive or exit the current definition.
-      let block = '';
-      for (let j = i; j < Math.min(i + 10, lines.length); j++) {
-        block += lines[j] + '\n';
-        if (/@resolver\s*\(/.test(block)) break;
-      }
-
-      const resolverMatch = block.match(/@resolver\s*\(\s*class\s*:\s*"([^"]+)"\s*\)/);
-      if (!resolverMatch) continue;
-
-      // Normalize: unescape doubled backslashes, strip any leading backslashes
-      const resolverClass = resolverMatch[1].replace(/\\\\/g, '\\').replace(/^\\+/, '');
-      schemas.push({
-        path: file.replace(root + '/', ''),
-        line: i + 1,
-        resolverClass,
-        snippet: block.trim().slice(0, 400)
-      });
-    }
-  }
-
-  return schemas;
+  return out;
 }
 
 /**
@@ -3685,58 +3660,27 @@ async function analyzeImpact(className) {
  * Where a class is exposed as an API: webapi.xml services (the class itself, or an interface whose
  * preference resolves to it) and schema.graphqls resolvers.
  */
-const apiFilesCache = { root: null, webapi: [], graphql: [] };
-
 async function findApiReferences(root, className) {
+  // From the merged models find_api / find_graphql answer from, so the tools agree
   const target = normalizeClassName(className);
   const out = [];
   if (!root || !target.includes('\\')) return out;
-  const model = await getDiModel(root);
-  if (apiFilesCache.root !== root) {
-    try {
-      apiFilesCache.webapi = await moduleEtcGlob(root, '**/etc/webapi.xml', { absolute: true });
-      apiFilesCache.graphql = await moduleEtcGlob(root, '**/etc/*.graphqls', { absolute: true });
-      apiFilesCache.root = root;
-    } catch { return out; }
+  const model = await getDiModel(root).catch(() => null);
+  const [api, gql] = await Promise.all([getConfigModel(root, 'webapi').catch(() => null), getConfigModel(root, 'graphql').catch(() => null)]);
+  for (const r of api ? api.model.values() : []) {
+    if (!r.serviceClass) continue;
+    const resolved = model ? resolveInstance(model, r.serviceClass, 'webapi_rest').real : r.serviceClass;
+    if (r.serviceClass !== target && resolved !== target) continue;
+    const d = r.declarations[r.declarations.length - 1];
+    out.push({
+      type: 'webapi', file: d.relPath,
+      detail: `${r.method} ${r.url} → ${r.serviceClass}::${r.serviceMethod || ''}` + (r.serviceClass !== target ? ` (preference → ${target})` : ''),
+    });
   }
-  const webapiFiles = apiFilesCache.webapi;
-  const graphqlFiles = apiFilesCache.graphql;
-  for (const file of webapiFiles) {
-    let content;
-    try { content = readFileSync(file, 'utf-8'); } catch { continue; }
-    if (!content.includes(target.split('\\').pop()) && !content.includes('Interface')) continue;
-    const rel = file.replace(root + '/', '');
-    const doc = parseXml(content);
-    const routes = (doc.children.find(c => c.name === 'routes') || doc).children.filter(c => c.name === 'route');
-    for (const route of routes) {
-      const service = route.children.find(c => c.name === 'service');
-      if (!service) continue;
-      const serviceClass = normalizeClassName(service.attrs.class);
-      const resolved = resolveInstance(model, serviceClass).real;
-      if (serviceClass === target || resolved === target) {
-        out.push({
-          type: 'webapi', file: rel,
-          detail: `${route.attrs.method || ''} ${route.attrs.url || ''} → ${serviceClass}::${service.attrs.method || ''}` +
-            (serviceClass !== target ? ` (preference → ${target})` : '')
-        });
-      }
-    }
-  }
-  for (const file of graphqlFiles) {
-    let content;
-    try { content = readFileSync(file, 'utf-8'); } catch { continue; }
-    if (!content.includes(target.split('\\').pop())) continue;
-    const rel = file.replace(root + '/', '');
-    const lines = content.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const re = /@resolver\s*\(\s*class\s*:\s*"([^"]+)"/g;
-      let m;
-      while ((m = re.exec(lines[i])) !== null) {
-        if (normalizeClassName(m[1]) === target) {
-          const field = (/^\s*(\w+)\s*[(:]/.exec(lines[i]) || [])[1] || '';
-          out.push({ type: 'graphql', file: rel, detail: `${field ? `field ${field} ` : ''}(line ${i + 1}) → ${target}` });
-        }
-      }
+  for (const t of gql ? gql.model.types.values() : []) {
+    for (const [name, f] of t.fields) {
+      if (f.resolver !== target || f.from) continue;
+      out.push({ type: 'graphql', file: f.relPath, detail: `field ${t.name}.${name} (line ${f.line}) → ${target}` });
     }
   }
   return out;
@@ -8075,48 +8019,21 @@ const _callToolHandler = async (request) => {
         if (!root) return { content: [{ type: 'text', text: 'MAGENTO_ROOT not set.' }], isError: true };
         let text = '';
 
-        // 1. Find the endpoint in webapi.xml files
-        const webapiFiles = await moduleEtcGlob(root, '**/etc/webapi.xml', { absolute: true });
-        let matchedRoute = null;
-        const searchUrl = args.url || '';
-        const searchInterface = args.interfaceName || '';
-        const searchMethod = args.method || '';
-
-        for (const wf of webapiFiles) {
-          let wContent;
-          try { wContent = readFileSync(wf, 'utf-8'); } catch { continue; }
-          const relPath = wf.replace(root + '/', '');
-
-          const routeRegex = /<route\s+url="([^"]+)"\s+method="([^"]+)"[^>]*>([\s\S]*?)<\/route>/g;
-          let rm;
-          while ((rm = routeRegex.exec(wContent)) !== null) {
-            const routeUrl = rm[1];
-            const routeMethod = rm[2];
-            const routeBody = rm[3];
-
-            const urlMatch = searchUrl ? routeUrl.includes(searchUrl) || searchUrl.includes(routeUrl) : false;
-            const ifaceMatch = searchInterface ? routeBody.includes(searchInterface) : false;
-            const methodMatch = searchMethod ? routeMethod === searchMethod : true;
-
-            if ((urlMatch || ifaceMatch) && methodMatch) {
-              const serviceMatch = routeBody.match(/class="([^"]+)"\s+method="([^"]+)"/);
-              if (serviceMatch) {
-                matchedRoute = {
-                  url: routeUrl,
-                  httpMethod: routeMethod,
-                  serviceClass: serviceMatch[1],
-                  serviceMethod: serviceMatch[2],
-                  file: relPath
-                };
-                // Extract resource
-                const resMatch = routeBody.match(/resource\s+ref="([^"]+)"/);
-                if (resMatch) matchedRoute.acl = resMatch[1];
-                break;
-              }
-            }
-          }
-          if (matchedRoute) break;
-        }
+        // 1. The endpoint, from the merged webapi model (as find_api answers): an exact URL first,
+        //    then URLs containing it, or the service interface; other matches are listed below
+        const { model: webapiModel } = await getConfigModel(root, 'webapi');
+        const searchUrl = (args.url || '').trim();
+        const searchInterface = args.interfaceName ? normalizeClassName(args.interfaceName) : '';
+        const searchMethod = (args.method || '').toUpperCase();
+        const candidates = [...webapiModel.values()].filter(r => (!searchMethod || r.method === searchMethod) && r.serviceClass && (
+          (searchUrl && r.url.includes(searchUrl)) ||
+          (searchInterface && (r.serviceClass === searchInterface || (!searchInterface.includes('\\') && r.serviceClass.split('\\').pop() === searchInterface)))
+        )).sort((x, y) => (y.url === searchUrl) - (x.url === searchUrl) || x.url.length - y.url.length || x.url.localeCompare(y.url));
+        const best = candidates[0];
+        const matchedRoute = best ? {
+          url: best.url, httpMethod: best.method, serviceClass: best.serviceClass, serviceMethod: best.serviceMethod,
+          file: best.declarations[best.declarations.length - 1].relPath, acl: best.resources.join(', ') || null,
+        } : null;
 
         if (!matchedRoute) {
           return { content: [{ type: 'text', text: `No API endpoint found matching url="${searchUrl}" interface="${searchInterface}"` }] };
@@ -8127,26 +8044,18 @@ const _callToolHandler = async (request) => {
         text += `- **Interface:** \`${matchedRoute.serviceClass}::${matchedRoute.serviceMethod}()\`\n`;
         text += `- **ACL:** \`${matchedRoute.acl || 'none'}\`\n`;
         text += `- **webapi.xml:** \`${matchedRoute.file}\`\n\n`;
-
-        // 2. Find DI preference (implementation)
-        const diFiles = await getDiXmlFiles(root);
-        const shortIface = matchedRoute.serviceClass.split('\\').pop();
-        let implClass = null;
-        let implFile = null;
-
-        for (const { content: diContent, relPath } of diFiles) {
-          if (!diContent.includes(shortIface)) continue;
-          const prefRegex = /<preference\s+for="([^"]+)"\s+type="([^"]+)"\s*\/?>/g;
-          let pm;
-          while ((pm = prefRegex.exec(diContent)) !== null) {
-            if (pm[1].includes(shortIface)) {
-              implClass = pm[2];
-              implFile = relPath;
-              break;
-            }
-          }
-          if (implClass) break;
+        if (candidates.length > 1) {
+          text += `Other routes matching (${candidates.length - 1}): ${candidates.slice(1, 11).map(r => `\`${r.method} ${r.url}\``).join(', ')}${candidates.length > 11 ? ', …' : ''}\n\n`;
         }
+
+        // 2. The class that runs: preferences as Magento merges them (module order, webapi_rest area)
+        const diFiles = await getDiXmlFiles(root);
+        const diModel = await getDiModel(root);
+        const shortIface = matchedRoute.serviceClass.split('\\').pop();
+        const resolvedImpl = resolveInstance(diModel, matchedRoute.serviceClass, 'webapi_rest');
+        const implClass = resolvedImpl.real !== normalizeClassName(matchedRoute.serviceClass) ? resolvedImpl.real : null;
+        const winningPref = implClass ? diModel.preferences.filter(p => p.for === normalizeClassName(matchedRoute.serviceClass) && (p.area === 'global' || p.area === 'webapi_rest')).pop() : null;
+        const implFile = winningPref ? winningPref.file : null;
 
         if (implClass) {
           text += `## Implementation\n\n`;
@@ -8154,7 +8063,7 @@ const _callToolHandler = async (request) => {
           text += `- **di.xml:** \`${implFile}\`\n\n`;
 
           // 3. Read the implementation method body
-          const implPhpFile = findClassFile(root, implClass);
+          const implPhpFile = findClassFileFast(root, implClass);
           if (implPhpFile) {
             const relImpl = implPhpFile.replace(root + '/', '');
             const body = readFullMethodBody(implPhpFile, matchedRoute.serviceMethod);
@@ -8191,7 +8100,7 @@ const _callToolHandler = async (request) => {
             const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
             let tm;
             while ((tm = typeBlockRegex.exec(diContent)) !== null) {
-              if (tm[1].includes(implShort)) {
+              if (normalizeClassName(tm[1]) === normalizeClassName(implClass)) {
                 text += `\n## DI Arguments — \`${relPath}\`\n\n`;
                 text += '```xml\n' + tm[0] + '\n```\n';
               }
@@ -8205,7 +8114,7 @@ const _callToolHandler = async (request) => {
           const typeBlockRegex = /<type\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/type>/g;
           let tm;
           while ((tm = typeBlockRegex.exec(diContent)) !== null) {
-            if (tm[1].includes(shortIface) && tm[2].includes('<plugin')) {
+            if (normalizeClassName(tm[1]) === normalizeClassName(matchedRoute.serviceClass) && tm[2].includes('<plugin')) {
               text += `\n## Plugins on \`${tm[1]}\` — \`${relPath}\`\n\n`;
               text += '```xml\n' + tm[0] + '\n```\n';
             }
@@ -8407,7 +8316,15 @@ async function getConfigModel(root, kind) {
     cron: [['crontab.xml'], ['config.xml']],
     dbschema: [['db_schema.xml']],
   }[kind];
-  const lists = specs.map(([fileName]) => moduleConfigFiles(idx, exists, fileName));
+  // A composer install: the files Magento reads. Otherwise (a partial checkout, a fixture) which files
+  // count is unknown — every etc/<file> outside tests and modules disabled in config.php, module order.
+  const listFor = async fileName => (moduleFilesCache.installed
+    ? moduleConfigFiles(idx, exists, fileName)
+    : (await moduleEtcGlob(root, `**/etc/${fileName}`)).map(rel => ({ relPath: rel, module: idx.moduleOf(rel) }))
+      .filter(f => idx.isEnabled(f.module) !== false)
+      .sort((a, b) => idx.orderOfFile(a.relPath) - idx.orderOfFile(b.relPath)));
+  const lists = [];
+  for (const [fileName] of specs) lists.push(await listFor(fileName));
   if (kind === 'dbschema' && exists('app/etc/db_schema.xml')) lists[0].push({ relPath: 'app/etc/db_schema.xml', module: null });
   const stamp = lists.flat().map(f => {
     try { const st = statSync(path.join(root, f.relPath)); return `${f.relPath}:${st.mtimeMs}:${st.size}`; } catch { return f.relPath; }
@@ -8423,12 +8340,23 @@ async function getConfigModel(root, kind) {
   else if (kind === 'cron') model = buildCronModel(load(lists[0]), load(lists[1]));
   else model = buildDbSchemaModel(load(lists[0]));
   const unread = specs.flatMap(([fileName]) => unreadModuleConfigFiles(idx, exists, fileName));
-  const result = { model, files: lists.flat(), unread };
+  // A file DOMDocument cannot load fails its whole reader in Magento; parseXml still salvages it, so
+  // the answers say so instead of presenting its declarations as loaded (review of #31)
+  const rejected = [];
+  for (const f of load(lists.flat())) {
+    const errors = checkXmlWellFormed(f.content);
+    if (errors.length) rejected.push({ relPath: f.relPath, line: errors[0].line, message: errors[0].message });
+  }
+  const result = { model, files: lists.flat(), unread, rejected };
   configModelCache.set(kind, { root, stamp, model: result });
   return result;
 }
 
 const loc = (relPath, line) => `\`${relPath}${line ? ':' + line : ''}\``;
+const rejectedNote = (rejected, what) => (rejected?.length
+  ? `> ⚠️ **Magento rejects ${rejected.length} ${what} file(s)** — not well-formed, so the whole ${what} configuration fails to load; the answer shows what the files say, not what loads:\n` +
+    rejected.slice(0, 5).map(r => `> - ${loc(r.relPath, r.line)} — ${r.message.split('\n')[0]}\n`).join('') + '\n'
+  : '');
 const unreadNote = unread => (unread.length
   ? `\n_Not read — module disabled or not installed: ${unread.slice(0, 8).map(u => `${u.module} (${loc(u.relPath)})`).join(', ')}${unread.length > 8 ? `, … ${unread.length - 8} more` : ''}._\n`
   : '');
@@ -8441,7 +8369,7 @@ function realClassNote(diModel, cls, area) {
 }
 
 async function apiText(root, { query = '', method } = {}) {
-  const { model, unread } = await getConfigModel(root, 'webapi');
+  const { model, unread, rejected } = await getConfigModel(root, 'webapi');
   const diModel = await getDiModel(root).catch(() => null);
   const idx = await getModuleIndex(root);
   const q = String(query).trim();
@@ -8454,6 +8382,7 @@ async function apiText(root, { query = '', method } = {}) {
     return r.url.toLowerCase().includes(ql) || r.serviceMethod === q || (r.serviceClass || '').split('\\').pop() === q;
   }).sort((a, b) => a.url.localeCompare(b.url) || a.method.localeCompare(b.method));
   let text = `## Web API routes${q ? ` matching \`${q}\`` : ''}${method ? ` (${String(method).toUpperCase()})` : ''} — webapi.xml, merged as Magento merges it\n\n`;
+  text += rejectedNote(rejected, 'webapi.xml');
   text += `_Exact: every route whose URL contains the query, whose service method or class short name equals it, or — for a class name — whose service is that class or resolves to it. ${routes.length} of ${model.size} routes._\n\n`;
   for (const r of routes) {
     const first = r.declarations[0];
@@ -8485,7 +8414,7 @@ function graphqlSchemaReaders(diModel, idx) {
 }
 
 async function graphqlText(root, { query = '', schemaType } = {}) {
-  const { model, unread } = await getConfigModel(root, 'graphql');
+  const { model, unread, rejected } = await getConfigModel(root, 'graphql');
   const { types, errors } = model;
   const diModel = await getDiModel(root).catch(() => null);
   const idx = await getModuleIndex(root);
@@ -8510,6 +8439,7 @@ async function graphqlText(root, { query = '', schemaType } = {}) {
     }
   }
   let text = `## GraphQL schema${q ? ` matching \`${q}\`` : ''}${schemaType ? ` (${schemaType})` : ''} — schema.graphqls, merged as Magento merges it\n\n`;
+  text += rejectedNote(rejected, 'schema.graphqls');
   text += '_Exact over the files: types whose name contains the query, fields named exactly as the query (Query / Mutation: containing it), resolver classes containing it. Interface fields are copied into implementing types, as Magento does._\n\n';
   if (fields.length) {
     text += `### Fields (${fields.length})\n`;
@@ -8546,11 +8476,12 @@ async function graphqlText(root, { query = '', schemaType } = {}) {
 }
 
 async function cronText(root, { jobName = '' } = {}) {
-  const { model, unread } = await getConfigModel(root, 'cron');
+  const { model, unread, rejected } = await getConfigModel(root, 'cron');
   const q = String(jobName).trim().toLowerCase();
   const jobs = [...model.values()].filter(j => !q || j.name.toLowerCase().includes(q) || j.group.toLowerCase().includes(q) ||
     (j.instance || '').toLowerCase().includes(q)).sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name));
   let text = `## Cron jobs${q ? ` matching \`${jobName}\`` : ''} — crontab.xml + crontab defaults of config.xml, merged as Magento merges them\n\n`;
+  text += rejectedNote(rejected, 'crontab.xml / config.xml');
   text += `_Exact over the files: jobs whose name, group or class contains the query. ${jobs.length} of ${model.size} jobs._\n\n`;
   for (const j of jobs) {
     const when = j.schedule ? `schedule \`${j.schedule}\`` : j.configPath ? `schedule from config \`${j.configPath}\`` : '_no schedule in files_';
@@ -8563,10 +8494,10 @@ async function cronText(root, { jobName = '' } = {}) {
 }
 
 async function dbSchemaText(root, { tableName = '' } = {}) {
-  const { model, unread } = await getConfigModel(root, 'dbschema');
+  const { model, unread, rejected } = await getConfigModel(root, 'dbschema');
   const q = String(tableName).trim();
   const exact = model.get(q);
-  let text = '';
+  let text = rejectedNote(rejected, 'db_schema.xml');
   if (!exact) {
     const matches = [...model.values()].filter(t => t.name.includes(q.toLowerCase())).sort((a, b) => a.name.localeCompare(b.name));
     text += `## Tables matching \`${q}\` — db_schema.xml, merged as Magento merges it\n\n`;

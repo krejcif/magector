@@ -205,6 +205,20 @@ async function main() {
     t = await c.call('magento_find_db_schema', { tableName: 'acme' });
     check('find_db_schema: a partial name lists the tables; a disabled module\'s table is not declared', t, { has: ['`acme_note` —', '`acme_note_replica` —'], hasNot: ['`acme_off`'] });
 
+    // Tools that read the same files agree (review of #31: old readers next to the new models)
+    t = await c.call('magento_trace_flow', { entryPoint: 'acmeNote', entryType: 'graphql' });
+    check('trace_flow: a GraphQL operation resolves to the Query field\'s resolver, not an earlier type\'s field of the same name (was: first matching line)', t, {
+      has: ['"summary":"GraphQL acmeNote → Acme\\\\Base\\\\Model\\\\Resolver\\\\Note"', '"resolver":{"className":"Acme\\\\Base\\\\Model\\\\Resolver\\\\Note"'],
+    });
+    t = await c.call('magento_impact_analysis', { className: 'Acme\\Base\\Model\\RestNoteRepository' });
+    check('impact_analysis: a route whose service resolves to the class through a webapi_rest preference is listed (was: global preferences only)', t, {
+      has: ['POST /V1/acme/notes → Acme\\Base\\Api\\NoteRepositoryInterface::save (preference → Acme\\Base\\Model\\RestNoteRepository)'],
+    });
+    t = await c.call('magento_trace_api', { url: '/V1/acme/notes' });
+    check('trace_api: the exact URL wins over a longer one declared first (was: first substring match, both ways)', t, {
+      has: ['**URL:** `POST /V1/acme/notes`', 'Other routes matching (1)'],
+    });
+
     // Module discovery (the fixture is a composer install: vendor/composer/autoload_files.php)
     t = await c.call('magento_find_api', { query: '/V1/acme/' });
     check('modules: a module registered by a registration.php that includes */registration.php is read (Mirakl\'s layout)', t, {
@@ -279,6 +293,11 @@ async function main() {
     check('fresh: a module enabled mid-session (config.php + registration) is read', t, { has: ['**GET /V1/acme/late**'] });
     t = await lc.call('magento_find_event_dispatchers', { eventName: 'acme_fresh_event' });
     check('fresh: a PHP dispatcher added mid-session is found', t, { has: ['FreshDispatcher'] });
+    w('app/code/Acme/Late/etc/webapi.xml', '<?xml version="1.0"?>\n<routes>\n  <route url="/V1/acme/late" method="GET"><service class="Acme\\Late\\Api\\LateInterface" method="get"/>\n</routes>\n');
+    t = await lc.call('magento_find_api', { query: '/V1/acme/' });
+    check('find_api: a webapi.xml Magento rejects (not well-formed) is flagged — its declarations are not presented as loaded (review of #31)', t, {
+      has: ['**Magento rejects 1 webapi.xml file(s)**', '`app/code/Acme/Late/etc/webapi.xml:4` — Opening and ending tag mismatch: route line 3 and routes'],
+    });
   } finally {
     lc.stop();
     rmSync(live, { recursive: true, force: true });

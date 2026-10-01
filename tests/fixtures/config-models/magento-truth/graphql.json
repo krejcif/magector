@@ -8,6 +8,15 @@
         "fromFiles": true,
         "typeResolver": null
     },
+    "AcmeAaaBefore": {
+        "kind": "graphql_type",
+        "fields": {
+            "acmeNote": "Acme\\Base\\Model\\Resolver\\NotTheQueryField"
+        },
+        "dynamicFields": {},
+        "fromFiles": true,
+        "typeResolver": null
+    },
     "Query": {
         "kind": "graphql_type",
         "fields": {

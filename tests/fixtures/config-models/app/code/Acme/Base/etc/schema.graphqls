@@ -1,4 +1,8 @@
 # type Commented { ghost: String @resolver(class: "Acme\\Base\\Ghost") }
+type AcmeAaaBefore {
+    acmeNote: String @resolver(class: "Acme\\Base\\Model\\Resolver\\NotTheQueryField")
+}
+
 type Query {
     acmeNotes(
         filter: AcmeNoteFilter

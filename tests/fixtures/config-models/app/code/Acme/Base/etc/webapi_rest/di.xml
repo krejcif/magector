@@ -3,4 +3,5 @@
     <type name="Acme\Base\Model\NoteRepository">
         <plugin name="acme_note_plugin" type="Acme\Base\Plugin\NotePlugin"/>
     </type>
+    <preference for="Acme\Base\Api\NoteRepositoryInterface" type="Acme\Base\Model\RestNoteRepository"/>
 </config>
