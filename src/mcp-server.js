@@ -2430,14 +2430,18 @@ async function getDiXmlFiles(root) {
 // Parsed once per di.xml file set (same lifetime as diXmlCache). See src/di-config.js.
 
 const diModelCache = { root: null, stamp: null, model: null, ancestorsOf: null, membersOf: null };
-const psr4Cache = { root: null, stamp: null, prefixes: null };
+const psr4Cache = { root: null, stamp: null, checkedAt: 0, prefixes: null };
 
 /**
  * PSR-4 prefixes from vendor/composer/autoload_psr4.php, longest first. Resolves vendor classes
  * regardless of the package name (magento/module-*, mage-os/module-*, third-party layouts).
  */
 function getPsr4Prefixes(root) {
-  const stamp = fileStamp(path.join(root, 'vendor', 'composer', 'autoload_psr4.php'));   // composer dump-autoload
+  // Called for every class lookup (thousands per find_implementors): the map file is checked for a
+  // composer dump-autoload at most once per FILE_LIST_TTL_MS
+  if (psr4Cache.root === root && psr4Cache.prefixes && Date.now() - psr4Cache.checkedAt < FILE_LIST_TTL_MS) return psr4Cache.prefixes;
+  const stamp = fileStamp(path.join(root, 'vendor', 'composer', 'autoload_psr4.php'));
+  psr4Cache.checkedAt = Date.now();
   if (psr4Cache.root === root && psr4Cache.stamp === stamp && psr4Cache.prefixes) return psr4Cache.prefixes;
   psr4Cache.stamp = stamp;
   const prefixes = [];
@@ -8346,7 +8350,7 @@ async function getConfigModel(root, kind) {
   // A file DOMDocument cannot load fails its whole reader in Magento; parseXml still salvages it, so
   // the answers say so instead of presenting its declarations as loaded (review of #31)
   const rejected = [];
-  for (const f of load(lists.flat())) {
+  for (const f of load(lists.flat()).filter(x => x.relPath.endsWith('.xml'))) {   // schema.graphqls is not XML
     const errors = checkXmlWellFormed(f.content);
     if (errors.length) rejected.push({ relPath: f.relPath, line: errors[0].line, message: errors[0].message });
   }

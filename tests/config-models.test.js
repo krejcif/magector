@@ -132,6 +132,7 @@ async function main() {
     });
     t = await c.call('magento_find_graphql', { query: 'acme', schemaType: 'query' });
     check('find_graphql: `extend type Query` in another module adds its fields to Query', t, { has: ['**Query.acmeExtNotes** → `Acme\\Ext\\Model\\Resolver\\ExtNotes`'] });
+    check('find_graphql: schema.graphqls is not XML — never flagged as rejected by the XML check', t, { hasNot: ['Magento rejects'] });
     check('find_graphql: @cache identity is shown', t, { has: ['cache: `Acme\\Base\\Model\\Resolver\\Note\\Identity`'] });
     check('find_graphql: only etc/schema.graphqls is read — not etc/graphql/*.graphqls (was: every *.graphqls)', t, { hasNot: ['acmeNotRead'] });
     check('find_graphql: a disabled module\'s schema is not read', t, { hasNot: ['acmeOff'] });
