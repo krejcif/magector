@@ -19,7 +19,7 @@
 
 import { spawn, spawnSync } from 'child_process';
 import { createInterface } from 'readline';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, cpSync, writeFileSync, mkdirSync, readFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -47,12 +47,12 @@ function check(name, text, { has = [], hasNot = [] }) {
 }
 
 class McpClient {
-  constructor() { this.nextId = 1; this.pending = new Map(); }
+  constructor(root = FIXTURE, env = {}) { this.root = root; this.env = env; this.nextId = 1; this.pending = new Map(); }
   async start() {
     this.dbDir = mkdtempSync(path.join(os.tmpdir(), 'magector-cm-'));
     this.child = spawn(process.execPath, [SERVER_PATH], {
-      cwd: FIXTURE,
-      env: { ...process.env, MAGENTO_ROOT: FIXTURE, MAGECTOR_DB: path.join(this.dbDir, 'index.db'), MAGECTOR_AUTO_INDEX: '0' },
+      cwd: this.root,
+      env: { ...process.env, MAGENTO_ROOT: this.root, MAGECTOR_DB: path.join(this.dbDir, 'index.db'), MAGECTOR_AUTO_INDEX: '0', ...this.env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child.stderr.on('data', () => {});
@@ -241,6 +241,40 @@ async function main() {
     check('module_structure: states a disabled module', t, { has: ['**disabled** in app/etc/config.php'] });
   } finally {
     c.stop();
+  }
+
+  // ── 3. Files changed mid-session (review of #31: session caches were never invalidated) ──
+  const live = mkdtempSync(path.join(os.tmpdir(), 'magector-live-'));
+  cpSync(FIXTURE, live, { recursive: true, verbatimSymlinks: true });
+  const w = (rel, text) => { mkdirSync(path.dirname(path.join(live, rel)), { recursive: true }); writeFileSync(path.join(live, rel), text); };
+  const lc = new McpClient(live, { MAGECTOR_FILE_LIST_TTL_MS: '0', MAGECTOR_PHP_LIST_TTL_MS: '0' });
+  await lc.start();
+  try {
+    let t = await lc.call('magento_find_observer', { eventName: 'acme_fresh_event' });
+    const before = t;
+    await lc.call('magento_find_preference', { interfaceName: 'Acme\\Base\\Api\\FreshInterface' });
+    await lc.call('magento_find_api', { query: '/V1/acme/late' });
+    await lc.call('magento_find_event_dispatchers', { eventName: 'acme_fresh_event' });
+    w('app/code/Acme/Base/etc/frontend/events.xml', '<?xml version="1.0"?>\n<config><event name="acme_fresh_event"><observer name="acme_fresh_observer" instance="Acme\\Base\\Observer\\Fresh"/></event></config>\n');
+    const diPath = 'app/code/Acme/Base/etc/di.xml';
+    w(diPath, readFileSync(path.join(live, diPath), 'utf-8').replace('</config>', '    <preference for="Acme\\Base\\Api\\FreshInterface" type="Acme\\Base\\Model\\Fresh"/>\n</config>'));
+    w('app/code/Acme/Late/etc/module.xml', '<?xml version="1.0"?>\n<config><module name="Acme_Late"/></config>\n');
+    w('app/code/Acme/Late/registration.php', "<?php\n\\Magento\\Framework\\Component\\ComponentRegistrar::register(\\Magento\\Framework\\Component\\ComponentRegistrar::MODULE, 'Acme_Late', __DIR__);\n");
+    w('app/code/Acme/Late/etc/webapi.xml', '<?xml version="1.0"?>\n<routes><route url="/V1/acme/late" method="GET"><service class="Acme\\Late\\Api\\LateInterface" method="get"/><resources><resource ref="anonymous"/></resources></route></routes>\n');
+    w('app/etc/config.php', readFileSync(path.join(live, 'app/etc/config.php'), 'utf-8').replace("'Acme_Off' => 0,", "'Acme_Off' => 0,\n        'Acme_Late' => 1,"));
+    w('app/code/Acme/Base/Model/FreshDispatcher.php', "<?php\nnamespace Acme\\Base\\Model;\n\nclass FreshDispatcher\n{\n    public function run()\n    {\n        $this->eventManager->dispatch('acme_fresh_event', []);\n    }\n}\n");
+    t = await lc.call('magento_find_observer', { eventName: 'acme_fresh_event' });
+    check('fresh: an events.xml added mid-session is read (was: invisible until restart)', t, { has: ['acme_fresh_observer'] });
+    ok('fresh: … and was not there before', !before.includes('acme_fresh_observer'));
+    t = await lc.call('magento_find_preference', { interfaceName: 'Acme\\Base\\Api\\FreshInterface' });
+    check('fresh: a preference added to an existing di.xml mid-session is read', t, { has: ['Acme\\Base\\Model\\Fresh'] });
+    t = await lc.call('magento_find_api', { query: '/V1/acme/late' });
+    check('fresh: a module enabled mid-session (config.php + registration) is read', t, { has: ['**GET /V1/acme/late**'] });
+    t = await lc.call('magento_find_event_dispatchers', { eventName: 'acme_fresh_event' });
+    check('fresh: a PHP dispatcher added mid-session is found', t, { has: ['FreshDispatcher'] });
+  } finally {
+    lc.stop();
+    rmSync(live, { recursive: true, force: true });
   }
 
   console.log(`\n  ${passed} passed, ${failed} failed\n`);

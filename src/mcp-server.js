@@ -2402,13 +2402,18 @@ function formatSearchResults(results) {
  * (findDiWiring, traceDependency, magento_find_plugin all scan di.xml).
  */
 const diXmlCache = {
-  /** @type {Map<string, string>} path → file content */
+  /** @type {Map<string, {stamp: string, content: string|null}>} path → file content and its mtime/size */
   files: new Map(),
-  /** @type {string[]|null} cached list of all di.xml absolute paths */
-  paths: null,
+  /** @type {string|null} the file set and every file's mtime/size — a model built from it is current while it holds */
+  stamp: null,
   /** @type {string|null} root used for caching (invalidate if root changes) */
   root: null
 };
+
+/** mtime + size of a file ('-' when it is gone) — enough to see an edit, cheap enough to check per call. */
+function fileStamp(absPath) {
+  try { const st = statSync(absPath); return `${st.mtimeMs}:${st.size}`; } catch { return '-'; }
+}
 
 /**
  * Get all di.xml file paths and their contents, using session cache.
@@ -2416,41 +2421,50 @@ const diXmlCache = {
  * @returns {Promise<Array<{absPath: string, relPath: string, content: string}>>}
  */
 async function getDiXmlFiles(root) {
-  if (diXmlCache.root !== root || !diXmlCache.paths) {
+  if (diXmlCache.root !== root) {
     diXmlCache.root = root;
-    diXmlCache.paths = await moduleEtcGlob(root, '**/etc/**/di.xml', { absolute: true });
     diXmlCache.files.clear();
   }
+  // The file list is current (moduleEtcGlob re-lists etc/ after FILE_LIST_TTL_MS); a file whose
+  // mtime/size changed is read again — so an added, removed or edited di.xml is seen mid-session
+  const paths = await moduleEtcGlob(root, '**/etc/**/di.xml', { absolute: true });
   const results = [];
-  for (const absPath of diXmlCache.paths) {
-    let content = diXmlCache.files.get(absPath);
+  const stamps = [];
+  for (const absPath of paths) {
+    const stamp = fileStamp(absPath);
+    stamps.push(`${absPath}@${stamp}`);
+    const hit = diXmlCache.files.get(absPath);
+    let content = hit && hit.stamp === stamp ? hit.content : undefined;
     if (content === undefined) {
       try { content = readFileSync(absPath, 'utf-8'); } catch { content = null; }
       // Blank out XML comments (same length, newlines kept) so commented-out declarations are never
       // matched by the regex-based scanners and offsets / line numbers stay valid. CDATA is matched
       // first so a "<!--" inside it does not blank everything up to the next comment's "-->".
       if (content) content = content.replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->/g, m => m.startsWith('<!--') ? m.replace(/[^\n]/g, ' ') : m);
-      diXmlCache.files.set(absPath, content);
+      diXmlCache.files.set(absPath, { stamp, content });
     }
     if (content !== null) {
       results.push({ absPath, relPath: absPath.replace(root + '/', ''), content });
     }
   }
+  diXmlCache.stamp = `${moduleFilesCache.generation}#${stamps.join('|')}`;
   return results;
 }
 
 // ─── Structural DI model ────────────────────────────────────────
 // Parsed once per di.xml file set (same lifetime as diXmlCache). See src/di-config.js.
 
-const diModelCache = { root: null, paths: null, model: null, ancestorsOf: null, membersOf: null };
-const psr4Cache = { root: null, prefixes: null };
+const diModelCache = { root: null, stamp: null, model: null, ancestorsOf: null, membersOf: null };
+const psr4Cache = { root: null, stamp: null, prefixes: null };
 
 /**
  * PSR-4 prefixes from vendor/composer/autoload_psr4.php, longest first. Resolves vendor classes
  * regardless of the package name (magento/module-*, mage-os/module-*, third-party layouts).
  */
 function getPsr4Prefixes(root) {
-  if (psr4Cache.root === root && psr4Cache.prefixes) return psr4Cache.prefixes;
+  const stamp = fileStamp(path.join(root, 'vendor', 'composer', 'autoload_psr4.php'));   // composer dump-autoload
+  if (psr4Cache.root === root && psr4Cache.stamp === stamp && psr4Cache.prefixes) return psr4Cache.prefixes;
+  psr4Cache.stamp = stamp;
   const prefixes = [];
   try {
     const src = readFileSync(path.join(root, 'vendor', 'composer', 'autoload_psr4.php'), 'utf-8');
@@ -2492,9 +2506,9 @@ function findClassFileFast(root, className) {
 
 async function getDiModel(root) {
   const files = await getDiXmlFiles(root);
-  if (diModelCache.root !== root || diModelCache.paths !== diXmlCache.paths || !diModelCache.model) {
+  if (diModelCache.root !== root || diModelCache.stamp !== diXmlCache.stamp || !diModelCache.model) {
     diModelCache.root = root;
-    diModelCache.paths = diXmlCache.paths;
+    diModelCache.stamp = diXmlCache.stamp;
     diModelCache.model = buildDiModel(files);
     // "Last declaration wins" in module load order, as Magento merges configuration
     applyModuleOrder(diModelCache.model, await getModuleIndex(root));
@@ -2509,12 +2523,20 @@ async function getDiModel(root) {
 // discoverModuleXmls in src/magento-config.js). Their etc/ directories are listed once per session
 // instead of walking the whole tree for every `**/etc/…` pattern (~1 s per walk on 73k files).
 
-const moduleFilesCache = { root: null, moduleXmls: null, etcFiles: null, installed: false };
+// Freshness (review of #31): the module set changes only with these files, so it is rediscovered when
+// one of them changes (a stat each, <0.1 ms); the etc/ listing is redone after FILE_LIST_TTL_MS
+// (~20 ms on 600 modules), so files added mid-session are seen within a couple of seconds.
+const FILE_LIST_TTL_MS = Number(process.env.MAGECTOR_FILE_LIST_TTL_MS ?? 2000);
+const REGISTRATION_FILES = ['app/etc/config.php', 'vendor/composer/autoload_files.php', 'app/etc/registration_globlist.php'];
+const moduleFilesCache = { root: null, stamp: null, generation: 0, moduleXmls: null, etcFiles: null, listedAt: 0, installed: false };
 
 async function discoverModuleXmls(root) {
-  if (moduleFilesCache.root === root && moduleFilesCache.moduleXmls) return moduleFilesCache.moduleXmls;
+  const stamp = REGISTRATION_FILES.map(f => fileStamp(path.join(root, f))).join('|');
+  if (moduleFilesCache.root === root && moduleFilesCache.stamp === stamp && moduleFilesCache.moduleXmls) return moduleFilesCache.moduleXmls;
   const { moduleXmls, installed } = await discoverModules(root);
   moduleFilesCache.root = root;
+  moduleFilesCache.stamp = stamp;
+  moduleFilesCache.generation++;
   moduleFilesCache.installed = installed;
   moduleFilesCache.moduleXmls = moduleXmls;
   moduleFilesCache.etcFiles = null;
@@ -2524,8 +2546,10 @@ async function discoverModuleXmls(root) {
 /** Every file under the etc/ of each registered module and under app/etc (relative paths). */
 async function getModuleEtcFiles(root) {
   const idx = await getModuleIndex(root);
-  if (moduleFilesCache.root === root && moduleFilesCache.etcFiles) return moduleFilesCache.etcFiles;
+  const fresh = Date.now() - moduleFilesCache.listedAt < FILE_LIST_TTL_MS;
+  if (moduleFilesCache.root === root && moduleFilesCache.etcFiles && fresh) return moduleFilesCache.etcFiles;
   moduleFilesCache.etcFiles = listModuleEtcFiles(root, idx);
+  moduleFilesCache.listedAt = Date.now();
   return moduleFilesCache.etcFiles;
 }
 
@@ -2540,11 +2564,12 @@ async function moduleEtcGlob(root, pattern, { absolute = false } = {}) {
   return absolute ? files.map(f => path.join(root, f)) : files;
 }
 
-const moduleIndexCache = { root: null, idx: null };
+const moduleIndexCache = { root: null, generation: -1, idx: null };
 
 /** Modules, their load order (app/etc/config.php) and dependencies (<sequence>, composer require). */
 async function getModuleIndex(root) {
-  if (moduleIndexCache.root === root && moduleIndexCache.idx) return moduleIndexCache.idx;
+  await discoverModuleXmls(root);              // rediscovers when config.php / the registrations changed
+  if (moduleIndexCache.root === root && moduleIndexCache.generation === moduleFilesCache.generation && moduleIndexCache.idx) return moduleIndexCache.idx;
   let moduleXmls = [];
   try {
     const files = await discoverModuleXmls(root);
@@ -2558,6 +2583,7 @@ async function getModuleIndex(root) {
     try { return JSON.parse(readFileSync(path.join(root, dir, 'composer.json'), 'utf-8')); } catch { return null; }
   };
   moduleIndexCache.root = root;
+  moduleIndexCache.generation = moduleFilesCache.generation;
   moduleIndexCache.idx = buildModuleIndex(moduleXmls, configPhp, composerJson);
   return moduleIndexCache.idx;
 }
@@ -4411,11 +4437,13 @@ async function traceDataFlow(attributeKey, modelClass) {
 // ─── Find Event Dispatchers ────────────────────────────────────
 // Find all PHP locations where a specific Magento event is dispatched
 
-const phpFileListCache = { root: null, files: null };
+const phpFileListCache = { root: null, files: null, at: 0 };
+const PHP_LIST_TTL_MS = Number(process.env.MAGECTOR_PHP_LIST_TTL_MS ?? 30000);
 
-/** Every PHP file of the tree except tests — one walk per session (~1.3 s on 73k files). */
+/** Every PHP file of the tree except tests — walked again after PHP_LIST_TTL_MS (~1.3 s on 73k files). */
 async function getPhpFileList(root) {
-  if (phpFileListCache.root !== root || !phpFileListCache.files) {
+  if (phpFileListCache.root !== root || !phpFileListCache.files || Date.now() - phpFileListCache.at >= PHP_LIST_TTL_MS) {
+    phpFileListCache.at = Date.now();
     phpFileListCache.files = await glob('**/*.php', {
       cwd: root, absolute: true, nodir: true,
       ignore: ['**/test/**', '**/tests/**', '**/Test/**', '**/Tests/**'],
