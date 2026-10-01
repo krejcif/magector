@@ -300,6 +300,20 @@ async function main() {
       hasNot: ['app/code/Acme/Mix/Observer/Stock.php'],
     });
 
+    // Seen on a Magento 2.4.5 project: Magento runs the plugins of the class a preference substitutes
+    t = await client.call('magento_find_plugin', { targetClass: 'Acme\\Core\\Model\\Importer' });
+    check('find_plugin: a plugin on the class a preference substitutes for the target runs too (was: missing)', t, {
+      has: ['**better_importer_plugin** → `Acme\\Ext\\Plugin\\BetterImporterPlugin` [global] (on `Acme\\Ext\\Model\\BetterImporter` — the class that runs for this type, preference)'],
+    });
+    t = await client.call('magento_find_plugin', { targetClass: 'Acme\\Core\\Model\\AbstractSource' });
+    check('find_plugin: an abstract class is marked — its plugins run on its concrete subclasses, not on it (was: reported as running)', t, {
+      has: ['**abstract_source_plugin**', '[abstract class — does not run on it directly; runs on its concrete subclasses]'],
+    });
+    t = await client.call('magento_find_plugin', { targetClass: 'Acme\\Core\\Model\\TableSource' });
+    check('find_plugin: … and on a concrete subclass the inherited plugin runs, unmarked', t, {
+      has: ['**abstract_source_plugin** → `Acme\\Ext\\Plugin\\SourcePlugin` [global] (declared on `Acme\\Core\\Model\\AbstractSource`)'], hasNot: ['[abstract class'],
+    });
+
     // Review of #31: dependencies come from constructor hints as written — short names imported by
     // `use` (here one aliased) — and must be qualified by the file's namespace and imports
     t = await client.call('magento_trace_call_chain', { className: 'Acme\\Core\\Model\\Checkout', methodName: 'place', depth: 3 });

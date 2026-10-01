@@ -2871,21 +2871,38 @@ async function collectPluginRegistrations(targetClass, targetMethod) {
     const model = await getDiModel(fpRoot);
     const normalizedTarget = normalizeClassName(targetClass);
     if (normalizedTarget.includes('\\')) {
-      const eff = effectivePluginDeclarations(model, normalizedTarget, await getAncestorResolver(fpRoot));
+      const ancestorsOf = await getAncestorResolver(fpRoot);
+      const eff = effectivePluginDeclarations(model, normalizedTarget, ancestorsOf);
       if (eff.virtual) virtualOf = eff.real;
-      for (const d of eff.declarations) {
-        diRegistrations.push({
-          target: d.target,
-          pluginName: d.name,
-          pluginClass: d.type,
-          disabled: d.disabled,
-          sortOrder: d.sortOrder,
-          isSubNamespace: false,
-          inheritedFrom: d.inheritedFrom || null,
-          onVirtualType: !!d.onVirtualType,
-          area: d.area,
-          file: d.file
-        });
+      const toReg = (d, extra = {}) => ({
+        target: d.target,
+        pluginName: d.name,
+        pluginClass: d.type,
+        disabled: d.disabled,
+        sortOrder: d.sortOrder,
+        isSubNamespace: false,
+        inheritedFrom: d.inheritedFrom || null,
+        onVirtualType: !!d.onVirtualType,
+        area: d.area,
+        file: d.file,
+        ...extra,
+      });
+      for (const d of eff.declarations) diRegistrations.push(toReg(d));
+      // Code that asks for this type gets the class its preference names (per area): the plugins of
+      // that class — declared on it or inherited from its parents / interfaces — run too
+      // (seen on a project: a plugin on the subclass a preference substitutes for the requested class)
+      const areas = ['global', ...new Set(model.preferences.filter(p => p.for === normalizedTarget && p.area !== 'global').map(p => p.area))];
+      const seen = new Set(diRegistrations.map(r => `${r.pluginName}|${r.area}|${r.file}|${r.target}`));
+      for (const area of areas) {
+        const runs = resolveInstance(model, normalizedTarget, area).real;
+        if (!runs || runs === normalizedTarget || runs === eff.real) continue;
+        for (const d of effectivePluginDeclarations(model, runs, ancestorsOf).declarations) {
+          if (d.area !== 'global' && d.area !== area) continue;
+          const key = `${d.name}|${d.area}|${d.file}|${d.target}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          diRegistrations.push(toReg(d, { viaPreference: runs, preferenceArea: area }));
+        }
       }
     } else {
       const shortTarget = normalizedTarget.toLowerCase();
@@ -2950,6 +2967,12 @@ async function collectPluginRegistrations(targetClass, targetMethod) {
     const ancestorsOf = await getAncestorResolver(root);
     const membersOf = diModelCache.membersOf;
     classStatus = interceptionStatus(real, null, ancestorsOf, membersOf);
+    // An abstract class is never instantiated itself: its plugins run on its concrete subclasses
+    try {
+      const file = findClassFileFast(root, real);
+      const declared = file && parsePhpFile(readFileSync(file, 'utf-8')).types.find(t => t.fqcn.toLowerCase() === real.toLowerCase());
+      classStatus = { ...classStatus, isAbstract: !!declared?.isAbstract };
+    } catch { /* unreadable: unknown */ }
     for (const reg of diRegistrations) {
       for (const m of reg.methods || []) {
         const st = interceptionStatus(real, m.targetMethod, ancestorsOf, membersOf);
@@ -6342,12 +6365,16 @@ const _callToolHandler = async (request) => {
             const disabledTag = reg.disabled ? ' **[DISABLED]**' : '';
             const sortTag = reg.sortOrder ? ` (sortOrder: ${reg.sortOrder})` : '';
             const targetTag = reg.isSubNamespace ? ` on \`${reg.target.split('\\').pop()}\`` : '';
-            const inheritedTag = reg.inheritedFrom ? ` (declared on \`${reg.inheritedFrom}\`)` : '';
+            const inheritedTag = reg.viaPreference
+              ? ` (on \`${reg.viaPreference}\` — the class that runs for this type, preference${reg.preferenceArea !== 'global' ? ` [${reg.preferenceArea}]` : ''}${reg.inheritedFrom ? `; declared on \`${reg.inheritedFrom}\`` : ''})`
+              : reg.inheritedFrom ? ` (declared on \`${reg.inheritedFrom}\`)` : '';
+            const abstractTag = classStatus?.isAbstract && !reg.viaPreference && !reg.isSubNamespace
+              ? ' **[abstract class — does not run on it directly; runs on its concrete subclasses]**' : '';
             const virtualTag = reg.onVirtualType ? ' **[declared on the virtual type — does not run]**' : '';
             const typeLabel = reg.pluginClass
               ? `\`${reg.pluginClass}\`${reg.virtualOf ? ` (virtual type of \`${reg.virtualOf}\`)` : ''}`
               : '_(no type — changes the declaration of the same name)_';
-            text += `- **${reg.pluginName}**${targetTag} → ${typeLabel} [${reg.area}]${sortTag}${disabledTag}${inheritedTag}${virtualTag} (${reg.file})\n`;
+            text += `- **${reg.pluginName}**${targetTag} → ${typeLabel} [${reg.area}]${sortTag}${disabledTag}${inheritedTag}${virtualTag}${abstractTag} (${reg.file})\n`;
             if (reg.runs) {
               text += `  Runs: \`${reg.runs}\` (preference on the plugin type; methods are registered from \`${reg.virtualOf || reg.pluginClass}\`)\n`;
             }

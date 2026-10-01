@@ -18,4 +18,11 @@
     <type name="Acme\Core\Model\Guarded">
         <plugin name="guard_plugin" disabled="1"/>
     </type>
+    <preference for="Acme\Core\Model\Importer" type="Acme\Ext\Model\BetterImporter"/>
+    <type name="Acme\Ext\Model\BetterImporter">
+        <plugin name="better_importer_plugin" type="Acme\Ext\Plugin\BetterImporterPlugin"/>
+    </type>
+    <type name="Acme\Core\Model\AbstractSource">
+        <plugin name="abstract_source_plugin" type="Acme\Ext\Plugin\SourcePlugin"/>
+    </type>
 </config>
