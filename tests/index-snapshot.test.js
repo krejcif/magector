@@ -140,6 +140,15 @@ async function main() {
 
     r = cli('snapshot', 'load', archive, A);
     ok('the replaced index is kept as index.db.bak', r.status === 0 && existsSync(path.join(A, '.magector', 'index.db.bak')));
+
+    // ── a failure while the files go live: every live file put back ──
+    const D = makeRoot(path.join(tmp, 'failing'));
+    const before = hashes(D);
+    mkdirSync(path.join(D, '.magector', 'index.db.bak', 'x'), { recursive: true });   // the old index cannot be moved aside
+    r = cli('snapshot', 'load', archive, D);
+    const leftovers = readdirSync(path.join(D, '.magector')).filter(f => /\.(restore|prev|new)$|\.db\.manifest$/.test(f));
+    ok('a failure while the files go live: refused, every live file as before', r.status !== 0 && JSON.stringify(hashes(D)) === JSON.stringify(before) && !existsSync(path.join(D, '.magector', 'php-scan.json')), r.stderr);
+    ok('… no staged or kept-aside file left', leftovers.length === 0, leftovers.join(', '));
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

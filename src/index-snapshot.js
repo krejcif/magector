@@ -226,7 +226,8 @@ export async function readSnapshotInfo(file) {
 /**
  * Restore a snapshot into `root`. Everything is written next to the live files first (`*.restore`);
  * only when every entry is complete and matches its checksum do they replace the live ones (the vector
- * index through swapInIndex, the old one kept as .bak). Refuses a snapshot of another Magector
+ * index through swapInIndex, the old one kept as .bak); a failure while they do puts every live file
+ * back, and a manifest that cannot follow the index undoes the swap. Refuses a snapshot of another Magector
  * version — the index format and the PHP scan belong to the version that built them.
  * Returns { meta, restored: [names], rootChanged }.
  */
@@ -271,13 +272,39 @@ export async function restoreSnapshot({ root, dbPath, file, version }) {
       staged.delete('php-scan.json');
     }
   }
-  swapInIndex(dbPath, staged.get('index.db'));
-  restored.push('index.db');
-  if (staged.has('index.manifest')) restored.push('index.manifest');
-  for (const name of ['index.sona', 'sqlite.db', 'php-scan.json']) {
-    if (!staged.has(name)) continue;
-    renameSync(staged.get(name), sources[name]);
-    restored.push(name);
+  // The side files first, each live one kept aside, the index last (swapInIndex undoes its own
+  // renames). A failure anywhere puts every live file back: a restore is all or nothing.
+  const moved = [];                            // [live path, kept-aside path | null]
+  const keepAside = live => {
+    const prev = existsSync(live) ? `${live}.prev` : null;
+    if (prev) renameSync(live, prev);
+    moved.push([live, prev]);
+  };
+  const hadIndex = existsSync(dbPath);
+  try {
+    for (const name of ['index.sona', 'sqlite.db', 'php-scan.json']) {
+      if (!staged.has(name)) continue;
+      keepAside(sources[name]);
+      renameSync(staged.get(name), sources[name]);
+      staged.delete(name);
+      restored.push(name);
+    }
+    keepAside(manifestPath(dbPath));           // swapInIndex drops the live manifest first; kept to put back
+    const { manifestError } = swapInIndex(dbPath, staged.get('index.db'));
+    if (manifestError) {
+      // the new index without its manifest would take every changed file for current
+      if (hadIndex) renameSync(`${dbPath}.bak`, dbPath); else rmSync(dbPath, { force: true });
+      throw new Error(`index.manifest could not be put in place (${manifestError.message})`);
+    }
+  } catch (e) {
+    for (const [live, prev] of moved.reverse()) {
+      rmSync(live, { force: true });
+      if (prev) renameSync(prev, live);
+    }
+    cleanup();
+    throw e;
   }
+  for (const [, prev] of moved) if (prev) rmSync(prev, { force: true });
+  restored.unshift('index.db', ...(staged.has('index.manifest') ? ['index.manifest'] : []));
   return { meta, restored, rootChanged };
 }
