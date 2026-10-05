@@ -94,6 +94,13 @@ async function main() {
     ok("another namespace's live primary lock: no second serve", !s.started(), s.log().split('\n').filter(l => /primary|lock/i.test(l)).slice(-3).join(' | '));
     await s.stop();
 
+    // a live primary of another namespace, of another Magector version: its socket stays
+    root = makeRoot('foreign-version', { 'primary.lock': `4194000\n${OTHER_NAMESPACE}`, 'serve.pid': `4194000\n0.0.1\n${OTHER_NAMESPACE}`, 'serve.sock': '' });
+    s = startServer(root);
+    await sleep(4000);
+    ok("another namespace's serve of another version: its socket is left alone", existsSync(path.join(root, '.magector', 'serve.sock')));
+    await s.stop();
+
     // the same lock, untouched for longer than LOCK_STALE_MS: abandoned, taken over
     root = makeRoot('foreign-stale-lock', { 'primary.lock': `4194000\n${OTHER_NAMESPACE}` });
     const old = new Date(Date.now() - 120000);

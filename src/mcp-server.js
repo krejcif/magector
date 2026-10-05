@@ -212,6 +212,9 @@ const SOCK_PATH = path.join(config.magentoRoot, '.magector', 'serve.sock');
 const SERVE_RELOAD_WAIT_MS = envMs('MAGECTOR_SERVE_WAIT_MS', 20000);
 const SOCKET_QUERY_TIMEOUT_MS = SERVE_RELOAD_WAIT_MS + 10000;
 const COLD_SEARCH_TIMEOUT_MS = 20000;
+// Everything one search does — waiting for serve, asking it, a cold search — ends within this,
+// under the MCP client's 60s tool timeout.
+const SEARCH_BUDGET_MS = 50000;
 // The primary lock names its holder's PID namespace (src/process-scope.js). An instance of another
 // namespace cannot signal that PID; the holder touches the lock every LOCK_HEARTBEAT_MS, and the
 // lock is taken as abandoned when it has not been touched for LOCK_STALE_MS.
@@ -328,6 +331,10 @@ function acquirePrimaryLock() {
   } catch {
     // Lock file exists — check if holder is alive
     const holder = readPidRecord(PRIMARY_LOCK_PATH);
+    if (!holder) {
+      // empty or unreadable: an instance between creating and writing it — taken over only once stale
+      try { if (Date.now() - statSync(PRIMARY_LOCK_PATH).mtimeMs < LOCK_STALE_MS) return false; } catch {}
+    }
     if (holder?.ours && holder.pid === process.pid) return true; // we already hold it (e.g. re-acquiring after releasing it ourselves)
     if (isRecordAlive(holder, PRIMARY_LOCK_PATH, LOCK_STALE_MS)) return false; // another instance is alive and primary
     // holder is dead (or, in another PID namespace, has not touched the lock for LOCK_STALE_MS): take over
@@ -336,6 +343,9 @@ function acquirePrimaryLock() {
     const jitterMs = Math.floor(Math.random() * 200) + 50;
     const start = Date.now();
     while (Date.now() - start < jitterMs) { /* busy-wait for sub-second jitter */ }
+    // Another instance may have taken it over during the jitter: unlinking its fresh lock would make two primaries
+    const again = readPidRecord(PRIMARY_LOCK_PATH);
+    if (again && (again.pid !== holder?.pid || again.scope !== holder?.scope || isRecordAlive(again, PRIMARY_LOCK_PATH, LOCK_STALE_MS))) return false;
     try { unlinkSync(PRIMARY_LOCK_PATH); } catch {}
     try {
       const fd = openSync(PRIMARY_LOCK_PATH, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL);
@@ -1102,8 +1112,9 @@ function startSocketProxy() {
     conn.on('close', () => proxyConnections.delete(conn));
     const rl = createInterface({ input: conn });
     rl.on('line', async (line) => {
+      let req = {};
       try {
-        const req = JSON.parse(line);
+        req = JSON.parse(line);
         // A respawn/spawn may be in flight (serveReady false but serveReadyPromise
         // pending) — wait for it instead of answering "not ready" immediately,
         // which would otherwise send every connected secondary into its own
@@ -1111,13 +1122,16 @@ function startSocketProxy() {
         // Bounded by SERVE_RELOAD_WAIT_MS (a reload takes ~1s below 300k
         // vectors); the client's own socket timeout (SOCKET_QUERY_TIMEOUT_MS)
         // is set above this so it doesn't give up first.
+        const budget = req.timeout || SOCKET_QUERY_TIMEOUT_MS;
+        const t0 = Date.now();
         if (!serveReady && serveReadyPromise) {
-          await Promise.race([serveReadyPromise, new Promise((r) => setTimeout(() => r(false), SERVE_RELOAD_WAIT_MS))]);
+          await Promise.race([serveReadyPromise, new Promise((r) => setTimeout(() => r(false), Math.min(SERVE_RELOAD_WAIT_MS, budget)))]);
         }
-        const resp = await serveQuery(req.command, req.params || {}, req.timeout || SOCKET_QUERY_TIMEOUT_MS);
-        conn.write(JSON.stringify(resp) + '\n');
+        const left = budget - (Date.now() - t0);
+        const resp = left > 0 ? await serveQuery(req.command, req.params || {}, left) : { ok: false, error: 'Serve process not ready' };
+        conn.write(JSON.stringify({ ...resp, tag: req.tag }) + '\n');
       } catch (err) {
-        conn.write(JSON.stringify({ ok: false, error: err.message }) + '\n');
+        conn.write(JSON.stringify({ ok: false, error: err.message, tag: req.tag }) + '\n');
       }
     });
     conn.on('error', () => {}); // ignore client disconnect
@@ -1201,9 +1215,13 @@ function tryConnectSocket() {
       const rl = createInterface({ input: conn });
       let pendingResolve = null;
 
+      let currentTag = null;
       rl.on('line', (line) => {
         try {
           const resp = JSON.parse(line);
+          // A reply to a request that already timed out carries its tag: never another request's answer
+          // (a proxy of a magector before 2.22 sends no tag)
+          if (resp.tag !== undefined && resp.tag !== currentTag) return;
           if (pendingResolve) { pendingResolve(resp); pendingResolve = null; }
         } catch {}
       });
@@ -1226,11 +1244,15 @@ function tryConnectSocket() {
       async function processSocketQueue() {
         if (socketBusy || socketQueryQueue.length === 0) return;
         socketBusy = true;
-        const { command, params, timeoutMs, resolve: qResolve, reject: qReject } = socketQueryQueue.shift();
-        const timer = setTimeout(() => { pendingResolve = null; qReject(new Error('Socket query timeout')); socketBusy = false; processSocketQueue(); }, timeoutMs || 30000);
+        const { command, params, timeoutMs, queuedAt, resolve: qResolve, reject: qReject } = socketQueryQueue.shift();
+        // the timeout counts from when the query was queued, not from when its turn came
+        const left = timeoutMs - (Date.now() - queuedAt);
+        if (left <= 0) { qReject(new Error('Socket query timeout')); socketBusy = false; processSocketQueue(); return; }
+        currentTag = ++socketQueryTag;
+        const timer = setTimeout(() => { pendingResolve = null; currentTag = null; qReject(new Error('Socket query timeout')); socketBusy = false; processSocketQueue(); }, left);
         pendingResolve = (resp) => { clearTimeout(timer); qResolve(resp); socketBusy = false; processSocketQueue(); };
         try {
-          conn.write(JSON.stringify({ command, params, timeout: timeoutMs }) + '\n');
+          conn.write(JSON.stringify({ command, params, timeout: left, tag: currentTag }) + '\n');
         } catch (err) {
           clearTimeout(timer);
           pendingResolve = null;
@@ -1242,7 +1264,7 @@ function tryConnectSocket() {
 
       // Replace the global serveQuery with socket-based version
       globalServeQuery = (command, params, timeoutMs = 30000) => new Promise((res, rej) => {
-        socketQueryQueue.push({ command, params, timeoutMs: timeoutMs || 30000, resolve: res, reject: rej });
+        socketQueryQueue.push({ command, params, timeoutMs: timeoutMs || 30000, queuedAt: Date.now(), resolve: res, reject: rej });
         processSocketQueue();
       });
 
@@ -1258,6 +1280,7 @@ function tryConnectSocket() {
 
 // Global reference to serveQuery implementation (local or socket)
 let globalServeQuery = null;
+let socketQueryTag = 0;
 
 function serveQuery(command, params = {}, timeoutMs = 30000) {
   if (!serveProcess || !serveReady) {
@@ -1301,6 +1324,10 @@ async function rustSearchAsync(query, limit = 10) {
     return [];
   }
 
+  const deadline = Date.now() + SEARCH_BUDGET_MS;
+  const left = () => deadline - Date.now();
+  const waitAtMost = (promise, ms) => Promise.race([promise, new Promise(r => setTimeout(() => r(false), Math.max(0, Math.min(ms, left()))))]);
+
   // Wait for serve process if it's starting up but not yet ready. Gated on
   // (serveProcess || isPrimary), not just serveProcess: during a respawn
   // delay serveProcess is momentarily null even though we're still primary
@@ -1308,7 +1335,7 @@ async function rustSearchAsync(query, limit = 10) {
   // skipped this wait entirely and went straight to a cold rebuild.
   if ((serveProcess || isPrimary) && !serveReady && serveReadyPromise) {
     logToFile('INFO', `Waiting for serve process to become ready...`);
-    await Promise.race([serveReadyPromise, new Promise(r => setTimeout(() => r(false), SERVE_RELOAD_WAIT_MS))]);
+    await waitAtMost(serveReadyPromise, SERVE_RELOAD_WAIT_MS);
   }
 
   // Secondary instance: retry socket if not connected (primary may have (re)started serve).
@@ -1327,7 +1354,7 @@ async function rustSearchAsync(query, limit = 10) {
       // beat to set up serveReadyPromise instead of going cold immediately.
       await new Promise((r) => setTimeout(r, 3000));
       if ((serveProcess || isPrimary) && !serveReady && serveReadyPromise) {
-        await Promise.race([serveReadyPromise, new Promise((r) => setTimeout(() => r(false), SERVE_RELOAD_WAIT_MS))]);
+        await waitAtMost(serveReadyPromise, SERVE_RELOAD_WAIT_MS);
       }
     }
   }
@@ -1335,8 +1362,9 @@ async function rustSearchAsync(query, limit = 10) {
   // Try socket proxy (secondary instance) or local serve process (primary)
   const currentServe = () => globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
   const askServe = async (queryFn) => {
+    if (left() <= 0) return null;
     try {
-      const resp = await queryFn('search', { query, limit }, SOCKET_QUERY_TIMEOUT_MS);
+      const resp = await queryFn('search', { query, limit }, Math.min(SOCKET_QUERY_TIMEOUT_MS, left()));
       if (resp.ok && Array.isArray(resp.data) && resp.data.length > 0) {
         cacheSet(cacheKey, resp.data);
         return resp.data;
@@ -1358,19 +1386,21 @@ async function rustSearchAsync(query, limit = 10) {
   }
 
   // Fallback: a one-off `magector-core search` (always works if the CLI works)
-  logToFile('INFO', `Using cold search fallback for: "${query}"`);
-  try {
-    const arr = await rustSearchCold(query, limit);
-    if (arr.length > 0) {
-      cacheSet(cacheKey, arr);
-      return arr;
+  if (left() > 1000) {
+    logToFile('INFO', `Using cold search fallback for: "${query}"`);
+    try {
+      const arr = await rustSearchColdShared(query, limit, left());
+      if (arr.length > 0) {
+        cacheSet(cacheKey, arr);
+        return arr;
+      }
+    } catch (err) {
+      logToFile('WARN', `Cold search fallback failed: ${err.message}`);
     }
-  } catch (err) {
-    logToFile('WARN', `Cold search fallback failed: ${err.message}`);
   }
   // A serve may have become ready (or the socket connected) while the cold search ran
   const lateFn = currentServe();
-  if (lateFn && lateFn !== queryFn) {
+  if (lateFn && lateFn !== queryFn && left() > 500) {
     logToFile('INFO', `Serve available after the cold search — asking it for "${query}"`);
     return (await askServe(lateFn)) || [];
   }
@@ -1378,6 +1408,29 @@ async function rustSearchAsync(query, limit = 10) {
 }
 
 const execFileAsync = promisify(execFile);
+let coldSearchTail = Promise.resolve();
+const coldSearchesInFlight = new Map();
+
+/**
+ * rustSearchCold one at a time — each loads the whole index and the model — and a query asked again
+ * while it runs is answered by the same run. The caller waits at most `waitMs`.
+ * ponytail: a run whose callers gave up still runs (a second or two up to 300k vectors).
+ */
+function rustSearchColdShared(query, limit, waitMs) {
+  const key = `${query}|${limit}`;
+  let run = coldSearchesInFlight.get(key);
+  if (!run) {
+    run = coldSearchTail.then(() => rustSearchCold(query, limit));
+    coldSearchTail = run.catch(() => {});
+    coldSearchesInFlight.set(key, run);
+    run.catch(() => {}).finally(() => coldSearchesInFlight.delete(key));
+  }
+  let timer;
+  return Promise.race([
+    run,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('search budget spent waiting for a cold search')), waitMs); }),
+  ]).finally(() => clearTimeout(timer));
+}
 
 /**
  * A one-off `magector-core search`: loads the index and the model and compares every vector,
@@ -6541,13 +6594,13 @@ const _callToolHandler = async (request) => {
           : Math.max(args.limit || 10, precise ? 60 : 30);
         const raw = await rustSearchAsync(searchQuery, fetchLimit);
         const arr = Array.isArray(raw) ? raw : [];
-        if (arr.length === 0 && !serveReady) {
-          // A semantic search always has nearest vectors: nothing means no search ran yet
-          logToFile('REQ', `${name} → no results, serve not ready`);
+        if (arr.length === 0) {
+          // A semantic search always has nearest vectors: nothing means no search ran
+          logToFile('REQ', `${name} → no results (serve ${serveReady ? 'connected' : 'not ready'})`);
           return {
             content: [{
               type: 'text',
-              text: 'Magector semantic search is still starting (its search process is not ready yet), so it returned nothing. ' +
+              text: 'Magector semantic search returned nothing: its search process is still starting (or the index is empty — see .magector/magector.log). ' +
                 'Retry magento_search in a few seconds; the structural tools (find_class, find_plugin, find_observer, grep, …) work meanwhile.'
             }],
             isError: true,
@@ -9756,7 +9809,8 @@ async function main() {
     let role = 'secondary';
 
     // Kill stale serve process if version mismatch (e.g., user upgraded Magector)
-    const staleVersion = getServePidVersion();
+    // Only a serve of this PID namespace: another container's live primary keeps its serve and socket
+    const staleVersion = readPidRecord(PID_PATH)?.ours ? getServePidVersion() : null;
     if (staleVersion && staleVersion !== __pkg.version) {
       logToFile('WARN', `Serve process version mismatch: ${staleVersion} vs ${__pkg.version} — killing stale process`);
       console.error(`Killing stale serve process (version ${staleVersion}, current ${__pkg.version})`);
