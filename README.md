@@ -124,7 +124,7 @@ flowchart LR
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
 | Embeddings | `ort` (ONNX Runtime) | all-MiniLM-L6-v2, 384 dimensions |
-| Vector search | `hnsw_rs` + hybrid reranking | Approximate nearest neighbor + keyword boosting |
+| Vector search | exact cosine scan up to 300k vectors, `hnsw_rs` above + hybrid reranking | Nearest neighbors + keyword boosting |
 | PHP parsing | `tree-sitter-php` | Class, method, namespace extraction |
 | JS parsing | `tree-sitter-javascript` | AMD/ES6 module detection |
 | Pattern detection | Custom Rust | 20+ Magento-specific patterns |
@@ -360,6 +360,7 @@ The `describe` command and `magento_describe` MCP tool require an Anthropic API 
 | `MAGECTOR_BATCH_SIZE` | Embedding batch size (higher = faster, more RAM). Equivalent to `--batch-size`. | `256` |
 | `MAGECTOR_MAX_OUTPUT_CHARS` | Cap on one MCP tool answer, in characters; a longer answer is cut at a line boundary with a note to narrow the query. | `40000` (~10k tokens) |
 | `MAGECTOR_FILE_LIST_TTL_MS` | How long the list of the modules' `etc/` files is reused before it is listed again (files added mid-session show up after this); also how often composer's PSR-4 map and classmap are checked for a `composer dump-autoload`. Modules themselves are rediscovered as soon as `app/etc/config.php` or the composer registrations change. `0`: always fresh. | `2000` |
+| `MAGECTOR_SERVE_WAIT_MS` | How long a search waits for the serve process to become ready before it runs a single-shot search instead. | `20000` |
 | `MAGECTOR_PHP_LIST_TTL_MS` | How long the list of all PHP files (event dispatchers) is reused before the tree is walked again. | `30000` |
 | `MAGECTOR_AUTO_INDEX` | `0`: the MCP server never starts an index (none, or an incompatible one) — for CI and agent jobs that bring their own index. The structural tools work without one; semantic search reports it is missing. | `1` (index in the background) |
 | `MAGECTOR_PREWARM_PHP` | `1`: read the PHP class hierarchy and the event dispatch sites in the background after the MCP server starts, in every instance, so `find_event_dispatchers` and `find_implementors` answer in milliseconds; `0`: never — their first call reads the tree (seconds on a large project). Unset: in the primary instance only (the one that owns the serve process), except with `MAGECTOR_AUTO_INDEX=0`, which keeps background CPU off. | primary instance (off with `MAGECTOR_AUTO_INDEX=0`) |
@@ -894,20 +895,20 @@ Magector scans every `.php`, `.js`, `.xml`, `.phtml`, and `.graphqls` file in a 
 3. **Search text enrichment** -- Combines AST metadata with Magento pattern keywords to create semantically rich text representations
 4. **Description enrichment** -- If a descriptions SQLite DB is present, LLM-generated natural-language descriptions are prepended to the embedding text as `"Description: {text}\n\n"`, placing semantic DI concepts (preferences, plugins, virtual types, subsystem names) within the 256-token ONNX window
 5. **Embedding** -- ONNX Runtime generates 384-dimensional vectors using all-MiniLM-L6-v2
-6. **Indexing** -- Vectors are stored in an HNSW index for sub-millisecond approximate nearest neighbor search
+6. **Indexing** -- Vectors are stored in `index.db`; up to 300k of them a search compares the query with every vector (exact, a few ms, nothing to build at start-up), above that an HNSW graph finds approximate nearest neighbors
 
 ### 2. Searching
 
 1. Query text is enriched with pattern synonyms (e.g., "controller" adds "action execute http request dispatch")
 2. The enriched query is embedded into the same 384-dimensional vector space
-3. HNSW finds the nearest neighbors by cosine similarity
+3. The nearest vectors are found by cosine similarity (every vector compared up to 300k, the HNSW graph above)
 4. **Hybrid reranking** boosts results with keyword matches in path and search text
 5. **SONA adjustment** -- MicroLoRA adapts the query embedding based on learned patterns; EWC++ prevents forgetting earlier learning
 6. Results are returned as structured JSON with file path, class name, methods, role badges, and content snippet
 
 ### 3. Persistent Serve Mode
 
-The MCP server spawns a persistent Rust process (`magector-core serve`) that keeps the ONNX model and HNSW index loaded in memory. Queries are sent as JSON over stdin and responses returned via stdout -- eliminating the ~2.6s cold-start overhead of loading the model per query. Falls back to single-shot `execFileSync` if the serve process is unavailable.
+The MCP server spawns a persistent Rust process (`magector-core serve`) that keeps the ONNX model and HNSW index loaded in memory. Queries are sent as JSON over stdin and responses returned via stdout -- eliminating the ~2.6s cold-start overhead of loading the model per query. Up to 300k vectors it is ready about a second after it starts. If it is not ready, a search waits for it up to `MAGECTOR_SERVE_WAIT_MS`, then runs a single-shot `magector-core search` (asynchronous, at most 20 s), so a tool answers inside the MCP client's 60 s. One serve process per project: the first MCP instance starts it and the others join it over `.magector/serve.sock` — also instances in other containers sharing `.magector` (an MCP gateway starting one per session), since the lock records the PID namespace of its holder.
 
 ```mermaid
 flowchart LR

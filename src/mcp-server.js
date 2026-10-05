@@ -14,14 +14,16 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema
 } from '@modelcontextprotocol/sdk/types.js';
-import { execFileSync, spawn } from 'child_process';
+import { execFile, execFileSync, spawn } from 'child_process';
+import { promisify } from 'util';
 import { createInterface } from 'readline';
 import { createServer as createNetServer, createConnection } from 'net';
-import { existsSync, statSync, unlinkSync, copyFileSync, appendFileSync, writeFileSync, readFileSync, readdirSync, mkdirSync, openSync, closeSync, chmodSync, constants as fsConstants } from 'fs';
+import { existsSync, statSync, unlinkSync, copyFileSync, appendFileSync, writeFileSync, readFileSync, readdirSync, mkdirSync, openSync, closeSync, chmodSync, utimesSync, constants as fsConstants } from 'fs';
 import { stat } from 'fs/promises';
 import { glob } from 'glob';
 import path from 'path';
 import { getRunningIndexPid, writeIndexPidFile, removeIndexPidFile } from './index-lock.js';
+import { PROCESS_SCOPE, readPidRecord, isRecordAlive } from './process-scope.js';
 import { shouldRespawnServe, RESPAWN_WINDOW_MS } from './serve-respawn.js';
 import {
   analyzeCommit,
@@ -200,14 +202,21 @@ const rustEnv = {
 
 const PID_PATH = path.join(config.magentoRoot, '.magector', 'serve.pid');
 const SOCK_PATH = path.join(config.magentoRoot, '.magector', 'serve.sock');
-// A (re)load can legitimately take 45-60s on a large index (HNSW rebuild).
-// SERVE_RELOAD_WAIT_MS bounds how long a waiter (proxy handler, local
-// rustSearchAsync/rustStatsAsync) sits on serveReadyPromise before giving up
-// and falling to the cold path; SOCKET_QUERY_TIMEOUT_MS must stay comfortably
-// above it so a secondary's own socket round-trip doesn't time out first and
-// go cold while the proxy is still legitimately waiting.
-const SERVE_RELOAD_WAIT_MS = 75000;
-const SOCKET_QUERY_TIMEOUT_MS = 90000;
+// A (re)load takes about a second: up to rust-core's FLAT_SEARCH_MAX (300k) vectors a search
+// compares every vector and there is no graph to build; above, the HNSW graph is built first
+// (45-60s). SERVE_RELOAD_WAIT_MS bounds how long a waiter (proxy handler, local
+// rustSearchAsync/rustStatsAsync) sits on serveReadyPromise before giving up and falling to the
+// cold path, so that a tool still answers inside the MCP client's 60s (the cold search is bounded
+// by COLD_SEARCH_TIMEOUT_MS); SOCKET_QUERY_TIMEOUT_MS must stay above it so a secondary's own
+// socket round-trip doesn't time out first and go cold while the proxy is still waiting.
+const SERVE_RELOAD_WAIT_MS = envMs('MAGECTOR_SERVE_WAIT_MS', 20000);
+const SOCKET_QUERY_TIMEOUT_MS = SERVE_RELOAD_WAIT_MS + 10000;
+const COLD_SEARCH_TIMEOUT_MS = 20000;
+// The primary lock names its holder's PID namespace (src/process-scope.js). An instance of another
+// namespace cannot signal that PID; the holder touches the lock every LOCK_HEARTBEAT_MS, and the
+// lock is taken as abandoned when it has not been touched for LOCK_STALE_MS.
+const LOCK_HEARTBEAT_MS = 10000;
+const LOCK_STALE_MS = 30000;
 const FORMAT_CACHE_PATH = path.join(config.magentoRoot, '.magector', 'format-ok.json');
 const PRIMARY_LOCK_PATH = path.join(config.magentoRoot, '.magector', 'primary.lock');
 
@@ -281,6 +290,22 @@ function expandIncludePattern(include) {
   return patterns;
 }
 
+const OWN_LOCK_RECORD = `${process.pid}\n${PROCESS_SCOPE}`;
+let lockHeartbeat = null;
+
+/** Keep the primary lock's mtime fresh while this instance holds it (see LOCK_STALE_MS). */
+function startLockHeartbeat() {
+  if (lockHeartbeat) return;
+  lockHeartbeat = setInterval(() => {
+    try {
+      if (readFileSync(PRIMARY_LOCK_PATH, 'utf-8').trim() !== OWN_LOCK_RECORD) return;
+      const now = new Date();
+      utimesSync(PRIMARY_LOCK_PATH, now, now);
+    } catch {}
+  }, LOCK_HEARTBEAT_MS);
+  lockHeartbeat.unref();
+}
+
 /**
  * Try to acquire the primary lock (O_EXCL = atomic create-or-fail).
  * Returns true if we are the primary instance, false if another instance holds the lock.
@@ -288,22 +313,24 @@ function expandIncludePattern(include) {
  * Also writes lock state to data.db when serve becomes available.
  */
 function tryAcquirePrimaryLock() {
+  const acquired = acquirePrimaryLock();
+  if (acquired) startLockHeartbeat();
+  return acquired;
+}
+
+function acquirePrimaryLock() {
   try {
     const fd = openSync(PRIMARY_LOCK_PATH, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL);
-    writeFileSync(fd, String(process.pid));
+    writeFileSync(fd, OWN_LOCK_RECORD);
     closeSync(fd);
     // DB write deferred — serve is not available during lock acquisition
     return true;
   } catch {
     // Lock file exists — check if holder is alive
-    try {
-      const pid = parseInt(readFileSync(PRIMARY_LOCK_PATH, 'utf-8').trim(), 10);
-      if (pid === process.pid) return true; // we already hold it (e.g. re-acquiring after releasing it ourselves)
-      if (pid && !isNaN(pid)) {
-        process.kill(pid, 0); // throws if dead
-        return false; // another instance is alive and primary
-      }
-    } catch { /* holder is dead, take over */ }
+    const holder = readPidRecord(PRIMARY_LOCK_PATH);
+    if (holder?.ours && holder.pid === process.pid) return true; // we already hold it (e.g. re-acquiring after releasing it ourselves)
+    if (isRecordAlive(holder, PRIMARY_LOCK_PATH, LOCK_STALE_MS)) return false; // another instance is alive and primary
+    // holder is dead (or, in another PID namespace, has not touched the lock for LOCK_STALE_MS): take over
     // Stale lock — reclaim. Use random jitter to avoid thundering herd
     // when multiple instances detect stale lock simultaneously.
     const jitterMs = Math.floor(Math.random() * 200) + 50;
@@ -312,11 +339,11 @@ function tryAcquirePrimaryLock() {
     try { unlinkSync(PRIMARY_LOCK_PATH); } catch {}
     try {
       const fd = openSync(PRIMARY_LOCK_PATH, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL);
-      writeFileSync(fd, String(process.pid));
+      writeFileSync(fd, OWN_LOCK_RECORD);
       closeSync(fd);
       // Double-check: re-read to confirm we actually own it (no TOCTOU race)
       const check = readFileSync(PRIMARY_LOCK_PATH, 'utf-8').trim();
-      if (check !== String(process.pid)) return false;
+      if (check !== OWN_LOCK_RECORD) return false;
       return true;
     } catch {
       return false; // another instance beat us
@@ -338,10 +365,11 @@ function persistPrimaryLockToDb() {
 }
 
 function releasePrimaryLock() {
+  if (lockHeartbeat) { clearInterval(lockHeartbeat); lockHeartbeat = null; }
   try {
     // Only remove if we own it
     const content = readFileSync(PRIMARY_LOCK_PATH, 'utf-8').trim();
-    if (content === String(process.pid)) {
+    if (content === OWN_LOCK_RECORD) {
       unlinkSync(PRIMARY_LOCK_PATH);
     }
   } catch {}
@@ -361,7 +389,7 @@ function releasePrimaryLock() {
  * the file is primarily a fallback for the brief window before serve is ready.
  */
 function writePidFile(pid) {
-  try { writeFileSync(PID_PATH, `${pid}\n${__pkg.version}`); } catch {}
+  try { writeFileSync(PID_PATH, `${pid}\n${__pkg.version}\n${PROCESS_SCOPE}`); } catch {}
   // Async DB write — fire-and-forget, serve process also writes its own PID
   if (serveProcess && serveReady) {
     serveQuery('process_set', { name: 'serve', pid, version: __pkg.version }, 5000).catch(() => {});
@@ -419,12 +447,12 @@ function getRunningReindexPid() {
  * Tries file-based check (synchronous, always available).
  */
 function getExistingServePid() {
+  const rec = readPidRecord(PID_PATH);
+  if (!rec) return null;
+  if (!rec.ours) return null; // a serve of another PID namespace: not one this instance can use or signal
   try {
-    if (!existsSync(PID_PATH)) return null;
-    const pid = parseInt(readFileSync(PID_PATH, 'utf-8').trim(), 10);
-    if (!pid || isNaN(pid)) return null;
-    process.kill(pid, 0); // signal 0 = existence check
-    return pid;
+    process.kill(rec.pid, 0); // signal 0 = existence check
+    return rec.pid;
   } catch {
     removePidFile();
     return null;
@@ -439,9 +467,9 @@ function getExistingServePid() {
  */
 function killStaleServeProcess() {
   try {
-    if (!existsSync(PID_PATH)) return;
-    const stalePid = parseInt(readFileSync(PID_PATH, 'utf-8').trim(), 10);
-    if (!stalePid || isNaN(stalePid)) return;
+    const rec = readPidRecord(PID_PATH);
+    if (!rec || !rec.ours) return; // another PID namespace's PID would name some process of ours
+    const stalePid = rec.pid;
 
     try {
       process.kill(stalePid, 0);
@@ -1079,10 +1107,10 @@ function startSocketProxy() {
         // A respawn/spawn may be in flight (serveReady false but serveReadyPromise
         // pending) — wait for it instead of answering "not ready" immediately,
         // which would otherwise send every connected secondary into its own
-        // cold execFileSync fallback in parallel with serve coming back up.
-        // Bounded to a realistic reload time (large-index HNSW rebuilds take
-        // 45-60s); the client's own socket timeout (SOCKET_QUERY_TIMEOUT_MS)
-        // is set comfortably above this so it doesn't give up first.
+        // cold search fallback in parallel with serve coming back up.
+        // Bounded by SERVE_RELOAD_WAIT_MS (a reload takes ~1s below 300k
+        // vectors); the client's own socket timeout (SOCKET_QUERY_TIMEOUT_MS)
+        // is set above this so it doesn't give up first.
         if (!serveReady && serveReadyPromise) {
           await Promise.race([serveReadyPromise, new Promise((r) => setTimeout(() => r(false), SERVE_RELOAD_WAIT_MS))]);
         }
@@ -1305,65 +1333,68 @@ async function rustSearchAsync(query, limit = 10) {
   }
 
   // Try socket proxy (secondary instance) or local serve process (primary)
-  const queryFn = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
-  if (queryFn) {
+  const currentServe = () => globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
+  const askServe = async (queryFn) => {
     try {
       const resp = await queryFn('search', { query, limit }, SOCKET_QUERY_TIMEOUT_MS);
       if (resp.ok && Array.isArray(resp.data) && resp.data.length > 0) {
         cacheSet(cacheKey, resp.data);
         return resp.data;
       }
-      // Serve returned empty results — fall through to execFileSync
+      // Serve returned empty results — fall through to the cold search
       // This catches stale serve processes with wrong/empty index
       if (resp.ok && Array.isArray(resp.data) && resp.data.length === 0) {
-        logToFile('WARN', `Serve returned 0 results for "${query}" — trying execFileSync fallback`);
+        logToFile('WARN', `Serve returned 0 results for "${query}" — trying the cold search fallback`);
       }
     } catch (err) {
-      logToFile('WARN', `Serve query failed, falling back to execFileSync: ${err.message}`);
+      logToFile('WARN', `Serve query failed, falling back to a cold search: ${err.message}`);
     }
+    return null;
+  };
+  const queryFn = currentServe();
+  if (queryFn) {
+    const data = await askServe(queryFn);
+    if (data) return data;
   }
 
-  // Fallback: cold-start execFileSync (always works if CLI works)
-  logToFile('INFO', `Using execFileSync fallback for search: "${query}"`);
+  // Fallback: a one-off `magector-core search` (always works if the CLI works)
+  logToFile('INFO', `Using cold search fallback for: "${query}"`);
   try {
-    const result = rustSearchSync(query, limit);
-    const arr = Array.isArray(result) ? result : [];
+    const arr = await rustSearchCold(query, limit);
     if (arr.length > 0) {
       cacheSet(cacheKey, arr);
+      return arr;
     }
-    return arr;
   } catch (err) {
-    logToFile('WARN', `execFileSync fallback failed: ${err.message}`);
-    return [];
+    logToFile('WARN', `Cold search fallback failed: ${err.message}`);
   }
+  // A serve may have become ready (or the socket connected) while the cold search ran
+  const lateFn = currentServe();
+  if (lateFn && lateFn !== queryFn) {
+    logToFile('INFO', `Serve available after the cold search — asking it for "${query}"`);
+    return (await askServe(lateFn)) || [];
+  }
+  return [];
 }
 
-function rustSearchSync(query, limit = 10) {
-  const cacheKey = `${query}|${limit}`;
-  if (searchCache.has(cacheKey)) {
-    return searchCache.get(cacheKey);
-  }
-  // 120s: this cold path rebuilds the entire HNSW graph before it can search
-  // at all (same cost as rustStats()'s cold path), so it needs the same
-  // large-index headroom — 30s was not enough and reliably ETIMEDOUT here too.
-  const result = execFileSync(config.rustBinary, [
+const execFileAsync = promisify(execFile);
+
+/**
+ * A one-off `magector-core search`: loads the index and the model and compares every vector,
+ * a second or two up to rust-core's FLAT_SEARCH_MAX vectors. A larger index builds its HNSW graph
+ * first, which COLD_SEARCH_TIMEOUT_MS cuts off rather than outlast the MCP client's 60s. It runs
+ * asynchronously, so the server keeps answering (and sees a serve become ready) meanwhile.
+ */
+async function rustSearchCold(query, limit = 10) {
+  const { stdout } = await execFileAsync(config.rustBinary, [
     'search', query,
     '-d', config.dbPath,
     '-c', config.modelCache,
     '-l', String(limit),
     '-f', 'json'
-  ], { encoding: 'utf-8', timeout: 120000, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
-  const parsed = extractJson(result);
-  // Only real results are cached: a cached non-answer kept the query empty for the whole session,
-  // also after the serve process was ready.
-  const results = Array.isArray(parsed) ? parsed : [];
-  if (results.length > 0) cacheSet(cacheKey, results);
-  return results;
-}
-
-// Keep backward compat: synchronous wrapper (used by tools)
-function rustSearch(query, limit = 10) {
-  return rustSearchSync(query, limit);
+  ], { encoding: 'utf-8', timeout: COLD_SEARCH_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, env: rustEnv });
+  const parsed = extractJson(stdout);
+  return Array.isArray(parsed) ? parsed : [];
 }
 
 function rustIndex(magentoRoot) {
@@ -6463,7 +6494,7 @@ const _callToolHandler = async (request) => {
     return {
       content: [{
         type: 'text',
-        text: 'Magector is warming up — loading the search index into memory. This takes 30-60 seconds on first startup. Please retry your query in a moment.'
+        text: 'Magector is warming up — loading the search index into memory. This takes a few seconds on first startup. Please retry your query in a moment.'
       }],
       isError: true,
     };
@@ -6510,6 +6541,18 @@ const _callToolHandler = async (request) => {
           : Math.max(args.limit || 10, precise ? 60 : 30);
         const raw = await rustSearchAsync(searchQuery, fetchLimit);
         const arr = Array.isArray(raw) ? raw : [];
+        if (arr.length === 0 && !serveReady) {
+          // A semantic search always has nearest vectors: nothing means no search ran yet
+          logToFile('REQ', `${name} → no results, serve not ready`);
+          return {
+            content: [{
+              type: 'text',
+              text: 'Magector semantic search is still starting (its search process is not ready yet), so it returned nothing. ' +
+                'Retry magento_search in a few seconds; the structural tools (find_class, find_plugin, find_observer, grep, …) work meanwhile.'
+            }],
+            isError: true,
+          };
+        }
         let results = arr.map(normalizeResult);
         // Hybrid BM25 rerank for better exact-match handling
         results = hybridRerank(results, args.query);

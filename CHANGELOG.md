@@ -6,6 +6,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 
 ## [Unreleased]
 
+### Fixed
+- **`magento_search` timed out in CI and agent jobs: the serve process took ~1 min to become ready.** It built the HNSW search graph of the whole index before it reported ready (~1 min for 42k vectors on 2 vCPUs), and the cold fallback built it again per query. Up to 300k vectors a search now compares the query with every vector instead — exact, a few ms for 50k vectors, and no graph to build: on a 50k-vector index serve is ready in 0.7 s instead of 23.7 s, and the first `magento_search` through the MCP server answers 0.5 s after it starts. Larger indexes keep the graph.
+- **A search never outlasts the MCP client's 60 s.** It waited up to 75 s for serve, then ran a cold search for up to 120 s that blocked the server. It now waits up to `MAGECTOR_SERVE_WAIT_MS` (default 20 s), runs the cold search asynchronously for at most 20 s, asks serve again if it became ready meanwhile, and otherwise `magento_search` says it is still starting and to retry, instead of answering with no results.
+- **MCP instances in separate containers sharing `.magector` (an MCP gateway starting one per session) started a serve each, or none.** The primary lock and `serve.pid` held a bare PID, which means nothing in another PID namespace: an instance took another container's serve for its own and never started one, or took over a live primary's lock. Both now record the holder's PID namespace; an instance of another namespace never signals that PID, and takes the primary lock over only when its holder has not refreshed it for 30 s. The second container joins the first one's serve over `.magector/serve.sock`.
+
 ## [2.21.0] - 2026-10-05
 
 ### Added
