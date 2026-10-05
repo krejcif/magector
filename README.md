@@ -337,6 +337,9 @@ npx magector search <query>     # Search indexed code
 npx magector describe [path]    # Generate LLM descriptions for di.xml files
 npx magector stats              # Show indexer statistics
 npx magector setup [path]       # IDE setup only (no indexing)
+npx magector snapshot save <file> [path]   # Index, then archive the index + PHP scan
+npx magector snapshot load <file> [path]   # Restore an archive into a root
+npx magector snapshot info <file>          # Version, root and entries of an archive
 npx magector mcp                # Start MCP server
 npx magector help               # Show help
 ```
@@ -382,6 +385,21 @@ npx -y magector@2.17.0 index
 ```
 
 Re-running `index` embeds only files whose content changed: a checkout or `docker cp` that only rewrote timestamps costs a content-hash comparison, not a re-embed, and a run that changes nothing leaves `index.db` untouched. Set `MAGECTOR_NO_UPDATE=1` in images and CI so the CLI does not re-run itself as the latest npm version.
+
+### Build the index once, restore it where it is used
+
+On slow disks (CI runners, network volumes) indexing and the PHP scan that `find_implementors` / `find_event_dispatchers` need take longest. Build both where the code is built — an image build — and restore them in the run:
+
+```bash
+# image build: index, read the PHP tree, write one archive
+npx magector snapshot save /opt/magector.tar.gz /var/www/html
+# run: restore it (the old index is kept as index.db.bak)
+npx magector snapshot load /opt/magector.tar.gz /var/www/html
+```
+
+The archive (tar, gzip for `.gz` / `.tgz`) holds `index.db`, its manifest, the SONA state, the descriptions DB and `.magector/php-scan.json`. A restore writes everything beside the live files and replaces them only when every entry is complete and matches its sha256 — computed while the archive is read, so nothing is read twice; a snapshot of another Magector version is refused. It can be restored into another path: the vector index stores paths relative to the root, and the PHP scan is rewritten for the new root.
+
+Whether anything is read again depends on the files' mtimes. In an image they are the build's, so neither `load --update` nor the MCP server reads a file again; `load` says so (it compares mtime and size, without reading). After a fresh checkout with new mtimes, `--update` hashes those files to find that their content is the same, and the MCP server reads the PHP tree again (a changed file with classes makes the scan unusable). `save --no-index` archives the existing index as it is. The models are not in the archive: keep `MAGECTOR_MODELS` in the image.
 
 ### Constraining CPU usage during indexing
 

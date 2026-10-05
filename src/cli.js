@@ -15,6 +15,9 @@ import { checkForUpdate } from './update.js';
 import { createRequire } from 'module';
 import { getRunningIndexPid, writeIndexPidFile, removeIndexPidFile } from './index-lock.js';
 import { defaultDbPath, dbPathForRoot } from './paths.js';
+import { saveSnapshot, restoreSnapshot, readSnapshotInfo } from './index-snapshot.js';
+import { buildPhpScan } from './php-scan.js';
+import { writeSnapshot as writePhpScan, loadSnapshot as loadPhpScan, acquireScanLock, releaseScanLock, waitForScanLock } from './php-scan-snapshot.js';
 const __cliPkg = createRequire(import.meta.url)('../package.json');
 
 const args = process.argv.slice(2);
@@ -31,6 +34,9 @@ Usage:
   npx magector describe [path]   Generate LLM descriptions for di.xml files
   npx magector mcp               Start MCP server (for Claude Code / Cursor)
   npx magector stats             Show index statistics
+  npx magector snapshot save <file> [path]   Index, read the PHP scan, write both to one archive
+  npx magector snapshot load <file> [path]   Restore an archive into [path]/.magector
+  npx magector snapshot info <file>          Show what an archive holds
   npx magector setup [path]      IDE setup only (no indexing)
   npx magector help              Show this help
 
@@ -47,6 +53,15 @@ Index options:
   --force              Discard any existing index and rebuild from scratch.
                        Without --force, indexing auto-resumes from the last
                        incremental save (written every ~50 batches).
+
+Snapshot options:
+  --no-index           save: pack the index as it is, without updating it first
+  --update             load: update the restored index for files changed since
+                       (incremental — reads only what changed when mtimes match)
+  Build once where it is fast (an image build), restore where the index is used.
+  The archive is gzip when its name ends in .gz / .tgz. It must be restored by
+  the same Magector version; the code should be the same files (same mtimes)
+  for nothing to be read again.
 
 Environment Variables:
   MAGENTO_ROOT             Path to Magento installation (default: cwd)
@@ -65,8 +80,81 @@ Examples:
   npx magector index
   npx magector index --threads 4 --batch-size 128
   MAGECTOR_INDEX_TIMEOUT=28800000 npx magector index   # 8h timeout
+  npx magector snapshot save /cache/magector.tar.gz /var/www/magento
+  npx magector snapshot load /cache/magector.tar.gz /var/www/magento
   npx magector mcp
 `);
+}
+
+/** `snapshot save|load|info <file> [path] [--no-index] [--update]` */
+async function runSnapshot(argv) {
+  const [sub, file, ...rest] = argv;
+  const flags = new Set(rest.filter(a => a.startsWith('--')));
+  const target = rest.find(a => !a.startsWith('--'));
+  if (!['save', 'load', 'info'].includes(sub) || !file) {
+    console.error('Usage: npx magector snapshot save|load <file> [path] [--no-index] [--update] | info <file>');
+    process.exit(1);
+  }
+  const fmtSize = n => (n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`);
+  if (sub === 'info') {
+    const meta = await readSnapshotInfo(file);
+    console.log(`Magector ${meta.version} snapshot of ${meta.root}${meta.git ? ` (git ${meta.git.slice(0, 12)})` : ''}, ${meta.createdAt}`);
+    for (const e of meta.entries) console.log(`  ${e.name.padEnd(15)} ${fmtSize(e.size).padStart(10)}`);
+    return;
+  }
+  const root = path.resolve(target || getConfig().magentoRoot);
+  const dbPath = path.resolve(dbPathForRoot(root));
+  const version = __cliPkg.version;
+  const t0 = Date.now();
+
+  if (sub === 'save') {
+    if (!flags.has('--no-index')) await runIndex(root, {});
+    // the PHP scan (find_implementors, find_event_dispatchers) — as the MCP server writes it
+    if (!acquireScanLock(root)) { await waitForScanLock(root, 180000); acquireScanLock(root); }
+    try {
+      const t1 = Date.now();
+      const { scan, files } = await buildPhpScan(root, { yieldEvery: 0 });
+      if (!writePhpScan(root, scan, version)) throw new Error('could not write .magector/php-scan.json');
+      console.log(`PHP scan: ${files.length} files, ${scan.dispatchSites.length} dispatch sites (${((Date.now() - t1) / 1000).toFixed(1)} s)`);
+    } finally {
+      releaseScanLock(root);
+    }
+    const running = getRunningIndexPid(root);
+    if (running) throw new Error(`an indexer (PID ${running}) is writing the index of ${root} — wait for it to finish`);
+    writeIndexPidFile(root, process.pid);       // no background re-index while the index is read
+    try {
+      let git = null;
+      try { git = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null; } catch { /* not a git checkout */ }
+      const meta = await saveSnapshot({ root, dbPath, outFile: path.resolve(file), version, git });
+      console.log(`Snapshot: ${path.resolve(file)} — ${meta.entries.map(e => `${e.name} ${fmtSize(e.size)}`).join(', ')} (${((Date.now() - t0) / 1000).toFixed(1)} s)`);
+    } finally {
+      removeIndexPidFile(root);
+    }
+    return;
+  }
+
+  // load
+  const running = getRunningIndexPid(root);
+  if (running) throw new Error(`an indexer (PID ${running}) is writing the index of ${root} — wait for it to finish`);
+  writeIndexPidFile(root, process.pid);
+  let result;
+  try {
+    result = await restoreSnapshot({ root, dbPath, file: path.resolve(file), version });
+  } finally {
+    removeIndexPidFile(root);
+  }
+  const { meta, restored, rootChanged } = result;
+  console.log(`Restored ${restored.join(', ')} from the snapshot of ${meta.root}${meta.git ? ` (git ${meta.git.slice(0, 12)})` : ''} (${((Date.now() - t0) / 1000).toFixed(1)} s)`);
+  if (rootChanged) console.log(`The snapshot was built for ${meta.root}; the PHP scan now refers to ${root}.`);
+  if (restored.includes('php-scan.json')) {
+    // stat only (mtime + size), no file read: the one cheap sign that the tree's mtimes survived
+    const php = loadPhpScan(root, version);
+    const stale = php.scan ? php.changed.length + php.deleted.length : 0;
+    console.log(!php.scan ? `PHP scan: not usable here (${php.reason}) — read again on first use`
+      : stale ? `PHP scan: ${php.changed.length} changed and ${php.deleted.length} deleted file(s) since the snapshot — read again on first use (other mtimes: \`--update\` re-hashes those files too)`
+        : 'PHP scan: every file as in the snapshot — nothing to read again');
+  }
+  if (flags.has('--update')) await runIndex(root, {});
 }
 
 function getConfig() {
@@ -349,6 +437,11 @@ async function main() {
     case 'benchmark':
       await import('./validation/benchmark.js');
       break;
+
+    case 'snapshot': {
+      await runSnapshot(args.slice(1));
+      break;
+    }
 
     case 'version':
     case '--version':

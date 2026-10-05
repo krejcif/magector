@@ -48,6 +48,7 @@ import {
 } from './magento-config.js';
 import { defaultDbPath, manifestPath, tempDbPathFor, swapInIndex } from './paths.js';
 import { extractPhpFacts, createDispatchResolver, parseNameExpr, dependsOnCalledClass, nameMatches, shownName, isInformative, sharesKnownParts, WILD, COND, plainName } from './php-dispatch.js';
+import { walkPhpFiles, buildPhpScan as buildPhpScanData, scanPhpFile as scanPhpFileInto } from './php-scan.js';
 import { extractJson } from './cli-json.js';
 import { loadSnapshot, writeSnapshot, acquireScanLock, releaseScanLock, scanLockHolder, waitForScanLock } from './php-scan-snapshot.js';
 import { createRequire } from 'module';
@@ -4061,41 +4062,9 @@ function useScanSnapshot(root) {
   return true;
 }
 
-const SCAN_SKIP_TOP = new Set(['generated', 'var', 'pub', 'setup', 'dev']);
-const SCAN_SKIP_DIRS = new Set(['test', 'tests', 'Test', 'Tests', 'node_modules']);
-
-/** PHP files below root (relative), tests and Magento's generated / var / pub / setup / dev left out; symlinked directories not followed — as glob did, ~15× faster. */
-function walkPhpFiles(root) {
-  const out = [];
-  const walk = (dir, rel) => {
-    let entries;
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    // in name order: which of two files declaring one class is read first must not depend on the filesystem
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    for (const e of entries) {
-      if (e.name.startsWith('.')) continue;
-      if (e.isDirectory()) {
-        if (SCAN_SKIP_DIRS.has(e.name) || (!rel && SCAN_SKIP_TOP.has(e.name))) continue;
-        walk(path.join(dir, e.name), rel ? `${rel}/${e.name}` : e.name);
-      } else if (e.name.endsWith('.php') && (e.isFile() || e.isSymbolicLink())) {
-        out.push(rel ? `${rel}/${e.name}` : e.name);
-      }
-    }
-  };
-  walk(root, '');
-  return out;
-}
-
 async function buildPhpScan(root) {
   const t0 = Date.now();
-  const files = walkPhpFiles(root);
-  const scan = { hierarchy: { types: new Map(), children: new Map() }, dispatchSites: [], traitUsers: new Map(), dispatchFiles: new Map(), stamps: new Map(), typeFiles: new Set() };
-  let n = 0;
-  for (const rel of files) {
-    // ~50k files: give pending requests a turn every few hundred files
-    if (++n % 300 === 0) await new Promise(r => setImmediate(r));
-    scanPhpFile(root, rel, scan);
-  }
+  const { scan, files } = await buildPhpScanData(root, { onFacts: cachePhpFacts });
   Object.assign(classHierarchyCache, {
     root, hierarchy: scan.hierarchy, dispatchSites: scan.dispatchSites, traitUsers: scan.traitUsers,
     dispatchFiles: scan.dispatchFiles, stamps: scan.stamps, typeFiles: scan.typeFiles, files: new Set(files), checkedAt: Date.now(),
@@ -4104,35 +4073,8 @@ async function buildPhpScan(root) {
   return classHierarchyCache.hierarchy;
 }
 
-/** One PHP file into the scan: its dispatch sites, the traits its classes use, its types with parents. */
-function scanPhpFile(root, rel, scan) {
-  const abs = path.join(root, rel);
-  let source, stamp;
-  try { const st = statSync(abs); stamp = `${st.mtimeMs}:${st.size}`; source = readFileSync(abs, 'utf-8'); } catch { return; }
-  scan.stamps?.set(rel, stamp);
-  if (/->\s*dispatch\s*\(/.test(source)) {
-    try {
-      const facts = extractPhpFacts(source);
-      for (const d of facts.dispatches) scan.dispatchSites.push({ ...d, file: rel });
-      cachePhpFacts(abs, facts);
-      scan.dispatchFiles.set(rel, stamp);
-    } catch { /* a file the scanner cannot read: its dispatches are not resolved */ }
-  }
-  const hasParents = /\b(?:extends|implements)\b/i.test(source);
-  const usesTraits = /^\s+use\s+[\\\w]+(\s*,\s*[\\\w]+)*\s*[;{]/m.test(source);
-  if (!hasParents && !usesTraits) return;
-  scan.typeFiles?.add(rel);
-  let types;
-  try { types = parsePhpFile(source).types; } catch { return; }       // parsed once per file
-  for (const t of types) {
-    for (const tr of t.traits) {
-      const k = tr.toLowerCase();
-      if (!scan.traitUsers.has(k)) scan.traitUsers.set(k, []);
-      scan.traitUsers.get(k).push(t.fqcn);
-    }
-  }
-  if (hasParents) addToClassHierarchy(scan.hierarchy, rel, phpTypeDecls(types));
-}
+/** One PHP file into the scan (src/php-scan.js), the facts of a dispatching file cached here. */
+const scanPhpFile = (root, rel, scan) => scanPhpFileInto(root, rel, scan, cachePhpFacts);
 
 /**
  * Files added mid-session, and files with dispatch sites edited or deleted, are picked up — checked
