@@ -3632,6 +3632,15 @@ function filterByModule(results, moduleFilter) {
   });
 }
 
+/**
+ * The best hit of each file. A module README is indexed in sections, so without this one
+ * README could fill every slot of the list; every other file has a single vector.
+ */
+function onePerPath(results) {
+  const seen = new Set();
+  return results.filter(r => !seen.has(r.path) && seen.add(r.path));
+}
+
 function excludeByModule(results, excludeFilter) {
   if (!excludeFilter) return results;
   // Use filterByModule to find what TO exclude, then remove those
@@ -5590,7 +5599,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'magento_search',
-      description: 'Search Magento codebase semantically — find any PHP class, method, XML config, PHTML template, JS file, or GraphQL schema by describing what you need in natural language. Use this as a general-purpose search when no specialized tool fits. Works best for Magento core and popular vendor modules. For small/custom project-specific modules (e.g. proprietary modules not widely known to the embedding model), use magento_grep instead — semantic search may return 0 results for these. See also: magento_find_class, magento_find_method, magento_find_config for targeted searches.',
+      description: 'Search Magento codebase semantically — find any PHP class, method, XML config, PHTML template, JS file, GraphQL schema, or a section of a module README (app/code/<Vendor>/<Module>/README.md, fileType "markdown") by describing what you need in natural language. Questions like "which module handles X" or "how does the Y import work" match README sections when the project has them. Use this as a general-purpose search when no specialized tool fits. Works best for Magento core and popular vendor modules. For small/custom project-specific modules (e.g. proprietary modules not widely known to the embedding model), use magento_grep instead — semantic search may return 0 results for these. See also: magento_find_class, magento_find_method, magento_find_config for targeted searches.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -6625,6 +6634,7 @@ const _callToolHandler = async (request) => {
         if (args.excludeModuleFilter) {
           results = excludeByModule(results, args.excludeModuleFilter);
         }
+        results = onePerPath(results);
         // SONA: record search with results for follow-up tracking
         sessionTracker.recordToolCall(name, args || {}, arr);
         const reindexWarn = getReindexWarning();
@@ -8280,7 +8290,7 @@ const _callToolHandler = async (request) => {
                 const sq = (a.expand !== false && !precise) ? expandQuery(a.query) : a.query;
                 const raw = await rustSearchAsync(sq, 30);
                 let res = raw.map(normalizeResult);
-                res = hybridRerank(res, a.query);
+                res = onePerPath(hybridRerank(res, a.query));
                 text = formatSearchResults(res.slice(0, a.limit || 5));
                 break;
               }

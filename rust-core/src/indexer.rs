@@ -49,6 +49,96 @@ pub(crate) const EXCLUDE_PATHS: &[&str] = &[
 /// Maximum file size to index (100KB)
 pub(crate) const MAX_FILE_SIZE: u64 = 100_000;
 
+/// Longest text of one README vector. The embedder reads only the first 256 tokens of a
+/// text, so a longer section is split at line boundaries to keep all of it searchable.
+const README_CHUNK_CHARS: usize = 800;
+
+/// Markdown is indexed only as a module README: `app/code/<Vendor>/<Module>/README.md`.
+/// That is the project's own documentation, written next to its code and trusted like the
+/// code's comments. Markdown anywhere else (`vendor/` packages, docs folders, nested
+/// READMEs) stays out: it is third-party text an agent could take as instructions.
+pub(crate) fn is_module_readme(relative: &Path) -> bool {
+    let parts: Vec<_> = relative.components().map(|c| c.as_os_str().to_string_lossy()).collect();
+    parts.len() == 5 && parts[0] == "app" && parts[1] == "code" && parts[4].eq_ignore_ascii_case("README.md")
+}
+
+/// Whether a file is indexed (size aside): a source file by extension, or a module README.
+/// `discover_files` and the watcher's two scans must agree on this.
+pub(crate) fn is_indexed_file(path: &Path, root: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) if INCLUDE_EXTENSIONS.contains(&ext) => true,
+        Some(ext) if ext.eq_ignore_ascii_case("md") => {
+            path.strip_prefix(root).is_ok_and(is_module_readme)
+        }
+        _ => false,
+    }
+}
+
+/// Splits a module README into `(heading, text)` chunks of at most `README_CHUNK_CHARS`
+/// (a single longer line stays whole). Text before the first `## ` is "Summary", a `### X`
+/// under `## Y` is "Y > X", `# ` titles are dropped and headings inside code fences are text.
+/// Sections that say nothing are dropped: empty, or the module README template's
+/// placeholders `None.` and `Not documented yet.`.
+pub(crate) fn readme_sections(content: &str) -> Vec<(String, String)> {
+    fn push(chunks: &mut Vec<(String, String)>, heading: String, body: &str) {
+        let text = body.trim();
+        let said = text.trim_end_matches('.').to_ascii_lowercase();
+        if text.is_empty() || said == "none" || said == "not documented yet" {
+            return;
+        }
+        let mut piece = String::new();
+        for line in text.lines() {
+            if !piece.is_empty() && piece.len() + line.len() + 1 > README_CHUNK_CHARS {
+                chunks.push((heading.clone(), piece.trim().to_string()));
+                piece.clear();
+            }
+            piece.push_str(line);
+            piece.push('\n');
+        }
+        if !piece.trim().is_empty() {
+            chunks.push((heading, piece.trim().to_string()));
+        }
+    }
+
+    let mut chunks = Vec::new();
+    let mut section = "Summary".to_string();
+    let mut sub: Option<String> = None;
+    let mut body = String::new();
+    let mut in_fence = false;
+    let heading = |section: &str, sub: &Option<String>| match sub {
+        Some(s) => format!("{} > {}", section, s),
+        None => section.to_string(),
+    };
+
+    for line in content.lines() {
+        let fence = line.trim_start();
+        if fence.starts_with("```") || fence.starts_with("~~~") {
+            in_fence = !in_fence;
+        } else if !in_fence {
+            if let Some(h) = line.strip_prefix("## ") {
+                push(&mut chunks, heading(&section, &sub), &body);
+                body.clear();
+                section = h.trim().to_string();
+                sub = None;
+                continue;
+            }
+            if let Some(h) = line.strip_prefix("### ") {
+                push(&mut chunks, heading(&section, &sub), &body);
+                body.clear();
+                sub = Some(h.trim().to_string());
+                continue;
+            }
+            if line.starts_with("# ") {
+                continue;
+            }
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    push(&mut chunks, heading(&section, &sub), &body);
+    chunks
+}
+
 /// Indexing statistics
 #[derive(Debug, Default)]
 pub struct IndexStats {
@@ -781,14 +871,12 @@ impl Indexer {
             if entry.file_type().is_file() {
                 let path = entry.path();
 
-                // Check extension first (cheap), then file size
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if INCLUDE_EXTENSIONS.contains(&ext) {
-                        // Use entry metadata (already cached from DirEntry)
-                        if let Ok(meta) = entry.metadata() {
-                            if meta.len() <= MAX_FILE_SIZE {
-                                files.push(path.to_path_buf());
-                            }
+                // Check the name first (cheap), then file size
+                if is_indexed_file(path, root) {
+                    // Use entry metadata (already cached from DirEntry)
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.len() <= MAX_FILE_SIZE {
+                            files.push(path.to_path_buf());
                         }
                     }
                 }
@@ -893,6 +981,11 @@ impl Indexer {
             .unwrap_or(path)
             .to_string_lossy()
             .to_string();
+
+        if path.strip_prefix(magento_root).is_ok_and(is_module_readme) {
+            let parsed = Self::parse_module_readme(&content, relative_path);
+            return Ok((!parsed.is_empty()).then_some(parsed));
+        }
 
         let ext = path
             .extension()
@@ -1008,6 +1101,33 @@ impl Indexer {
         );
 
         Ok(Some(vec![ParsedFile { embed_text, metadata }]))
+    }
+
+    /// One vector per README chunk (`readme_sections`), each led by the module name and the
+    /// section heading so a hit names both. `file_type` "markdown", `magento_type` "readme";
+    /// no class or method, so `find_class` / `find_method` never return a README.
+    fn parse_module_readme(content: &str, relative_path: String) -> Vec<ParsedFile> {
+        let module_info = extract_module_info(&relative_path);
+        let module = module_info.as_ref().map(|m| m.full.clone()).unwrap_or_default();
+        readme_sections(content)
+            .into_iter()
+            .map(|(heading, text)| {
+                let embed_text = format!("{} module README, {}:\n{}", module, heading, text);
+                let search_text = format!("{} README {}: {}", module, heading, text);
+                let mut metadata = Self::build_metadata(
+                    relative_path.clone(),
+                    "markdown",
+                    crate::magento::MagentoFileType::Other,
+                    module_info.clone(),
+                    None,
+                    None,
+                    None,
+                    search_text,
+                );
+                metadata.magento_type = Some("readme".to_string());
+                ParsedFile { embed_text, metadata }
+            })
+            .collect()
     }
 
     fn generate_search_text_from_ast(
@@ -1614,6 +1734,79 @@ mod tests {
         fs::remove_file(&db).unwrap();
         assert!(!replaced_since(&db, stamp), "a file that is gone is not a newer one");
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_only_module_readmes_are_indexed_markdown() {
+        let root = Path::new("/m");
+        for (rel, want) in [
+            ("app/code/Acme/Foo/README.md", true),
+            ("app/code/Acme/Foo/readme.md", true),
+            ("app/code/Acme/Foo/Model/Bar.php", true),
+            ("app/code/Acme/README.md", false),
+            ("app/code/Acme/Foo/docs/README.md", false),
+            ("app/code/Acme/Foo/CHANGELOG.md", false),
+            ("vendor/acme/module-foo/README.md", false),
+            ("README.md", false),
+        ] {
+            assert_eq!(is_indexed_file(&root.join(rel), root), want, "{}", rel);
+        }
+    }
+
+    #[test]
+    fn test_readme_sections() {
+        let readme = "# Acme_Foo\n\nImports Helios customers.\n\n## Purpose\nNot documented yet.\n\n\
+            ## How it works\n### Import\n1. Reads rows.\n```bash\n## not a heading\n```\n\n\
+            ## Data\nNone.\n\n## Verification\n";
+        let got = readme_sections(readme);
+        assert_eq!(
+            got,
+            vec![
+                ("Summary".to_string(), "Imports Helios customers.".to_string()),
+                (
+                    "How it works > Import".to_string(),
+                    "1. Reads rows.\n```bash\n## not a heading\n```".to_string()
+                ),
+            ]
+        );
+
+        let long: String = (0..60).map(|i| format!("{}. step number {}\n", i, i)).collect();
+        let chunks = readme_sections(&format!("## How it works\n{}", long));
+        assert!(chunks.len() > 1, "a long section is split");
+        assert!(chunks.iter().all(|(h, t)| h == "How it works" && t.len() <= README_CHUNK_CHARS));
+        let rejoined: Vec<String> = chunks.iter().map(|(_, t)| t.clone()).collect();
+        assert_eq!(rejoined.join("\n"), long.trim(), "nothing is lost at the cut");
+    }
+
+    #[test]
+    fn test_parse_file_module_readme() {
+        let dir = std::env::temp_dir().join(format!("magector_readme_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("app/code/Acme/Api/README.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "# Acme_Api\n\nREST API for orders.\n\n## Purpose\nOrders for SAP.\n").unwrap();
+
+        let parsed = Indexer::parse_file(&path, &dir, &XmlAnalyzer::new(), false, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.len(), 2);
+        for p in &parsed {
+            assert_eq!(p.metadata.path, "app/code/Acme/Api/README.md");
+            assert_eq!(p.metadata.file_type, "markdown");
+            // Not "api": the path rules of detect_file_type do not apply to a README.
+            assert_eq!(p.metadata.magento_type.as_deref(), Some("readme"));
+            assert_eq!(p.metadata.module.as_deref(), Some("Acme_Api"));
+            assert!(p.metadata.class_name.is_none() && p.metadata.method_name.is_none());
+        }
+        assert_eq!(parsed[1].embed_text, "Acme_Api module README, Purpose:\nOrders for SAP.");
+        assert!(parsed[1].metadata.search_text.starts_with("Acme_Api README Purpose: "));
+
+        fs::write(&path, "# Acme_Api\n\n## Purpose\nNot documented yet.\n").unwrap();
+        assert!(
+            Indexer::parse_file(&path, &dir, &XmlAnalyzer::new(), false, false).unwrap().is_none(),
+            "a README that says nothing gives no vector"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -117,6 +117,16 @@ async function main() {
     ok('serve not ready: magento_search answers from the cold search, inside the wait bound', r.text.includes('Calculator.php') && r.ms < 15000, `${r.ms} ms: ${r.text.slice(0, 200)}`);
     await s.stop();
 
+    // a README is indexed in sections: its hits collapse into the best one, other files keep their slots
+    const readme = (score, section) => ({ id: score, score, metadata: { path: 'app/code/Acme/Price/README.md', file_type: 'markdown', magento_type: 'readme', module: 'Acme_Price', search_text: `Acme_Price README ${section}: prices` } });
+    const sections = JSON.stringify([readme(0.95, 'How it works'), readme(0.94, 'Data'), readme(0.93, 'Purpose'), JSON.parse(hit)[0]]);
+    root = makeRoot('readme-sections');
+    s = startServer(root, { FAKE_SERVE_READY: '0', FAKE_SEARCH: sections, MAGECTOR_SERVE_WAIT_MS: '1000' });
+    r = await s.call('magento_search', { query: 'price calculation' });
+    ok('README sections: one hit per file, the best section first, the PHP file still listed',
+      (r.text.match(/README\.md/g) || []).length === 1 && r.text.includes('How it works') && r.text.includes('Calculator.php'), r.text.slice(0, 400));
+    await s.stop();
+
     root = makeRoot('serve-not-ready-empty');
     s = startServer(root, { FAKE_SERVE_READY: '0', MAGECTOR_SERVE_WAIT_MS: '1000' });
     r = await s.call('magento_search', { query: 'price calculator' });
