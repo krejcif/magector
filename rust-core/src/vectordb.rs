@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use hnsw_rs::prelude::*;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -18,6 +19,11 @@ const HNSW_M: usize = 32;             // max connections per node
 const HNSW_MAX_LAYER: usize = 16;
 const HNSW_EF_CONSTRUCTION: usize = 200;
 const HNSW_MIN_CAPACITY: usize = 1_000;
+
+/// Up to this many vectors a search compares the query with every live one instead of walking
+/// the HNSW graph: exact, a few ms for 50k × 384 dims, and nothing to build. Building the graph
+/// of a 42k-vector index costs ~1 min on 2 vCPUs, which `serve` paid before it reported ready.
+const FLAT_SEARCH_MAX: usize = 300_000;
 
 /// Move a database that can't be decoded aside, keeping it for recovery.
 /// An index costs hours of CPU to build, so a decode failure — which can also
@@ -36,6 +42,20 @@ pub(crate) fn keep_incompatible_aside(path: &Path) -> Option<PathBuf> {
 /// Check whether a vector is safe for cosine distance computation.
 /// Rejects NaN, Inf, and zero vectors — these produce NaN distances
 /// that corrupt the HNSW graph structure.
+fn norm(v: &[f32]) -> f32 {
+    v.iter().map(|x| x * x).sum::<f32>().sqrt()
+}
+
+/// 1 − cosine similarity, clamped at 0 as hnsw_rs's DistCosine does (`query_norm` = |query|).
+fn cosine_distance(query: &[f32], query_norm: f32, v: &[f32]) -> f32 {
+    let denom = query_norm * norm(v);
+    if denom <= 0.0 {
+        return 0.0;
+    }
+    let dot: f32 = query.iter().zip(v).map(|(a, b)| a * b).sum();
+    (1.0 - dot / denom).max(0.0)
+}
+
 fn is_valid_vector(v: &[f32]) -> bool {
     let mut norm_sq = 0.0f32;
     for &x in v {
@@ -157,9 +177,9 @@ fn invalid_vector_ids(vectors: &HashMap<usize, Vec<f32>>, tombstones: &HashSet<u
 
 /// Vector database for semantic code search
 pub struct VectorDB {
-    /// Search graph, built on the first search (or `warm`) rather than on open: `index`,
-    /// `stats` and the incremental refresh never search, and building the graph of a
-    /// 42k-vector index costs ~1 min on 2 vCPUs.
+    /// Search graph, used only above FLAT_SEARCH_MAX vectors and built on the first search there
+    /// (or `warm`) rather than on open: `index`, `stats` and the incremental refresh never search,
+    /// and building the graph of a 42k-vector index costs ~1 min on 2 vCPUs.
     hnsw: OnceLock<Hnsw<'static, f32, DistCosine>>,
     metadata: HashMap<usize, IndexMetadata>,
     vectors: HashMap<usize, Vec<f32>>,
@@ -215,9 +235,43 @@ impl VectorDB {
         })
     }
 
-    /// Build the search graph now instead of on the first search (`serve`, before it reports ready).
+    /// Build the search graph now instead of on the first search (`serve`, before it reports
+    /// ready). Up to FLAT_SEARCH_MAX vectors there is none to build.
     pub fn warm(&self) {
-        self.search_graph();
+        if self.vectors.len() > FLAT_SEARCH_MAX {
+            self.search_graph();
+        }
+    }
+
+    /// The `n` live vectors nearest to `query`, as (id, cosine distance), nearest first.
+    fn nearest(&self, query: &[f32], n: usize, ef_search: usize) -> Vec<(usize, f32)> {
+        self.nearest_with(query, n, ef_search, FLAT_SEARCH_MAX)
+    }
+
+    /// `nearest`, comparing every live vector up to `flat_max` vectors (exact) and asking the
+    /// HNSW graph above (approximate).
+    fn nearest_with(&self, query: &[f32], n: usize, ef_search: usize, flat_max: usize) -> Vec<(usize, f32)> {
+        if self.vectors.len() > flat_max {
+            return self.search_graph().search(query, n, ef_search)
+                .into_iter()
+                .map(|nb| (nb.d_id, nb.distance))
+                .collect();
+        }
+        if n == 0 {
+            return Vec::new();
+        }
+        let query_norm = norm(query);
+        let mut scored: Vec<(usize, f32)> = self.vectors.par_iter()
+            .filter(|(id, _)| !self.tombstones.contains(id))
+            .map(|(&id, v)| (id, cosine_distance(query, query_norm, v)))
+            .collect();
+        let by_distance = |a: &(usize, f32), b: &(usize, f32)| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0));
+        if scored.len() > n {
+            scored.select_nth_unstable_by(n - 1, by_distance);
+            scored.truncate(n);
+        }
+        scored.sort_unstable_by(by_distance);
+        scored
     }
 
     /// Load from disk or create new.
@@ -506,16 +560,15 @@ impl VectorDB {
         let extra = if self.tombstones.is_empty() { 0 } else { self.tombstones.len().min(k) };
         let fetch = k + extra;
         let ef_search = (fetch * 2).max(50);
-        let results = self.search_graph().search(query, fetch, ef_search);
+        let results = self.nearest(query, fetch, ef_search);
 
         results
             .into_iter()
-            .filter(|n| !self.tombstones.contains(&n.d_id))
-            .filter_map(|n| {
-                let id = n.d_id;
+            .filter(|(id, _)| !self.tombstones.contains(id))
+            .filter_map(|(id, distance)| {
                 self.metadata.get(&id).map(|meta| SearchResult {
                     id,
-                    score: 1.0 - n.distance,
+                    score: 1.0 - distance,
                     metadata: meta.clone(),
                 })
             })
@@ -541,7 +594,7 @@ impl VectorDB {
         let extra = if self.tombstones.is_empty() { 0 } else { self.tombstones.len().min(k) };
         let candidates = k * 3 + extra;
         let ef_search = (candidates * 2).max(64);
-        let results = self.search_graph().search(query, candidates, ef_search);
+        let results = self.nearest(query, candidates, ef_search);
 
         // Lowercase query terms for matching
         let query_lower = query_text.to_lowercase();
@@ -560,11 +613,10 @@ impl VectorDB {
 
         let mut scored: Vec<SearchResult> = results
             .into_iter()
-            .filter(|n| !self.tombstones.contains(&n.d_id))
-            .filter_map(|n| {
-                let id = n.d_id;
+            .filter(|(id, _)| !self.tombstones.contains(id))
+            .filter_map(|(id, distance)| {
                 self.metadata.get(&id).map(|meta| {
-                    let semantic_score = 1.0 - n.distance;
+                    let semantic_score = 1.0 - distance;
 
                     // Compute keyword bonus from path and search_text
                     let path_lower = meta.path.to_lowercase();
@@ -964,6 +1016,38 @@ mod tests {
         assert_eq!(fs::read(dir.join(&kept[0])).unwrap(), bytes);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_flat_search_is_exact_and_builds_no_graph() {
+        let mut db = VectorDB::new();
+        let mut seed = 7u64;
+        let mut next = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); ((seed >> 33) as f32 / u32::MAX as f32) - 0.25 };
+        let vectors: Vec<Vec<f32>> = (0..300).map(|_| (0..EMBEDDING_DIM).map(|_| next()).collect()).collect();
+        for (i, v) in vectors.iter().enumerate() {
+            db.insert(v, make_test_meta(&format!("f{i}.php")));
+        }
+        let query: Vec<f32> = vectors[37].iter().enumerate().map(|(i, x)| if i % 50 == 0 { x + 0.05 } else { *x }).collect();
+
+        // every vector compared: the ten nearest by brute force, in order
+        let mut expected: Vec<(usize, f32)> = vectors.iter().enumerate()
+            .map(|(i, v)| (i, cosine_distance(&query, norm(&query), v))).collect();
+        expected.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let got: Vec<usize> = db.nearest(&query, 10, 50).into_iter().map(|(id, _)| id).collect();
+        assert_eq!(got, expected.iter().take(10).map(|(i, _)| *i).collect::<Vec<_>>());
+        assert_eq!(db.search(&query, 1)[0].id, 37);
+
+        db.warm();
+        assert!(db.hnsw.get().is_none(), "no graph is built up to FLAT_SEARCH_MAX vectors");
+
+        // the graph agrees on the nearest one
+        assert_eq!(db.nearest_with(&query, 1, 50, 0)[0].0, 37);
+
+        db.tombstone(37);
+        let got = db.nearest(&query, 10, 50);
+        assert!(got.iter().all(|(id, _)| *id != 37), "a tombstoned vector is not compared");
+        assert_eq!(got.len(), 10);
+        assert!(db.nearest(&query, 0, 50).is_empty());
     }
 
     #[test]
