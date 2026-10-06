@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 
 ## [Unreleased]
 
+## [2.23.0] - 2026-10-06
+
 ### Added
 - **Module READMEs are indexed: `magento_search` answers "which module handles X" and "how does the Y import work".** Each `app/code/<Vendor>/<Module>/README.md` is indexed in sections (`## ` and `### `, longer ones split at line boundaries to the ~800 characters the embedder reads), each vector led by the module name and the section heading. Hits have `fileType` `markdown` and `magentoType` `readme`; they carry no class or method, so `find_class` and `find_method` never return one. Sections that are only `None.` or `Not documented yet.` are skipped. `magento_search` lists each file once, with its best-matching section, so one README cannot fill the result list. Markdown anywhere else — `vendor/` packages, docs folders, nested READMEs — is still not indexed: it is third-party text. An existing index picks the READMEs up on its next refresh (`magector index`, the serve watcher), no `--force` needed; the index format is unchanged.
 
