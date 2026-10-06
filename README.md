@@ -141,6 +141,10 @@ flowchart LR
 
 Magector operates on source code indexed from potentially-untrusted `vendor/` dependencies and is driven by an LLM that may be manipulated via prompt injection in indexed comments, docblocks, or markdown. The following hardening applies as of **v2.15.1**:
 
+### Indexed markdown
+
+The only markdown in the index is the project's own module READMEs, `app/code/<Vendor>/<Module>/README.md`: written next to that code and trusted like its comments. Markdown from `vendor/` packages and anywhere else is never indexed, so `magento_search` does not hand third-party prose to the LLM.
+
 ### Path traversal protection
 
 All tools that accept a `path` argument (`magento_read`, `magento_grep`, `magento_ast_search`, `magento_find_dataobject_issues`) route the input through `safePath()` / `safeRelPath()` helpers in `src/mcp-server.js`. These:
@@ -556,7 +560,7 @@ disabled with `disabled="true"` as active.
 
 | Tool | Description |
 |------|-------------|
-| `magento_search` | Semantic search -- find any PHP class, method, XML config, template, or GraphQL schema by natural language |
+| `magento_search` | Semantic search -- find any PHP class, method, XML config, template, GraphQL schema, or module README section by natural language |
 | `magento_find_class` | Find PHP class, interface, abstract class, or trait by name |
 | `magento_find_method` | Find method implementations across the codebase |
 
@@ -888,7 +892,7 @@ magector/
 
 ### 1. Indexing
 
-Magector scans every `.php`, `.js`, `.xml`, `.phtml`, and `.graphqls` file in a Magento 2 or Adobe Commerce codebase:
+Magector scans every `.php`, `.js`, `.xml`, `.phtml`, and `.graphqls` file in a Magento 2 or Adobe Commerce codebase, plus each module README at `app/code/<Vendor>/<Module>/README.md`:
 
 1. **AST parsing** -- Tree-sitter extracts class names, namespaces, methods, inheritance, and interface implementations from PHP and JavaScript files
 2. **Pattern detection** -- Identifies Magento-specific patterns: controllers, models, repositories, plugins, observers, blocks, GraphQL resolvers, admin grids, cron jobs, and more

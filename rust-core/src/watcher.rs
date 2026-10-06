@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 use walkdir::WalkDir;
 use sha2::{Digest, Sha256};
 
-use crate::indexer::{Indexer, INCLUDE_EXTENSIONS, MAX_FILE_SIZE};
+use crate::indexer::{is_indexed_file, Indexer, MAX_FILE_SIZE};
 
 /// Path to the cross-entrypoint reindex lock, shared with the JS side
 /// (`src/index-lock.js`) — the same file both `npx magector index` and this
@@ -287,11 +287,7 @@ impl FileManifest {
                 continue;
             }
             let path = entry.path();
-            let ext = match path.extension().and_then(|e| e.to_str()) {
-                Some(e) => e,
-                None => continue,
-            };
-            if !INCLUDE_EXTENSIONS.contains(&ext) {
+            if !is_indexed_file(path, magento_root) {
                 continue;
             }
             if let Ok(meta) = entry.metadata() {
@@ -375,11 +371,7 @@ impl FileManifest {
                 continue;
             }
             let path = entry.path();
-            let ext = match path.extension().and_then(|e| e.to_str()) {
-                Some(e) => e,
-                None => continue,
-            };
-            if !INCLUDE_EXTENSIONS.contains(&ext) {
+            if !is_indexed_file(path, magento_root) {
                 continue;
             }
             let meta = match entry.metadata() {
@@ -1378,7 +1370,11 @@ mod tests {
         // scans must too. Otherwise they index files a full index never saw (every Magento
         // root has dev/tools/**/*.js) and `files_found - to_process.len()` underflows.
         let dir = make_temp_dir();
-        let all = ["app/code/X/Y.php", "pub/static/a.js", "dev/tools/b.js", "vendor/bin/c.php", "custom/d.php"];
+        let all = [
+            "app/code/X/Y.php", "pub/static/a.js", "dev/tools/b.js", "vendor/bin/c.php", "custom/d.php",
+            // Markdown: only a module README is indexed.
+            "app/code/X/Z/README.md", "app/code/X/Z/docs/e.md", "vendor/x/module-z/README.md",
+        ];
         for rel in all {
             let path = dir.join(rel);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1386,13 +1382,15 @@ mod tests {
         }
         fs::write(dir.join(".magectorignore"), "# not indexed\ncustom\n").unwrap();
 
+        let want = vec!["app/code/X/Y.php", "app/code/X/Z/README.md"];
         let changes = FileManifest::new().detect_changes(&dir).unwrap();
-        assert_eq!(rel_paths(&dir, &changes.added), vec!["app/code/X/Y.php"]);
+        assert_eq!(rel_paths(&dir, &changes.added), want);
 
         let indexed: std::collections::HashSet<String> = all.iter().map(|p| p.to_string()).collect();
         let manifest = FileManifest::from_existing_index(&dir, &indexed);
-        let tracked: Vec<String> = manifest.files.keys().cloned().collect();
-        assert_eq!(tracked, vec!["app/code/X/Y.php"]);
+        let mut tracked: Vec<String> = manifest.files.keys().cloned().collect();
+        tracked.sort();
+        assert_eq!(tracked, want);
 
         let _ = fs::remove_dir_all(&dir);
     }
