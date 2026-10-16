@@ -10,7 +10,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 - `magento_analyze_diff` passed `commitHash` to a shell; it now rejects anything but a git ref and runs git without a shell, in `MAGENTO_ROOT`.
 
 ### Changed
-- package.json now declares engines.node >=20 (glob 13 needs it); npm warns on older Node instead of failing at import.
+- package.json now declares engines.node >=20 (glob 13 depends on lru-cache, which requires Node 20); npm warns on older Node instead of failing at import.
 
 ## [2.23.0] - 2026-10-06
 
