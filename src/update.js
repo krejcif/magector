@@ -9,6 +9,7 @@
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { execFileSync } from 'child_process';
+import { npmInvocation } from './npm-cli.js';
 import { homedir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -158,11 +159,21 @@ function reExec(current, latest, originalArgs) {
   if (!isSafeVersion(latest)) {
     return; // silently skip — never block CLI on update check
   }
+  // On Windows npx runs through cmd.exe, which only accepts a strict arg allow-list.
+  // If the user's own args (e.g. a search query with spaces) don't fit, skip the
+  // update and run the current version — an auto-update must never break the command.
+  let inv;
+  try {
+    inv = npmInvocation('npx', ['-y', `magector@${latest}`, ...originalArgs]);
+  } catch {
+    return;
+  }
   console.log(`\n⬆  Updating magector: v${current} → v${latest}...\n`);
   try {
-    // execFileSync with an argv array (no shell) — originalArgs are passed as
-    // individual argv entries, so spaces/metachars in them can't expand.
-    execFileSync('npx', ['-y', `magector@${latest}`, ...originalArgs], {
+    // POSIX: argv array, no shell — originalArgs can't expand. Windows: shell is
+    // required for npx.cmd and npmInvocation has already validated every arg.
+    execFileSync(inv.file, inv.args, {
+      shell: inv.shell,
       stdio: 'inherit',
       env: { ...process.env, MAGECTOR_NO_UPDATE: '1' }
     });

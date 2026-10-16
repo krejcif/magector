@@ -20,6 +20,7 @@ import { defaultDbPath, dbPathForRoot, manifestPath, tempDbPathFor, swapInIndex 
 import { modelDownloadDir, downloadFile } from '../src/model.js';
 import { binaryVersion, acceptPathBinary } from '../src/binary.js';
 import { extractJson } from '../src/cli-json.js';
+import { npmInvocation } from '../src/npm-cli.js';
 import { resolveIndexRoot } from '../src/index-root.js';
 import { mcpServerEnv } from '../src/init.js';
 import { serializeScan, deserializeScan, checkSnapshot, loadSnapshot, writeSnapshot, snapshotPathFor, scanLockPathFor, acquireScanLock, releaseScanLock, scanLockHolder, waitForScanLock, fileStampOf, SNAPSHOT_FORMAT } from '../src/php-scan-snapshot.js';
@@ -4678,6 +4679,7 @@ async function main() {
   testEnrichChainRegex();
   testExpandIncludePattern();
   testSafePath();
+  testNpmInvocation();
   testGetReindexWarning();
   testExcludeByModule();
   testConfigDataLoading();
@@ -4855,6 +4857,25 @@ function testExpandIncludePattern() {
 // magento_read, magento_grep and magento_ast_search funnel all
 // user-supplied paths through them, so a regression here is a
 // silent path-traversal vulnerability.
+
+function testNpmInvocation() {
+  console.log('\nnpmInvocation (npm/npx on Windows)');
+  const w = npmInvocation('npx', ['-y', 'magector@2.23.0'], 'win32');
+  assertEq(w.file, 'npx.cmd', 'win32: npx -> npx.cmd');
+  assertEq(w.shell, true, 'win32: shell true');
+  assertEq(npmInvocation('npm', ['install', '--no-save', '@magector/cli-win32-x64@2.23.0'], 'win32').file, 'npm.cmd', 'win32: npm -> npm.cmd');
+  for (const bad of ['magector@2.23.0 && calc', 'a b', 'a|b', 'a"b', 'a&b', 'a;b', '$(x)']) {
+    let threw = false;
+    try { npmInvocation('npx', ['-y', bad], 'win32'); } catch (e) { threw = /unsafe argument for shell/.test(e.message); }
+    assert(threw, `win32: rejects ${JSON.stringify(bad)}`);
+  }
+  const d = npmInvocation('npx', ['-y', 'magector@2.23.0', 'search', 'product price && x'], 'darwin');
+  assertEq(d.file, 'npx', 'posix: file is npx');
+  assertEq(d.shell, false, 'posix: shell false');
+  assertEq(d.args[3], 'product price && x', 'posix: args pass through unchanged');
+  const cur = npmInvocation('npm', ['--version']);
+  assertEq(cur.shell, process.platform === 'win32', 'default platform = process.platform');
+}
 
 function testSafePath() {
   console.log('\n── safePath / safeRelPath ──');
