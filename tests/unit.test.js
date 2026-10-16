@@ -1530,9 +1530,37 @@ async function testGitDiffHelpers() {
   assert(!isSafeGitRef('--output=/tmp/x'), 'leading dash rejected');
   assert(!isSafeGitRef('a/../b'), 'dotdot rejected');
   assert(!isSafeGitRef(''), 'empty rejected');
+  assert(isSafeGitRef('HEAD@{1}'), 'reflog ref HEAD@{1} is safe');
+  assert(isSafeGitRef('stash@{0}'), 'reflog ref stash@{0} is safe');
+  assert(!isSafeGitRef('HEAD@{-1}'), 'HEAD@{-1} rejected');
+  assert(!isSafeGitRef('HEAD@{now}'), 'HEAD@{now} rejected');
+  assert(!isSafeGitRef('HEAD@{1}x'), 'text after @{n} rejected');
+  assert(!isSafeGitRef('@{1}'), 'bare @{1} rejected');
   // real repo: this project
   const root = path.join(__dirname, '..');
-  assert(commitDiff(root, 'HEAD').includes('diff --git') || commitDiff(root, 'HEAD') === '', 'commitDiff returns a diff or empty');
+  // A throwaway repo with one known commit: CI checkouts are shallow, so HEAD~1 of
+  // this project may not exist there.
+  const { execFileSync } = await import('child_process');
+  const { mkdtempSync } = await import('fs');
+  const gitRepo = mkdtempSync(path.join(os.tmpdir(), 'magector-git-'));
+  const g = (...a) => execFileSync('git', ['-C', gitRepo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { encoding: 'utf-8' });
+  g('init', '-q');
+  writeFileSync(path.join(gitRepo, 'a.txt'), 'one\n');
+  g('add', 'a.txt');
+  g('commit', '-q', '-m', 'first commit');
+  const known = g('rev-parse', 'HEAD').trim();
+  assert(commitDiff(gitRepo, known).includes('diff --git'), 'commitDiff of a known commit includes a diff');
+  assertEq(commitSubject(gitRepo, known), 'first commit', 'commitSubject of a known commit');
+  let unknownErr = null;
+  try { commitDiff(gitRepo, 'deadbeefdeadbeef'); } catch (e) { unknownErr = e; }
+  assert(unknownErr && unknownErr.message.startsWith('git show failed for deadbeefdeadbeef:') && unknownErr.message.length > 'git show failed for deadbeefdeadbeef:'.length + 2,
+    'commitDiff of an unknown ref throws with git\'s message', unknownErr && unknownErr.message);
+  const notRepo = mkdtempSync(path.join(os.tmpdir(), 'magector-nogit-'));
+  let stagedErr = null;
+  try { stagedDiff(notRepo); } catch (e) { stagedErr = e; }
+  assert(stagedErr && /not a git repository/i.test(stagedErr.message), 'stagedDiff outside a repo throws git\'s error', stagedErr && stagedErr.message);
+  rmSync(notRepo, { recursive: true, force: true });
+  rmSync(gitRepo, { recursive: true, force: true });
   assertEq(commitDiff(root, 'HEAD; echo x'), '', 'unsafe ref yields empty diff without running');
   assertEq(typeof stagedDiff(root), 'string', 'stagedDiff returns a string');
   assert(typeof commitSubject(root, 'HEAD') === 'string' && commitSubject(root, 'HEAD').length > 0, 'commitSubject(HEAD) is a non-empty string');

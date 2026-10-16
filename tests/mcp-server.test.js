@@ -378,6 +378,15 @@ async function main() {
     }
 
     try {
+      const unkResult = await client.callTool('magento_analyze_diff', { commitHash: 'deadbeefdeadbeef' });
+      const unkText = unkResult?.content?.[0]?.text || '';
+      const unkOk = unkResult?.isError === true && unkText.includes('git show failed for deadbeefdeadbeef');
+      log(unkOk ? 'PASS' : 'FAIL', 'magento_analyze_diff reports git\'s error for an unknown ref', unkText.slice(0, 120));
+    } catch (e) {
+      log('FAIL', 'magento_analyze_diff reports git\'s error for an unknown ref', e.message);
+    }
+
+    try {
       const complexResult = await client.callTool('magento_complexity', {
         path: SERVER_PATH,
       });
