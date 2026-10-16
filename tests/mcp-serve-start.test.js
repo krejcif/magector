@@ -31,6 +31,7 @@ cmd="$1"; shift
 case "$cmd" in
   stats) echo "Total vectors: 10" ;;
   search) echo "$FAKE_SEARCH" ;;
+  index) sleep 2; echo "indexed" ;;
   serve)
     echo "serve-start" >> "$FAKE_TIMELINE"
     [ "$FAKE_SERVE_READY" = 1 ] && echo '{"ok":true,"ready":true}'
@@ -131,6 +132,18 @@ async function main() {
     s = startServer(root, { FAKE_SERVE_READY: '0', MAGECTOR_SERVE_WAIT_MS: '1000' });
     r = await s.call('magento_search', { query: 'price calculator' });
     ok('serve not ready, no answer: magento_search says it is still starting, to retry', /still starting/.test(r.text) && r.ms < 15000, `${r.ms} ms: ${r.text.slice(0, 200)}`);
+    await s.stop();
+
+    // magento_index runs the indexer without freezing the server: another tool answers meanwhile
+    root = makeRoot('index-nonblocking');
+    s = startServer(root);
+    await s.call('magento_stats', {}); // warm up: initialize + first stats
+    const indexing = s.call('magento_index', {});
+    await sleep(300);
+    const during = await s.call('magento_stats', {});
+    ok('magento_index running: magento_stats still answers promptly', /Magector Stats/.test(during.text) && during.ms < 1500, `${during.ms} ms: ${during.text.slice(0, 200)}`);
+    const idx = await indexing;
+    ok('magento_index returns its normal success text', /Indexing complete \(Rust core\)/.test(idx.text) && idx.text.includes('indexed'), idx.text.slice(0, 200));
     await s.stop();
   } finally {
     rmSync(tmp, { recursive: true, force: true });

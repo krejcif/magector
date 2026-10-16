@@ -1461,7 +1461,10 @@ async function rustSearchCold(query, limit = 10) {
   return Array.isArray(parsed) ? parsed : [];
 }
 
-function rustIndex(magentoRoot) {
+// The indexer child of a magento_index call, killed on shutdown so it is not orphaned.
+let toolIndexProcess = null;
+
+async function rustIndex(magentoRoot) {
   searchCache.clear(); // invalidate cache on reindex
   // Hold the reindex lock like `magector index`: the serve watcher defers to it instead of
   // saving index.db while this run writes the same file, and two indexers never race.
@@ -1485,19 +1488,54 @@ function rustIndex(magentoRoot) {
   // constraint and caused silent re-index loops via the MCP auto-index path.
   const indexTimeout = parseInt(process.env.MAGECTOR_INDEX_TIMEOUT, 10) || 14400000;
   writeReindexPidFile(process.pid);
+  const MAX_OUTPUT = 4 * 1024 * 1024; // keep the last 4 MB of each stream
+  const collect = () => {
+    let text = '';
+    return {
+      add(chunk) {
+        text += chunk;
+        if (text.length > MAX_OUTPUT) text = text.slice(-MAX_OUTPUT);
+      },
+      get: () => text,
+    };
+  };
   try {
-    const result = execFileSync(config.rustBinary, indexArgs, { encoding: 'utf-8', timeout: indexTimeout, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
-    return result;
-  } catch (err) {
-    if (err.message && err.message.includes('ETIMEDOUT')) {
-      throw new Error(
-        `Indexing timed out after ${indexTimeout / 1000}s. Partial progress was saved ` +
-        `to disk — the next indexing run will auto-resume from the last checkpoint. ` +
-        `To raise the timeout further, set MAGECTOR_INDEX_TIMEOUT (milliseconds) in the ` +
-        `MCP server env, e.g. MAGECTOR_INDEX_TIMEOUT=28800000 for 8 hours.`
-      );
-    }
-    throw err;
+    return await new Promise((resolve, reject) => {
+      const out = collect();
+      const err = collect();
+      let timedOut = false;
+      let child;
+      try {
+        child = spawn(config.rustBinary, indexArgs, { stdio: ['ignore', 'pipe', 'pipe'], env: rustEnv });
+      } catch (e) {
+        reject(e);
+        return;
+      }
+      toolIndexProcess = child;
+      child.stdout.setEncoding('utf-8');
+      child.stderr.setEncoding('utf-8');
+      child.stdout.on('data', d => out.add(d));
+      child.stderr.on('data', d => err.add(d));
+      const timer = setTimeout(() => { timedOut = true; try { child.kill('SIGTERM'); } catch {} }, indexTimeout);
+      const settle = () => { clearTimeout(timer); if (toolIndexProcess === child) toolIndexProcess = null; };
+      child.on('error', e => { settle(); reject(e); });
+      child.on('close', (code, signal) => {
+        settle();
+        if (timedOut) {
+          reject(new Error(
+            `Indexing timed out after ${indexTimeout / 1000}s. Partial progress was saved ` +
+            `to disk — the next indexing run will auto-resume from the last checkpoint. ` +
+            `To raise the timeout further, set MAGECTOR_INDEX_TIMEOUT (milliseconds) in the ` +
+            `MCP server env, e.g. MAGECTOR_INDEX_TIMEOUT=28800000 for 8 hours.`
+          ));
+        } else if (code !== 0) {
+          const tail = (err.get() || out.get()).trim();
+          reject(new Error(`Indexer ${signal ? `killed by ${signal}` : `exited with code ${code}`}${tail ? `:\n${tail}` : ''}`));
+        } else {
+          resolve(out.get());
+        }
+      });
+    });
   } finally {
     removeReindexPidFile();
   }
@@ -6885,7 +6923,7 @@ const _callToolHandler = async (request) => {
           return { content: [{ type: 'text', text: resolved.error }], isError: true };
         }
         const root = resolved.root;
-        const output = rustIndex(root);
+        const output = await rustIndex(root);
         // Auto-enrich after indexing: runs in background via Rust serve, doesn't block response
         logToFile('INFO', 'Auto-enrich: starting in background after index');
         serveQuery('enrich', { magento_root: root }, 120000).then(resp => {
@@ -9921,6 +9959,11 @@ function cleanup(reason) {
     logToFile('INFO', `Cleanup: killing reindex process (PID ${reindexProcess.pid})`);
     try { reindexProcess.kill(); } catch {}
     reindexProcess = null;
+  }
+  if (toolIndexProcess) {
+    logToFile('INFO', `Cleanup: killing magento_index process (PID ${toolIndexProcess.pid})`);
+    try { toolIndexProcess.kill(); } catch {}
+    toolIndexProcess = null;
   }
   if (formatCheckProcess) {
     logToFile('INFO', `Cleanup: killing format check process (PID ${formatCheckProcess.pid})`);

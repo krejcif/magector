@@ -7,6 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 ## [Unreleased]
 
 ### Fixed
+- `magento_index` no longer freezes the MCP server while the index runs, and no longer fails when the indexer prints more than 1 MB.
 - `magento_analyze_diff` passed `commitHash` to a shell; it now rejects anything but a git ref and runs git without a shell, in `MAGENTO_ROOT`.
 - `magento_complexity` now rejects paths outside `MAGENTO_ROOT` (it used to accept any absolute path) and malformed module names, and `magento_index` refuses a `path` that is not a directory.
 - The binary self-heal install and the auto-update re-exec now work on Windows (they ran `npm`/`npx`, which are `.cmd` shims there and failed to start). On Windows the auto-update is skipped, and the current version runs, when the command's arguments contain characters `cmd.exe` would interpret (spaces, `&`, `|`, quotes).
