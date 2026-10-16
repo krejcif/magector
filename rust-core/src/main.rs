@@ -635,14 +635,14 @@ fn run_serve(
                         &req,
                     )
                 })) {
-                    Ok(resp) => resp,
+                    Ok(resp) => finish_response(&req, resp),
                     Err(_) => {
                         eprintln!("Panic caught in request handler, serve process continues");
-                        r#"{"ok":false,"error":"Internal panic caught"}"#.to_string()
+                        finish_response(&req, r#"{"ok":false,"error":"Internal panic caught"}"#.to_string())
                     }
                 }
             }
-            Err(e) => format!(r#"{{"ok":false,"error":"Invalid JSON: {}"}}"#, e),
+            Err(e) => serde_json::json!({"ok": false, "error": format!("Invalid JSON: {}", e)}).to_string(),
         };
 
         writeln!(out, "{}", response)?;
@@ -668,6 +668,34 @@ fn withdraw_sidecar_claims(db_path: &std::path::Path, paths: &[String]) -> bool 
         }
     }
     true
+}
+
+/// Final step for every serve reply: guarantees one valid JSON object and echoes the
+/// request's `id` (copied verbatim) when it carried one. Handlers build some replies with
+/// `format!`, which breaks on `"` or `\` in error text; such output is replaced by an error.
+fn finish_response(req: &serde_json::Value, raw: String) -> String {
+    let id = req.get("id");
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(serde_json::Value::Object(mut obj)) => {
+            if let Some(id) = id {
+                obj.insert("id".to_string(), id.clone());
+            }
+            serde_json::Value::Object(obj).to_string()
+        }
+        _ => {
+            let mut obj = serde_json::json!({
+                "ok": false,
+                "error": format!(
+                    "serve produced invalid JSON: {}",
+                    raw.chars().take(200).collect::<String>()
+                ),
+            });
+            if let Some(id) = id {
+                obj["id"] = id.clone();
+            }
+            obj.to_string()
+        }
+    }
 }
 
 fn handle_serve_request(
@@ -1888,5 +1916,31 @@ mod manifest_save_tests {
         fs::write(&sidecar, b"the new manifest").unwrap();
         manifest_save_is_best_effort(Ok(()), &db);
         assert!(sidecar.exists());
+    }
+
+    #[test]
+    fn finish_response_echoes_id_and_keeps_payload() {
+        let req = serde_json::json!({"command": "search", "id": 7});
+        let out = finish_response(&req, r#"{"ok":true,"data":[1]}"#.to_string());
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["data"][0], 1);
+    }
+
+    #[test]
+    fn finish_response_without_id_adds_none() {
+        let out = finish_response(&serde_json::json!({"command": "stats"}), r#"{"ok":true}"#.to_string());
+        assert!(serde_json::from_str::<serde_json::Value>(&out).unwrap().get("id").is_none());
+    }
+
+    #[test]
+    fn finish_response_repairs_invalid_handler_output() {
+        let req = serde_json::json!({"id": "a"});
+        let out = finish_response(&req, r#"{"ok":false,"error":"path C:\new\dir"}"#.to_string());
+        let v: serde_json::Value = serde_json::from_str(&out).expect("one valid JSON line");
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["id"], "a");
+        assert!(v["error"].as_str().unwrap().contains("invalid JSON"));
     }
 }
