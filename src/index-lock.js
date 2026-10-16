@@ -71,7 +71,7 @@ export function writeIndexPidFile(magentoRoot, pid) {
     const lock = inspectLock(magentoRoot);
     if (lock.state === 'live') {
       if (lock.pid === Number(pid)) return true; // already ours
-      console.error(`magector: reindex lock ${lockPath} is held by live PID ${lock.pid}`);
+      console.error(`magector: reindex lock ${lockPath} is held by live PID ${lock.pid}. If no indexer is running, delete .magector/reindex.pid.`);
       return false;
     }
     if (lock.state === 'invalid' || lock.state === 'unreadable') {
@@ -82,7 +82,7 @@ export function writeIndexPidFile(magentoRoot, pid) {
     }
     // stale: inspectLock already removed it; absent: vanished meanwhile — retry once
   }
-  console.error(`magector: could not take the reindex lock ${lockPath} (another process took it first)`);
+  console.error(`magector: could not take the reindex lock ${lockPath} (another process took it first). If no indexer is running, delete .magector/reindex.pid.`);
   return false;
 }
 

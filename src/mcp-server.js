@@ -618,8 +618,8 @@ function startBackgroundReindex() {
   // Check if another MCP instance is already running a reindex
   const existingPid = getRunningReindexPid();
   if (existingPid) {
-    logToFile('INFO', `Reindex already running in another process (PID ${existingPid}) — skipping`);
-    console.error(`Reindex already running (PID ${existingPid}) — skipping`);
+    logToFile('INFO', `Reindex already running in another process (PID ${existingPid}) — skipping. If no indexer is running, delete .magector/reindex.pid.`);
+    console.error(`Reindex already running (PID ${existingPid}) — skipping. If no indexer is running, delete .magector/reindex.pid.`);
     reindexInProgress = true; // mark locally so tools know
     // Poll the external process and react when it finishes
     const tempDbPath = tempDbPathFor(config.dbPath);
@@ -1472,7 +1472,7 @@ async function rustIndex(magentoRoot) {
   // saving index.db while this run writes the same file, and two indexers never race.
   const runningPid = getRunningReindexPid();
   if (runningPid) {
-    throw new Error(`Another indexing process (PID ${runningPid}) is already running — wait for it to finish.`);
+    throw new Error(`Another indexing process (PID ${runningPid}) is already running — wait for it to finish. If no indexer is running, delete .magector/reindex.pid.`);
   }
   const indexArgs = [
     'index',
