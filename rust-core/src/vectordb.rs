@@ -471,11 +471,23 @@ impl VectorDB {
             bincode::serde::encode_into_std_write(&state, &mut writer, bincode::config::standard())
                 .context("Failed to serialize database")?;
             writer.flush()?;
+            // Data must be on disk before the rename, or a crash can leave an empty index.db
+            writer.get_ref().sync_all()?;
         }
 
         // Atomic rename — either fully replaces or doesn't change the file
         fs::rename(&tmp_path, path)
             .context("Failed to atomically rename temp DB")?;
+
+        // The rename is durable only once the directory entry is synced (unix; opening a
+        // directory fails on Windows, where it is skipped).
+        #[cfg(unix)]
+        if let Some(parent) = path.parent() {
+            let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
+            if let Ok(dir) = File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
 
         Ok(())
     }
