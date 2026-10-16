@@ -50,7 +50,8 @@ fn is_pid_alive(pid: u32) -> bool {
 /// index`, or another MCP instance's background reindex) currently holding
 /// the reindex lock for this root, or `None` if the lock is absent or stale.
 /// A stale lock (dead PID) is removed so it doesn't block forever.
-fn external_reindex_pid(magento_root: &Path) -> Option<u32> {
+/// Also used by the serve `describe` handler, which defers its index save the same way.
+pub fn external_reindex_pid(magento_root: &Path) -> Option<u32> {
     let lock_path = reindex_lock_path(magento_root);
     let contents = std::fs::read_to_string(&lock_path).ok()?;
     // Only the first line holds the PID (forward-compatible with a multi-line lock).
@@ -1370,7 +1371,7 @@ mod tests {
 
     #[test]
     fn test_scans_skip_what_a_full_index_skips() {
-        // `discover_files` honours EXCLUDE_PATHS and .magectorignore; the resume and serve
+        // `discover_files_with_skipped` honours EXCLUDE_PATHS and .magectorignore; the resume and serve
         // scans must too. Otherwise they index files a full index never saw (every Magento
         // root has dev/tools/**/*.js) and `files_found - to_process.len()` underflows.
         let dir = make_temp_dir();

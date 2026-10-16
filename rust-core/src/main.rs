@@ -671,6 +671,23 @@ fn withdraw_sidecar_claims(db_path: &std::path::Path, paths: &[String]) -> bool 
     true
 }
 
+/// Runs `save` (an index.db write) unless an external indexer holds the reindex lock for
+/// `magento_root` — the watcher defers the same way, and two writers would clobber each
+/// other's index.db. Returns whether `save` ran.
+fn save_unless_external_indexer(magento_root: &std::path::Path, save: impl FnOnce() -> Result<()>) -> bool {
+    if let Some(pid) = magector_core::watcher::external_reindex_pid(magento_root) {
+        eprintln!(
+            "Warning: an indexer (PID {}) holds the reindex lock — skipping the index save after describe",
+            pid
+        );
+        return false;
+    }
+    if let Err(e) = save() {
+        eprintln!("Warning: failed to save index after re-embed: {}", e);
+    }
+    true
+}
+
 /// Final step for every serve reply: guarantees one valid JSON object and echoes the
 /// request's `id` (copied verbatim) when it carried one. Handlers build some replies with
 /// `format!`, which breaks on `"` or `\` in error text; such output is replaced by an error.
@@ -831,9 +848,7 @@ fn handle_serve_request(
                                 match reindex_result {
                                     Ok(indexed) => {
                                         eprintln!("Re-indexed {} files with descriptions", indexed.len());
-                                        if let Err(e) = idx.save_atomic_unless_replaced(db_path) {
-                                            eprintln!("Warning: failed to save index after re-embed: {}", e);
-                                        }
+                                        save_unless_external_indexer(mg_root_path, || idx.save_atomic_unless_replaced(db_path));
                                     }
                                     Err(e) => {
                                         eprintln!("Warning: re-index after describe failed: {}", e);
@@ -1891,6 +1906,21 @@ class Helper
 #[cfg(test)]
 mod manifest_save_tests {
     use super::*;
+
+    #[test]
+    fn describe_save_defers_to_an_external_indexer() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        let mut saves = 0;
+        assert!(save_unless_external_indexer(root, || { saves += 1; Ok(()) }), "no lock: the index is saved");
+        assert_eq!(saves, 1);
+
+        // A live PID (this test process) holds the reindex lock: describe must not write index.db.
+        fs::create_dir_all(root.join(".magector")).unwrap();
+        fs::write(root.join(".magector").join("reindex.pid"), std::process::id().to_string()).unwrap();
+        assert!(!save_unless_external_indexer(root, || { saves += 1; Ok(()) }), "lock held: the save is skipped");
+        assert_eq!(saves, 1);
+    }
 
     #[test]
     fn a_failed_manifest_save_withdraws_the_old_sidecar_and_does_not_fail() {

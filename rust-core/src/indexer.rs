@@ -63,7 +63,7 @@ pub(crate) fn is_module_readme(relative: &Path) -> bool {
 }
 
 /// Whether a file is indexed (size aside): a source file by extension, or a module README.
-/// `discover_files` and the watcher's two scans must agree on this.
+/// `discover_files_with_skipped` and the watcher's two scans must agree on this.
 pub(crate) fn is_indexed_file(path: &Path, root: &Path) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
         Some(ext) if INCLUDE_EXTENSIONS.contains(&ext) => true,
@@ -882,12 +882,8 @@ impl Indexer {
         Ok(())
     }
 
-    /// Discover files to index (no symlink following for speed)
-    pub(crate) fn discover_files(&self) -> Result<Vec<PathBuf>> {
-        Ok(self.discover_files_with_skipped()?.0)
-    }
-
-    /// Like `discover_files`, also returning the directories that could not be read.
+    /// Discover files to index (no symlink following for speed), also returning the
+    /// directories that could not be read.
     pub(crate) fn discover_files_with_skipped(&self) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
         walk_indexable_files(&self.magento_root, &self.ignore_patterns)
     }
