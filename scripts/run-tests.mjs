@@ -15,6 +15,7 @@ export const TEST_FILES = [
   'tests/dispatch-resolution.test.js',
   'tests/index-snapshot.test.js',
   'tests/mcp-serve-start.test.js',
+  'tests/mcp-serve-ids.test.js',
 ];
 
 function main() {

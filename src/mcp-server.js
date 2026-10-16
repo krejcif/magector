@@ -208,7 +208,7 @@ const SOCK_PATH = path.join(config.magentoRoot, '.magector', 'serve.sock');
 // by COLD_SEARCH_TIMEOUT_MS); SOCKET_QUERY_TIMEOUT_MS must stay above it so a secondary's own
 // socket round-trip doesn't time out first and go cold while the proxy is still waiting.
 const SERVE_RELOAD_WAIT_MS = envMs('MAGECTOR_SERVE_WAIT_MS', 20000);
-const SOCKET_QUERY_TIMEOUT_MS = SERVE_RELOAD_WAIT_MS + 10000;
+const SOCKET_QUERY_TIMEOUT_MS = envMs('MAGECTOR_SERVE_QUERY_TIMEOUT_MS', SERVE_RELOAD_WAIT_MS + 10000);
 const COLD_SEARCH_TIMEOUT_MS = 20000;
 // Everything one search does — waiting for serve, asking it, a cold search — ends within this,
 // under the MCP client's 60s tool timeout.
@@ -988,8 +988,20 @@ function startServeProcess() {
         return;
       }
 
-      // Route response to pending request by order (FIFO)
-      if (servePending.size > 0) {
+      // Route the reply to the request it answers, by the id the core echoes. A reply whose id
+      // is no longer pending answers a request that already timed out: drop it — handed to the
+      // next pending request in order it would shift every later reply by one. An older core
+      // that echoes no id is answered in order (FIFO).
+      if (parsed.id !== undefined) {
+        const { id, ...reply } = parsed;
+        const entry = servePending.get(id);
+        if (!entry) {
+          logToFile('ERR', `[${id}] ← late reply dropped (request no longer pending)`);
+          return;
+        }
+        servePending.delete(id);
+        entry.resolve(reply);
+      } else if (servePending.size > 0) {
         const [id, resolver] = servePending.entries().next().value;
         servePending.delete(id);
         resolver.resolve(parsed);
@@ -1296,7 +1308,8 @@ function serveQuery(command, params = {}, timeoutMs = 30000) {
     servePending.set(id, {
       resolve: (v) => { clearTimeout(timer); resolve(v); }
     });
-    const msg = JSON.stringify({ command, ...params });
+    // params never carry an `id` of their own; the core echoes this one in its reply
+    const msg = JSON.stringify({ id, command, ...params });
     serveProcess.stdin.write(msg + '\n');
   });
 }
