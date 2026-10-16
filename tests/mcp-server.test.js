@@ -11,7 +11,7 @@
 
 import { spawn } from 'child_process';
 import { createInterface } from 'readline';
-import { existsSync } from 'fs';
+import { existsSync, rmSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -364,6 +364,17 @@ async function main() {
       log(diffText.includes('Diff Analysis') ? 'PASS' : 'FAIL', 'tools/call magento_analyze_diff');
     } catch (e) {
       log('FAIL', 'tools/call magento_analyze_diff', e.message);
+    }
+
+    try {
+      const pwned = `/tmp/magector-pwned-${process.pid}`;
+      const injResult = await client.callTool('magento_analyze_diff', { commitHash: `HEAD; touch ${pwned}` });
+      const injText = injResult?.content?.[0]?.text || '';
+      const injOk = injText.includes('Invalid commit reference') && !existsSync(pwned);
+      log(injOk ? 'PASS' : 'FAIL', 'magento_analyze_diff rejects a shell-injecting commitHash', injText.slice(0, 80));
+      try { rmSync(pwned, { force: true }); } catch {}
+    } catch (e) {
+      log('FAIL', 'magento_analyze_diff rejects a shell-injecting commitHash', e.message);
     }
 
     try {

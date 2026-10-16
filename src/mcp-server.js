@@ -25,11 +25,8 @@ import path from 'path';
 import { getRunningIndexPid, writeIndexPidFile, removeIndexPidFile } from './index-lock.js';
 import { PROCESS_SCOPE, readPidRecord, isRecordAlive } from './process-scope.js';
 import { shouldRespawnServe, RESPAWN_WINDOW_MS } from './serve-respawn.js';
-import {
-  analyzeCommit,
-  getStagedDiff,
-  analyzeFileDiff
-} from 'ruvector/dist/core/diff-embeddings.js';
+import { analyzeFileDiff } from 'ruvector/dist/core/diff-embeddings.js';
+import { isSafeGitRef, commitDiff, stagedDiff, commitSubject } from './git-diff.js';
 import {
   analyzeFiles as analyzeComplexityFiles,
   getComplexityRating
@@ -1548,12 +1545,13 @@ async function rustStatsAsync() {
 // ─── Analysis (ruvector JS) ─────────────────────────────────────
 
 async function analyzeDiff(options = {}) {
-  if (options.commitHash) {
-    return analyzeCommit(options.commitHash);
+  const commitHash = options.commitHash;
+  if (commitHash && !isSafeGitRef(commitHash)) {
+    throw new Error(`Invalid commit reference: ${commitHash}`);
   }
-  const diff = getStagedDiff();
+  const diff = commitHash ? commitDiff(config.magentoRoot, commitHash) : stagedDiff(config.magentoRoot);
   if (!diff || diff.trim() === '') {
-    return { files: [], totalAdditions: 0, totalDeletions: 0, riskScore: 0, message: 'No staged changes found' };
+    return { files: [], totalAdditions: 0, totalDeletions: 0, riskScore: 0, message: commitHash ? `No changes found for ${commitHash}` : 'No staged changes found' };
   }
   const fileSections = diff.split(/^diff --git /m).filter(Boolean);
   const files = [];
@@ -1570,6 +1568,10 @@ async function analyzeDiff(options = {}) {
     totalDeletions += analysis.totalDeletions || 0;
   }
 
+  if (commitHash) {
+    const meanRisk = files.length > 0 ? files.reduce((sum, f) => sum + (f.riskScore || 0), 0) / files.length : 0;
+    return { hash: commitHash, message: commitSubject(config.magentoRoot, commitHash), files, totalAdditions, totalDeletions, riskScore: meanRisk };
+  }
   const maxRisk = files.length > 0 ? Math.max(...files.map(f => f.riskScore || 0)) : 0;
   return { files, totalAdditions, totalDeletions, riskScore: maxRisk };
 }

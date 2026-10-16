@@ -1507,6 +1507,26 @@ async function testGrepFilesOnly() {
 
 // ─── magento_read methodName hint Tests ─────────────────────────
 
+async function testGitDiffHelpers() {
+  console.log('\n── git-diff helpers ──');
+  const { isSafeGitRef, commitDiff, stagedDiff, commitSubject } = await import('../src/git-diff.js');
+  assert(isSafeGitRef('HEAD'), 'HEAD is a safe ref');
+  assert(isSafeGitRef('0f32c5f'), 'short sha is safe');
+  assert(isSafeGitRef('main~2'), 'main~2 is safe');
+  assert(!isSafeGitRef('HEAD; touch /tmp/pwned'), 'shell metachars rejected');
+  assert(!isSafeGitRef('$(id)'), 'command substitution rejected');
+  assert(!isSafeGitRef('--output=/tmp/x'), 'leading dash rejected');
+  assert(!isSafeGitRef('a/../b'), 'dotdot rejected');
+  assert(!isSafeGitRef(''), 'empty rejected');
+  // real repo: this project
+  const root = path.join(__dirname, '..');
+  assert(commitDiff(root, 'HEAD').includes('diff --git') || commitDiff(root, 'HEAD') === '', 'commitDiff returns a diff or empty');
+  assertEq(commitDiff(root, 'HEAD; echo x'), '', 'unsafe ref yields empty diff without running');
+  assertEq(typeof stagedDiff(root), 'string', 'stagedDiff returns a string');
+  assert(typeof commitSubject(root, 'HEAD') === 'string' && commitSubject(root, 'HEAD').length > 0, 'commitSubject(HEAD) is a non-empty string');
+  assertEq(commitSubject(root, 'HEAD; echo x'), '', 'commitSubject of an unsafe ref is empty');
+}
+
 async function testReadMethodNameHint() {
   console.log('\n── magento_read methodName hint ──');
 
@@ -4642,6 +4662,7 @@ async function main() {
   testGrepDefaultContext();
   await testGrepFilesOnly();
   await testReadMethodNameHint();
+  await testGitDiffHelpers();
   testHasNullGuard();
   testEnrichChainRegex();
   testExpandIncludePattern();
