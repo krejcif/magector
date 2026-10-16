@@ -1553,6 +1553,7 @@ async function analyzeDiff(options = {}) {
   if (!diff || diff.trim() === '') {
     return { files: [], totalAdditions: 0, totalDeletions: 0, riskScore: 0, message: commitHash ? `No changes found for ${commitHash}` : 'No staged changes found' };
   }
+  const subject = commitHash ? commitSubject(config.magentoRoot, commitHash) : undefined;
   const fileSections = diff.split(/^diff --git /m).filter(Boolean);
   const files = [];
   let totalAdditions = 0;
@@ -1562,7 +1563,7 @@ async function analyzeDiff(options = {}) {
     const fileMatch = section.match(/a\/(.+?)\s/);
     if (!fileMatch) continue;
     const filePath = fileMatch[1];
-    const analysis = await analyzeFileDiff(filePath, section);
+    const analysis = await analyzeFileDiff(filePath, section, subject);
     files.push(analysis);
     totalAdditions += analysis.totalAdditions || 0;
     totalDeletions += analysis.totalDeletions || 0;
@@ -1570,7 +1571,7 @@ async function analyzeDiff(options = {}) {
 
   if (commitHash) {
     const meanRisk = files.length > 0 ? files.reduce((sum, f) => sum + (f.riskScore || 0), 0) / files.length : 0;
-    return { hash: commitHash, message: commitSubject(config.magentoRoot, commitHash), files, totalAdditions, totalDeletions, riskScore: meanRisk };
+    return { hash: commitHash, message: subject, files, totalAdditions, totalDeletions, riskScore: meanRisk };
   }
   const maxRisk = files.length > 0 ? Math.max(...files.map(f => f.riskScore || 0)) : 0;
   return { files, totalAdditions, totalDeletions, riskScore: maxRisk };
