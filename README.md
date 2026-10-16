@@ -6,40 +6,37 @@ Magector is a Model Context Protocol (MCP) server for Magento 2 and Adobe Commer
 
 [![Node.js](https://img.shields.io/badge/node-20+-green.svg)](https://nodejs.org)
 [![Magento](https://img.shields.io/badge/magento-2.4.x-blue.svg)](https://magento.com)
-[![Adobe Commerce](https://img.shields.io/badge/adobe%20commerce-supported-blue.svg)](https://business.adobe.com/products/magento/magento-commerce.html)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 ---
 
 ## Why Magector
 
-A Magento 2 or Adobe Commerce project consists of PHP, XML, JS, PHTML and GraphQL files spread across hundreds of modules. The codebase relies heavily on indirection: plugins intercept methods defined in other modules, observers react to events dispatched elsewhere, `di.xml` rewires interfaces to concrete classes, and layout XML stitches blocks and templates together. No single file tells the full story.
+A Magento 2 or Adobe Commerce project consists of PHP, XML, JS, PHTML and GraphQL files spread across hundreds of modules. The codebase relies heavily on indirection: plugins intercept methods defined in other modules, observers react to events dispatched elsewhere, `di.xml` rewires interfaces to concrete classes, and layout XML stitches blocks and templates together.
 
-Text search (`grep`, IDE search) finds literal strings. It does not connect *"how does checkout calculate totals?"* to `TotalsCollector.php` when the word "totals" appears in many unrelated files, and it does not resolve which `di.xml` declaration takes effect.
+Magector provides two kinds of answers:
 
-Magector combines three things:
-
-1. **Semantic vector index** — every indexed file is embedded into a 384-dimensional space with the ONNX model bge-small-en-v1.5, so a query matches files with related meaning, not only files that contain the query words.
+1. **Semantic vector index** — every indexed file is embedded into a 384-dimensional space with the ONNX model bge-small-en-v1.5, and a query is matched to the nearest vectors (combined with keyword reranking), not to literal strings.
 
 2. **Magento pattern detection** — the indexer classifies files by path and by their PHP AST (controllers, plugins, observers, blocks, models, repositories, GraphQL resolvers, cron, setup patches, API interfaces, configuration XML types and more). Every search result carries that classification.
 
-3. **Feedback learning (SONA)** — the MCP server records which tool follows a search (for example `magento_search` → `magento_find_plugin`) and boosts results of the matching type for similar queries later. This runs locally; no API calls.
+The structural tools (DI, events, Web API, GraphQL, cron, DB schema and others) read the configuration files directly; see [How exact are the results?](#how-exact-are-the-results).
 
 ---
 
 ## Features
 
-- **Semantic search** -- find code by meaning, not exact keywords
+- **Semantic search** -- natural-language queries matched against embedding vectors of the indexed files
 - **Hybrid search** -- combines semantic vector similarity with keyword re-ranking
 - **Structured JSON output** -- semantic results include file path, class name, methods list, role badges and, for the top results, a content snippet
 - **Persistent serve mode** -- a long-running `magector-core serve` process keeps the ONNX model and the vector index in memory, so a query does not load them
 - **Incremental re-indexing** -- a background file watcher re-indexes changed files without a restart (tombstone + compact strategy)
 - **ONNX embeddings** -- 384-dim embeddings with bge-small-en-v1.5 via ONNX Runtime (CPU)
 - **Magento-aware** -- path- and AST-based detection of controllers, plugins, observers, blocks, resolvers, repositories and other Magento file types
-- **Adobe Commerce** -- Adobe Commerce modules are indexed and resolved the same way as Magento Open Source modules
+- **Adobe Commerce** -- Adobe Commerce modules are indexed and parsed like Open Source modules (the verification runs in this repo used Magento Open Source and Mage-OS)
 - **AST-based** -- tree-sitter parsing for PHP and JavaScript extracts classes, methods, namespaces and inheritance
 - **Cross-tool hints** -- tool descriptions include keywords and "See also" references to related tools
-- **SONA feedback learning** -- learns from MCP tool call sequences (e.g. search → find_plugin) and boosts matching result types for similar queries. A rank-2 MicroLoRA adapter (1536 parameters) with EWC regularisation is present in the code but is not trained online (see [SONA Feedback Learning](#6-sona-feedback-learning))
+- **SONA feedback learning** -- learns from MCP tool call sequences (e.g. search → find_plugin) and boosts matching result types for similar queries; an evaluation found no measurable ranking change. A rank-2 MicroLoRA adapter (1536 parameters) with EWC regularisation is present in the code but is not trained online (see [SONA Feedback Learning](#6-sona-feedback-learning))
 - **Diff analysis** -- risk scoring and change classification for a git commit or the staged changes
 - **Complexity analysis** -- cyclomatic complexity, function count and line count per file
 - **LLM description enrichment** -- optional natural-language descriptions of di.xml files generated with Claude, stored in SQLite and prepended to the embedding text so they influence vector ranking
@@ -55,7 +52,7 @@ flowchart LR
   subgraph node ["Node.js Layer"]
     direction TB
     G["CLI<br/>init · index · search · describe · snapshot"]
-    E["MCP Server<br/>48 tools · LRU cache"]
+    E["MCP Server<br/>48 tools · query cache"]
     F["Persistent Serve Process"]
     E --> F
   end
@@ -128,7 +125,7 @@ Magector operates on source code indexed from potentially untrusted `vendor/` de
 
 ### Indexed markdown
 
-The only markdown in the index is the project's own module READMEs, `app/code/<Vendor>/<Module>/README.md`: written next to that code and trusted like its comments. Markdown from `vendor/` packages and anywhere else is never indexed, so `magento_search` does not hand third-party prose to the LLM.
+The only markdown in the index is the project's own module READMEs, `app/code/<Vendor>/<Module>/README.md`: written next to that code and trusted like its comments. Markdown from `vendor/` packages and anywhere else is never indexed, so `magento_search` does not hand third-party markdown to the LLM. Code in `vendor/` is indexed, so its comments and docblocks are in the index and can appear in result snippets.
 
 ### Path arguments
 
@@ -147,7 +144,9 @@ This stops a hostile `vendor/` comment from instructing the LLM to e.g. `magento
 Other path-related rules:
 
 - `magento_complexity` also rejects a `module` that is not of the form `Vendor_Module`.
-- `magento_index` is not confined to `MAGENTO_ROOT`: indexing another root is a supported feature. Its `path` is resolved against the server's working directory and must be an existing directory; anything else is refused.
+- `magento_index` is not confined to `MAGENTO_ROOT`: its `path` is resolved against the server's working directory and must be an existing directory; anything else is refused. The index is written to the configured `MAGECTOR_DB`, replacing the current project's index.
+
+The confinement only stops reads outside `MAGENTO_ROOT`. Everything inside it is readable by `magento_read` and `magento_grep`, including `app/etc/env.php` (database password, crypt key). Do not run the server against a root that holds production secrets.
 
 ### Git refs in `magento_analyze_diff`
 
@@ -155,13 +154,13 @@ Other path-related rules:
 
 ### Auto-update
 
-`src/update.js` fetches the `latest` field from the npm registry and re-runs the CLI with that version:
+`src/update.js` reads the version of the `latest` dist-tag from `https://registry.npmjs.org/magector/latest` (cached for 1 h in `.magector/version-check.json` when the current directory has `.magector/`, else in `~/.magector/version-check.json`) and re-runs the CLI with that version when it is newer:
 
 - A semver-strict `isSafeVersion()` validator rejects any version string that does not match `X.Y.Z` / `X.Y.Z-prerelease`.
 - On POSIX the re-exec passes argv as an array with no shell.
 - On Windows, where `npx` is a `.cmd` shim, the re-exec needs a shell; every argument is first checked against an allow-list, and the update is skipped (the current version runs) when an argument contains characters `cmd.exe` would interpret (spaces, `&`, `|`, quotes).
 - Fails closed: when the version or an argument is rejected, the update is skipped.
-- It never runs for `mcp` or `help`, and not when `MAGECTOR_NO_UPDATE` is set.
+- It never runs for `mcp` or `help`, and not when `MAGECTOR_NO_UPDATE` is set. The MCP config written by `init` starts the server as `npx -y magector@latest mcp`, so each MCP start can still fetch a newer version; pin `magector@<version>` in `.mcp.json` / `~/.cursor/mcp.json` to keep one version.
 
 ### Unix socket permissions
 
@@ -169,7 +168,7 @@ The serve-proxy Unix socket at `.magector/serve.sock` is set to mode `0600` righ
 
 ### Reporting vulnerabilities
 
-If you find a security issue, please open an issue on the GitHub repo and mark it as security-related. Do not post reproducers that leak actual source contents from private codebases.
+Report security issues privately through GitHub's private vulnerability reporting (the repository's Security tab → Report a vulnerability), not in a public issue. Do not include reproducers that leak source contents from private codebases.
 
 ---
 
@@ -219,6 +218,27 @@ npx magector index
 ```bash
 npx magector setup
 ```
+
+### Manual MCP configuration
+
+For another MCP client, or to write the config by hand, use the entry `init` writes (`.mcp.json` for Claude Code, `~/.cursor/mcp.json` for Cursor):
+
+```json
+{
+  "mcpServers": {
+    "magector": {
+      "command": "npx",
+      "args": ["-y", "magector@<version>", "mcp"],
+      "env": {
+        "MAGENTO_ROOT": "/path/to/magento",
+        "MAGECTOR_DB": "/path/to/magento/.magector/index.db"
+      }
+    }
+  }
+}
+```
+
+`init` writes `magector@latest`; a pinned version is shown here. `init` adds `MAGECTOR_MODELS` (absolute) when it is set, and `ANTHROPIC_API_KEY` when you enter a key.
 
 ---
 
@@ -329,7 +349,7 @@ On start, serve prints a ready line: `{"ok":true,"ready":true,"vectors":N,"watch
 {"ok":true,"data":{"app/code/Magento/Catalog/etc/di.xml":{"hash":"...","description":"...","model":"claude-sonnet-4-5-20250929","timestamp":1769875137},...}}
 
 // Describe (generate descriptions + re-index the described files):
-{"command":"describe"}
+{"command":"describe","magento_root":"/var/www/html","force":false}
 // Response:
 {"ok":true,"data":{"total_files":371,"generated":5,"skipped":366,"errors":0}}
 
@@ -344,7 +364,7 @@ On start, serve prints a ready line: `{"ok":true,"ready":true,"vectors":N,"watch
 {"ok":true,"data":{"learned_patterns":5,"total_observations":12,"term_patterns":3,"global_observations":12}}
 ```
 
-Feedback signals may also carry `searchResultPaths`, `followedTool`, `followedArgs`, `originalQuery` and `refinedQuery`. The values in the examples are illustrative.
+Required fields: `query` for `search`, `magento_root` for `describe` (optional: `output`, `force`, `api_key`, `model`), `signals` for `feedback`; `limit` defaults to 10. Feedback signals may also carry `searchResultPaths`, `followedTool`, `followedArgs`, `originalQuery` and `refinedQuery`. The values in the examples are illustrative.
 
 The MCP server also uses these internal commands: `enrich` and `enrich_query` (method-chain index), `ast_query` (tree-sitter patterns), `grep`, `process_set` / `process_get` / `process_remove` and `cache_set` / `cache_get` (process state and cache in `data.db`).
 
@@ -363,10 +383,10 @@ magector-core embed -t <TEXT> [-c <PATH>]
 ### Node.js CLI
 
 ```bash
-npx magector init [path]        # Full setup: index + IDE config
+npx magector init [path] [--threads n] [--batch-size n] [--force]   # Full setup: index + IDE config
 npx magector index [path]       # Index (or re-index) Magento codebase
 npx magector search <query>     # Search indexed code
-npx magector describe [path]    # Generate LLM descriptions for di.xml files
+npx magector describe [path] [--force]   # Generate LLM descriptions for di.xml files
 npx magector stats              # Show indexer statistics
 npx magector setup [path]       # IDE setup only (no indexing)
 npx magector snapshot save <file> [path]   # Index, then archive the index + PHP scan
@@ -377,9 +397,15 @@ npx magector version            # Print the version (also --version, -V)
 npx magector help               # Show help
 ```
 
-Options: `search` `-l, --limit <n>` (default 10), `-f, --format text|json`; `index` `--threads <n>`, `--batch-size <n>`, `--force`; `describe` `--force`; `snapshot save` `--no-index`; `snapshot load` `--update`.
+Options: `search` `-l, --limit <n>` (default 10), `-f, --format text|json`; `init` and `index` `--threads <n>`, `--batch-size <n>`, `--force`; `describe` `--force`; `snapshot save` `--no-index`; `snapshot load` `--update`.
 
-The `describe` command and `magento_describe` MCP tool require an Anthropic API key. During `npx magector init`, you are prompted to paste your key (optional). If provided, it is stored in the MCP config file as the `ANTHROPIC_API_KEY` environment variable so the MCP server can use it. You can also set it later by adding `"ANTHROPIC_API_KEY": "sk-..."` to the `env` section in `.mcp.json` or `~/.cursor/mcp.json`.
+Put the path first when you pass both a path and options. `init` takes the first argument that does not start with `-` as the path, so `init --threads 2 /path` would use `2` as the path. `describe` takes the argument right after `describe` as the path: use `npx magector describe . --force` or `npx magector describe /path/to/magento --force`, not `npx magector describe --force`.
+
+`npx magector validate` and `npx magector benchmark` (and the npm scripts `validate`, `validate:verbose`, `validate:keep`, `benchmark`) are currently broken: they fail with "Cannot find module …/src/indexer.js". Use `magector-core validate` instead.
+
+`init` always writes the index to `<path>/.magector/index.db` (it ignores `MAGECTOR_DB`) and does not take the `.magector/reindex.pid` lock, so do not run it while another indexer is running on the same root.
+
+The `describe` command and `magento_describe` MCP tool require an Anthropic API key. During `npx magector init`, you are prompted to paste your key (optional). If provided, it is stored in the MCP config file as the `ANTHROPIC_API_KEY` environment variable so the MCP server can use it. For Claude Code that file is `<project>/.mcp.json`, and `init` adds only `.magector/` to `.gitignore`: keep `.mcp.json` out of git, or leave the key out and set `ANTHROPIC_API_KEY` in your environment or a user-level config instead. You can also set it later by adding `"ANTHROPIC_API_KEY": "sk-..."` to the `env` section in `.mcp.json` or `~/.cursor/mcp.json`.
 
 ### Environment Variables
 
@@ -473,7 +499,7 @@ npx magector index
 # ✓ Found <T> total files; <U> unchanged, <P> to process
 ```
 
-The indexer collects the already-embedded file paths from the existing DB, keeps their vectors, and only parses and embeds the files that are not in the DB yet. A resumed run also picks up files added to the tree since the previous run.
+The indexer compares the tree with the existing index (content hash per file) and embeds only files that are new or whose content changed since the last save; the vectors of unchanged files are kept. A resumed run also picks up files added to the tree since the previous run.
 
 To force a full rebuild (e.g. to discard stale vectors), pass `--force`:
 
@@ -587,10 +613,10 @@ details, with Magento's own messages:
 | Engine | Checks | Verified |
 |--------|--------|----------|
 | **native** (`MAGECTOR_PHP` only) | Magento's classes on every file (`Config\Dom` — not well-formed XML fails in every mode; the DI / events converters and argument interpreters under Magento's `ErrorHandler`), then Magento's readers (`ObjectManager\Config\Reader\Dom`, `Event\Config\Reader`) on every area in production **and developer mode** — the merged configuration, as Magento validates it; other files against the schema they declare | is Magento |
-| **built-in** (no PHP) | per file: the first libxml error (message and line), the converter and argument-interpreter rules ported from Magento, values read differently than written (observer `disabled="1"`, non-integer `sortOrder`, text next to `<item>`s); per area: its files merged as `Config\Dom` merges them, then the same rules — a file another file completes loads, two files that load alone can fail together | against libxml 2.9.14 / Mage-OS 2.4.9 (`scripts/verify-magento`, mode `config`): same first fatal error on 2,000 files with syntax edits (1,384 not well-formed); same converter verdict on 3,000 files with value edits (2,518 converter exceptions; `const` names native only); nothing reported on the 3,075 unmodified config files of the project; merge (mode `merge`): the same merged document and verdict as Magento's readers on every DI / events area of a Mage-OS 2.4.9 and a Magento 2.4.5 project (30 areas) and on 15,008 merges of mutated files with their originals |
+| **built-in** (no PHP) | per file: the first libxml error (message and line), the converter and argument-interpreter rules ported from Magento, values read differently than written (observer `disabled="1"`, non-integer `sortOrder`, text next to `<item>`s); per area: its files merged as `Config\Dom` merges them, then the same rules — a file another file completes loads, two files that load alone can fail together | against libxml 2.9.14 / Mage-OS 2.4.9 (`scripts/verify-magento`, mode `config`): same first fatal error on 2,000 files with syntax edits (1,384 not well-formed); same converter verdict on 3,000 files with value edits (2,518 converter exceptions; `const` names native only); built-in and native agree on every file and area of that project; merge (mode `merge`): the same merged document and verdict as Magento's readers on every DI / events area of a Mage-OS 2.4.9 and a Magento 2.4.5 project (30 areas) and on 15,008 merges of mutated files with their originals |
 
 The built-in check does not validate schemas (developer mode) and cannot check `const` /
-`init_parameter` arguments (PHP's `defined()`). The native check runs on PHP 8.1–8.4 (on Magento 2.4.5
+`init_parameter` arguments (PHP's `defined()`). The native check was verified on PHP 8.1, 8.3 and 8.4 (on Magento 2.4.5
 with PHP 8.4 it gives the same result as with PHP 8.1).
 
 The results are static analysis of the files. For a running installation, the object manager
@@ -667,7 +693,7 @@ disabled with `disabled="true"` as active.
 | Tool | Parameters | Description |
 |------|------------|-------------|
 | `magento_module_structure` | `moduleName`* | Show module structure -- controllers, models, blocks, plugins, observers, configs |
-| `magento_index` | `path` | Re-index the codebase, or the directory given in `path`, without blocking the server. Returns the last 16 KB of the indexer output (all of it is in `.magector/magector.log`) and starts the method-chain enrichment in the background. The serve process picks up the new index at its next watcher check |
+| `magento_index` | `path` | Re-index the codebase, or the directory given in `path`, without blocking the server. The index is always written to the configured `MAGECTOR_DB`, so a `path` other than the project root replaces the project's index with that tree. Returns the last 16 KB of the indexer output (the last 4 MB of each output stream is logged to `.magector/magector.log`) and starts the method-chain enrichment in the background. The serve process picks up the new index at its next watcher check |
 | `magento_describe` | `force` (default false) | Generate LLM descriptions for di.xml files (requires `ANTHROPIC_API_KEY`), stored in `.magector/sqlite.db`, then re-index the described files |
 | `magento_stats` | — | View index statistics |
 | `magento_batch` | `queries`* (max 10 items of `{tool, args}`) | Run up to 10 calls in parallel in one MCP round trip. Supported tools: `magento_search`, `find_class`, `find_method`, `find_plugin`, `find_observer`, `find_config`, `find_event_flow`, `find_di_wiring`, `find_callers`, `module_structure`, `trace_dependency`, `impact_analysis`, `trace_config`, `grep`, `read`, `ast_search`, `find_dataobject_issues`, `find_null_risks` (all with the `magento_` prefix); any other tool returns "Unsupported batch tool" |
@@ -689,10 +715,10 @@ disabled with `disabled="true"` as active.
 
 ### Search Behaviour
 
-- **Hybrid BM25+vector search** -- combines text frequency scoring with semantic vector similarity, which helps exact class name matches
+- **Hybrid BM25+vector search** -- combines text frequency scoring with semantic vector similarity
 - **Query expansion** -- `magento_search` expands queries with Magento domain synonyms (plugin → interceptor, checkout → cart/quote/totals, etc.); turn it off with `expand: false`
 - **Module filtering** -- `moduleFilter` / `excludeModuleFilter` on `magento_search` limit results by vendor/module pattern. Accepts a single string or array of strings. Supports wildcards, e.g., `"Vendor_*"` or `["Acme_PaymentGateway", "Acme_FreeShipping"]`
-- **Non-blocking reindex** -- the old index stays usable during a background rebuild; the new index is built to a temp path and swapped in on completion (the old one is kept as `.bak`)
+- **Non-blocking automatic reindex** -- when the MCP server starts an index itself (no index, or an incompatible one), the old index stays usable; the new one is built to a temp path and swapped in on completion (the old one is kept as `.bak`). `magento_index` and `magector index` write the index in place
 
 ### Tool Cross-References
 
@@ -800,7 +826,7 @@ Pre-built binaries are provided for the following platforms:
 Magector is checked at two levels:
 
 1. **Automated tests** -- `npm test` runs the Node.js test files (unit tests, MCP integration over stdio JSON-RPC, reindex lock, serve start and request ids, DI parsing and resolution, event dispatch resolution, config models, `validate_config`, `trace_graphql`, index snapshot). `cd rust-core && cargo test --release` runs the Rust unit tests. CI runs both (see [Testing](#testing)).
-2. **Rust-level validation** -- `magector-core validate` runs 557 validation queries (defined in `rust-core/src/validation.rs`) against an index of Magento 2.4.7.
+2. **Rust-level validation** -- `magector-core validate` runs 557 validation queries (defined in `rust-core/src/validation.rs`) against Magento 2.4.7 (downloaded when no `-m` is given) or the root given with `-m`.
 
 ### Historical accuracy result
 
@@ -825,7 +851,7 @@ magector/
 │   └── models/           # dev fallback model directory (tokenizer.json committed)
 ├── platforms/            # npm packages for the platform binaries (built by CI, not committed)
 ├── scripts/              # run-tests.mjs, sync-optional-deps.mjs, setup.sh, verify-magento/
-├── config/               # MCP server configuration template
+├── config/               # example MCP config for a source checkout (its paths must be edited)
 ├── docs/                 # verification notes
 ├── .github/workflows/    # ci.yml (tests), release.yml (cross-compile + publish)
 ├── CHANGELOG.md
@@ -861,7 +887,7 @@ Each source file produces one vector. A module README is split into sections of 
 
 ### 3. Persistent Serve Mode
 
-The MCP server spawns a persistent Rust process (`magector-core serve`) that keeps the ONNX model and the vector index loaded in memory. Queries are sent as JSON over stdin and responses returned via stdout, so a query does not load the model or the index. Up to 300k vectors it is ready about a second after it starts. If it is not ready, a search waits for it up to `MAGECTOR_SERVE_WAIT_MS`, then runs a single-shot `magector-core search` (asynchronous, at most 20 s), so a tool answers inside the MCP client's 60 s. One serve process per project: the first MCP instance starts it and the others join it over `.magector/serve.sock` — also instances in other containers sharing `.magector` (an MCP gateway starting one per session), since the lock records the PID namespace of its holder.
+The MCP server spawns a persistent Rust process (`magector-core serve`) that keeps the ONNX model and the vector index loaded in memory. Queries are sent as JSON over stdin and responses returned via stdout, so a query does not load the model or the index. Up to 300k vectors there is no search graph to build at start; on a 50k-vector index serve was ready 0.7 s after it started (CHANGELOG 2.22.0). If it is not ready, a search waits for it up to `MAGECTOR_SERVE_WAIT_MS`, then runs a single-shot `magector-core search` (asynchronous, at most 20 s), so a tool answers inside the MCP client's 60 s. One serve process per project: the first MCP instance starts it and the others join it over `.magector/serve.sock` — also instances in other containers sharing `.magector` (an MCP gateway starting one per session), since the lock records the PID namespace of its holder.
 
 ```mermaid
 flowchart LR
@@ -938,7 +964,7 @@ The MCP server tracks sequences of tool calls and sends feedback signals to the 
 | `magento_search` → `magento_find_controller` (within 30s) | `refinement_to_controller` | Boosts controller results |
 | `magento_search` → `magento_find_block` (within 30s) | `refinement_to_block` | Boosts block results |
 | `magento_search` → `magento_trace_flow` (within 30s) | `trace_after_search` | Boosts controller results |
-| `magento_search(Q1)` → `magento_search(Q2)` (within 60s) | `query_refinement` | Tracked for analysis |
+| `magento_search(Q1)` → `magento_search(Q2)` (within 60s) | `query_refinement` | Sent to serve, which ignores it (no effect) |
 
 **Characteristics:**
 - Score adjustments are capped at ±0.15 so they do not override semantic similarity
@@ -955,7 +981,7 @@ The MCP server tracks sequences of tool calls and sends feedback signals to the 
 | Component | Parameters | Purpose |
 |-----------|-----------|---------|
 | MicroLoRA | 1536 (rank-2, 2×384×2) | Adjusts the query embedding before vector search |
-| EWC++ | Fisher matrix (384 values) | Regularisation against forgetting (λ=2000) |
+| EWC++ | Fisher diagonal (1536 values, one per LoRA parameter) | Regularisation against forgetting (λ=2000) |
 
 `adjust_query_embedding()` applies the LoRA transform + L2 normalization at search time, with a cosine similarity guard (≥0.90) that skips destructive adjustments. `learn_with_embeddings()`, the only function that trains the adapter, is called only from tests: the serve `feedback` command does pattern learning only. The adapter is therefore not trained in normal use.
 
@@ -1051,7 +1077,7 @@ Each file gets a Magento type from its path (`rust-core/src/magento.rs`); PHP fi
 
 ### IDE Rules
 
-`npx magector init` (or `setup`) writes `.cursor/rules/magector.mdc` and a Magector section in `CLAUDE.md`. The rules instruct the AI to:
+`npx magector init` (or `setup`) writes `.cursor/rules/magector.mdc` for Cursor and a Magector section in `CLAUDE.md` for Claude Code — for the detected IDE, or both when neither is detected. The rules instruct the AI to:
 
 1. Use Magector MCP tools before reading files manually
 2. Write effective semantic queries
@@ -1072,7 +1098,7 @@ For project-specific exclusions, create a `.magectorignore` file in your Magento
 
 ```gitignore
 # .magectorignore — additional directories to exclude from Magector indexing
-# One pattern per line, gitignore-like syntax
+# One directory name or path prefix per line (no wildcards, no negation)
 
 # Custom exclusions
 pub/media
@@ -1088,36 +1114,42 @@ lib/internal
 - Empty lines are ignored
 - Trailing slashes are stripped (`vendor/` → `vendor`)
 - Patterns without `/` match directory names anywhere in the tree
-- Patterns with `/` match relative paths from the project root
+- Patterns with `/` match relative paths from the project root (the path itself and everything under it)
+- Patterns match directories only
 
 ### Config Data (core_config_data exports)
 
-The `magento_trace_config` tool can show actual database config values alongside code analysis. Export your `core_config_data` table as JSON and place files in `.magector/config-data/`:
+The `magento_trace_config` tool can show actual database config values alongside code analysis. Export your `core_config_data` table as JSON and place files in `.magector/config-data/`.
 
-```bash
-# MySQL 8.0+ with --json flag
-mysql -u user -p magento_db -e "SELECT scope, scope_id, path, value FROM core_config_data" --json > .magector/config-data/CZ-production.json
+Each `*.json` file in that directory must hold a JSON array of objects with the fields `scope`, `scope_id`, `path` and `value`:
 
-# Older MySQL (no --json): pipe through python3
-mysql -u user -p magento_db -B -e "SELECT scope, scope_id, path, value FROM core_config_data" | \
-  python3 -c "import sys,json; lines=sys.stdin.read().strip().split('\n'); h=lines[0].split('\t'); \
-  rows=[dict(zip(h,l.split('\t'))) for l in lines[1:]]; [r.update({'scope_id':int(r['scope_id'])}) for r in rows]; \
-  json.dump(rows,sys.stdout,indent=2)" > .magector/config-data/CZ-production.json
-
-# Or from n8n/API/any tool that produces:
-# [{scope, scope_id, path, value}, ...]
+```json
+[
+  {"scope": "default", "scope_id": 0, "path": "web/secure/base_url", "value": "https://shop.example/"},
+  {"scope": "websites", "scope_id": 1, "path": "payment/checkmo/active", "value": null}
+]
 ```
 
-**File naming:** Use `{country}-{environment}.json`, e.g.:
+With the `mysql` client, export the table as tab-separated text (`-B`) and convert it with Python:
+
+```bash
+mysql -u user -p magento_db -B -e "SELECT scope, scope_id, path, value FROM core_config_data" \
+  | python3 -c 'import csv,json,sys; r=list(csv.DictReader(sys.stdin, delimiter="\t", quoting=csv.QUOTE_NONE)); [d.update(scope_id=int(d["scope_id"]), value=None if d["value"]=="NULL" else d["value"]) for d in r]; json.dump(r, sys.stdout, indent=2)' \
+  > .magector/config-data/CZ-production.json
+```
+
+In `-B` output SQL `NULL` appears as the text `NULL` (converted to `null` above), and tabs, newlines and backslashes inside values are escaped (`\t`, `\n`, `\\`). Any other tool that writes the same array works too.
+
+**File naming:** the file name without `.json` is the environment label shown in the answer; the convention is `{country}-{environment}.json`, e.g.:
 - `CZ-production.json`
 - `SK-staging.json`
 - `IT-production.json`
 
-When `magento_trace_config` traces a config path, it automatically looks up values from all available exports and shows them per environment.
+When `magento_trace_config` traces a config path, it looks up values from all exports and shows them per environment. A file that is not valid JSON is skipped; a JSON value that is not an array counts as empty. The exports are read once per MCP server process: restart the server after adding or changing a file.
 
 ### Model Configuration
 
-The Rust core indexes and searches with **bge-small-en-v1.5** (384 dimensions). It loads `bge-small-en-v1.5.onnx` and `tokenizer.json` from its model directory and downloads both from Hugging Face (BAAI/bge-small-en-v1.5) when either is missing; an interrupted download is retried on the next start. The Node.js CLI and MCP server pass `~/.magector/models/` as that directory, or `MAGECTOR_MODELS` when it is set. A direct `magector-core` call uses `-c` (default `./models` in the working directory):
+The Rust core indexes and searches with **bge-small-en-v1.5** (384 dimensions). It loads `bge-small-en-v1.5.onnx` and `tokenizer.json` from its model directory and downloads both from Hugging Face (BAAI/bge-small-en-v1.5) when either is missing; an interrupted download is retried on the next start. The Node.js CLI and MCP server pick that directory in this order: `MAGECTOR_MODELS` if it already holds the model files the Node side checks for (see below), then `~/.magector/models`, then `rust-core/models` in a source checkout. When none is ready, the CLI downloads into `MAGECTOR_MODELS` (or `~/.magector/models`); the MCP server falls back to `MAGECTOR_MODELS`, else `./models`. A direct `magector-core` call uses `-c` (default `./models` in the working directory):
 
 ```bash
 magector-core index -m /path/to/magento -c /custom/model/path
@@ -1185,8 +1217,9 @@ npm run test:config-models
 npm run test:dispatch-resolution
 npm run test:index-snapshot
 
-# SONA feedback integration test (not part of npm test)
-node tests/mcp-sona.test.js
+# Tests that are not part of npm test
+node tests/mcp-sona.test.js      # SONA feedback integration
+node tests/trace-flow.test.js     # magento_trace_flow (needs an index)
 
 # Rust unit tests
 cd rust-core && cargo test --release
@@ -1285,7 +1318,7 @@ pub struct IndexMetadata {
 ### Performance Design
 
 - **Persistent serve mode** -- the Rust process keeps the ONNX model and the vector index in memory, behind a stdin/stdout JSON protocol
-- **Query cache** -- the MCP server keeps an LRU cache (200 entries) of search results
+- **Query cache** -- the MCP server caches up to 200 search results; when full, the oldest entry is evicted first
 - **Hybrid reranking** -- combines semantic similarity with keyword matching
 - **Batched ONNX embedding** -- 256 texts per inference call by default (`MAGECTOR_BATCH_SIZE`, `--batch-size`)
 - **Thread limit** -- ONNX intra-op threads default to half the CPU cores; `--threads` / `MAGECTOR_THREADS` / `OMP_NUM_THREADS` limit both ONNX and rayon
@@ -1363,7 +1396,7 @@ Every tool call logs `[REQ]` with input parameters and `[RES]` with elapsed time
 - **`magento_batch`** — query list on entry, per-sub-tool timing and errors
 - **`magento_grep`** — slow query warnings (>5s), timeout detection
 - **`magento_read`** — file-not-found with error codes, failed method extractions
-- **`magento_index`** — the full indexer output (the tool itself returns only the last 16 KB)
+- **`magento_index`** — the indexer output, up to the last 4 MB of each stream (the tool itself returns only the last 16 KB)
 - **Enrichment** — `Auto-enrich: starting…`, `Auto-enrich complete: N files, M chains` or `Auto-enrich failed: …`; `magento_enrich` and `magento_find_null_risks` log only their `[REQ]` / `[RES]` lines
 
 ### "an indexer (PID N) is writing the index" / "Another indexing process … is already running"
@@ -1372,7 +1405,7 @@ Another `magector index` or `magento_index` holds `.magector/reindex.pid`. Wait 
 
 ### `magento_index` output is cut off
 
-The tool returns at most the last 16 KB of the indexer's output, prefixed with `…(truncated; full output in .magector/magector.log)`. The full output is in `.magector/magector.log`.
+The tool returns at most the last 16 KB of the indexer's output, prefixed with `…(truncated; full output in .magector/magector.log)`. The log holds the indexer output up to the last 4 MB of each stream.
 
 ### Module README sections missing or too coarse
 
