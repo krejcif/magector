@@ -17,6 +17,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 - An interrupted download of the embedding model no longer leaves a broken model that fails every start; a missing tokenizer is downloaded again.
 - A crash while saving no longer risks an empty index.db or a truncated learning-state file: both are flushed to disk before they replace the old file.
 - Indexing skips a directory it cannot read instead of failing the whole run.
+- The reindex lock is created exclusively and a lock held by another user's live process is no longer deleted.
 
 ### Changed
 - package.json now declares engines.node >=20 (glob 13 depends on lru-cache, which requires Node 20); npm warns on older Node instead of failing at import.

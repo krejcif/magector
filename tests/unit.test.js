@@ -11,7 +11,7 @@
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync, renameSync } from 'fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync, renameSync, chmodSync } from 'fs';
 import { Readable } from 'stream';
 import { syncOptionalDeps } from '../scripts/sync-optional-deps.mjs';
 import { getRunningIndexPid, writeIndexPidFile, removeIndexPidFile, lockPathFor } from '../src/index-lock.js';
@@ -5112,6 +5112,52 @@ function testIndexLockConcurrencyGuard() {
     writeIndexPidFile(root, 999999999);
     assertEq(getRunningIndexPid(root), null, 'Dead/impossible PID in lock file is not treated as a conflict');
     assert(!existsSync(lockPathFor(root)), 'Stale lock file is cleaned up on detection');
+
+    // Exclusive creation: a live holder's lock is never overwritten. PID 1 (init/launchd)
+    // is alive on every Unix box; as a non-root user process.kill(1, 0) throws EPERM,
+    // which is exactly the "another user's live process" case.
+    let pid1Alive = true;
+    try { process.kill(1, 0); } catch (e) { if (e.code === 'ESRCH') pid1Alive = false; }
+    if (pid1Alive) {
+      assertEq(writeIndexPidFile(root, 1), true, 'writeIndexPidFile creates a missing lock and returns true');
+      assertEq(writeIndexPidFile(root, 2), false, 'writeIndexPidFile refuses a lock held by a live process');
+      assertEq(readFileSync(lockPathFor(root), 'utf-8'), '1', 'Live holder\'s lock is left untouched');
+      assertEq(getRunningIndexPid(root), 1, 'A live process we may not signal (EPERM) holds the lock');
+      assert(existsSync(lockPathFor(root)), 'Lock of a live foreign-user process is not deleted');
+      removeIndexPidFile(root);
+    } else {
+      console.log('  ○ PID 1 not alive here — live-holder assertions skipped');
+    }
+
+    // A dead holder's lock is replaced
+    writeFileSync(lockPathFor(root), '999999');
+    assertEq(writeIndexPidFile(root, process.pid), true, 'writeIndexPidFile replaces a dead holder\'s lock');
+    assertEq(readFileSync(lockPathFor(root), 'utf-8'), String(process.pid), 'Replaced lock names the new holder');
+
+    // Re-taking our own lock succeeds (e.g. the re-index exit handler / rustIndex)
+    assertEq(writeIndexPidFile(root, process.pid), true, 'writeIndexPidFile returns true when the lock already names this PID');
+    assertEq(readFileSync(lockPathFor(root), 'utf-8'), String(process.pid), 'Own lock still names this PID');
+    removeIndexPidFile(root);
+
+    // An unreadable lock is neither treated as stale nor deleted
+    if (process.platform !== 'win32' && process.getuid && process.getuid() !== 0) {
+      writeFileSync(lockPathFor(root), '12345');
+      chmodSync(lockPathFor(root), 0o000);
+      try {
+        assertEq(getRunningIndexPid(root), null, 'Unreadable lock: no PID reported');
+        assert(existsSync(lockPathFor(root)), 'Unreadable lock is not deleted by getRunningIndexPid');
+        assertEq(writeIndexPidFile(root, process.pid), false, 'writeIndexPidFile does not take over an unreadable lock');
+        assert(existsSync(lockPathFor(root)), 'Unreadable lock is not deleted by writeIndexPidFile');
+      } finally {
+        chmodSync(lockPathFor(root), 0o644);
+        removeIndexPidFile(root);
+      }
+    }
+
+    // Never throws, even when the lock cannot be created at all
+    let threw = false, ret;
+    try { ret = writeIndexPidFile(path.join(root, 'no', 'such', 'dir'), process.pid); } catch { threw = true; }
+    assert(!threw && ret === false, 'writeIndexPidFile returns false instead of throwing when the lock cannot be written');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

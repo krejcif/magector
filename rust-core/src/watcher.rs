@@ -54,7 +54,8 @@ fn is_pid_alive(pid: u32) -> bool {
 fn external_reindex_pid(magento_root: &Path) -> Option<u32> {
     let lock_path = reindex_lock_path(magento_root);
     let contents = std::fs::read_to_string(&lock_path).ok()?;
-    let pid: u32 = contents.trim().parse().ok()?;
+    // Only the first line holds the PID (forward-compatible with a multi-line lock).
+    let pid: u32 = contents.lines().next()?.trim().parse().ok()?;
     if is_pid_alive(pid) {
         Some(pid)
     } else {
@@ -1630,6 +1631,20 @@ mod tests {
         let lock_path = reindex_lock_path(&dir);
         fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
         fs::write(&lock_path, std::process::id().to_string()).unwrap();
+
+        assert_eq!(external_reindex_pid(&dir), Some(std::process::id()));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_external_reindex_pid_reads_first_line() {
+        // Only the first line is the PID: a later lock format may append lines, and an
+        // old binary must still see today's holder.
+        let dir = make_temp_dir();
+        let lock_path = reindex_lock_path(&dir);
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        fs::write(&lock_path, format!("{}\nextra", std::process::id())).unwrap();
 
         assert_eq!(external_reindex_pid(&dir), Some(std::process::id()));
 
