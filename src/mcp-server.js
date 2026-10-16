@@ -50,6 +50,7 @@ import { extractPhpFacts, createDispatchResolver, parseNameExpr, dependsOnCalled
 import { walkPhpFiles, buildPhpScan as buildPhpScanData, scanPhpFile as scanPhpFileInto } from './php-scan.js';
 import { extractJson } from './cli-json.js';
 import { resolveIndexRoot } from './index-root.js';
+import { isClassCandidate } from './find-class-filter.js';
 import { loadSnapshot, writeSnapshot, acquireScanLock, releaseScanLock, scanLockHolder, waitForScanLock } from './php-scan-snapshot.js';
 import { createRequire } from 'module';
 const __pkg = createRequire(import.meta.url)('../package.json');
@@ -6707,10 +6708,7 @@ const _callToolHandler = async (request) => {
         const query = `${args.className} ${ns}`.trim();
         const raw = await rustSearchAsync(query, 30);
         const classLower = args.className.toLowerCase();
-        let results = raw.map(normalizeResult).filter(r =>
-          r.className?.toLowerCase().includes(classLower) ||
-          r.path?.toLowerCase().includes(classLower.replace(/\\/g, '/'))
-        );
+        let results = raw.map(normalizeResult).filter(r => isClassCandidate(r, classLower));
 
         // Filesystem fallback: if vector search found nothing, glob for ClassName.php
         if (results.length === 0 && config.magentoRoot) {
@@ -8271,9 +8269,7 @@ const _callToolHandler = async (request) => {
                 const qr = `${a.className} ${ns}`.trim();
                 const raw = await rustSearchAsync(qr, 30);
                 const cl = a.className.toLowerCase();
-                let res = raw.map(normalizeResult).filter(r =>
-                  r.className?.toLowerCase().includes(cl) || r.path?.toLowerCase().includes(cl.replace(/\\/g, '/'))
-                );
+                let res = raw.map(normalizeResult).filter(r => isClassCandidate(r, cl));
                 // Filesystem fallback for batch find_class
                 if (res.length === 0 && config.magentoRoot) {
                   const shortName = a.className.split('\\').pop();

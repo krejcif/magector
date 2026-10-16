@@ -22,6 +22,7 @@ import { binaryVersion, acceptPathBinary } from '../src/binary.js';
 import { extractJson } from '../src/cli-json.js';
 import { npmInvocation } from '../src/npm-cli.js';
 import { resolveIndexRoot } from '../src/index-root.js';
+import { isClassCandidate } from '../src/find-class-filter.js';
 import { mcpServerEnv } from '../src/init.js';
 import { serializeScan, deserializeScan, checkSnapshot, loadSnapshot, writeSnapshot, snapshotPathFor, scanLockPathFor, acquireScanLock, releaseScanLock, scanLockHolder, waitForScanLock, fileStampOf, SNAPSHOT_FORMAT } from '../src/php-scan-snapshot.js';
 import { spawn as spawnChild } from 'child_process';
@@ -4605,6 +4606,16 @@ async function testPhpScanSnapshot() {
   }
 }
 
+function testIsClassCandidate() {
+  console.log('\n── find_class filter: README hits ──');
+  assert(isClassCandidate({ path: 'app/code/Acme/Price/README.md', type: 'markdown', magentoType: 'readme' }, 'price') === false,
+    'find_class: README of a module named like the class is not a candidate');
+  assert(isClassCandidate({ path: 'app/code/Acme/Other/README.md', type: 'markdown', magentoType: 'readme' }, 'price') === false,
+    'find_class: README whose path lacks the class name is not a candidate');
+  assert(isClassCandidate({ path: 'app/code/Acme/Price/Model/Price.php', className: 'Acme\\Price\\Model\\Price' }, 'price') === true,
+    'find_class: the class itself is a candidate');
+}
+
 async function main() {
   console.log('╔═══════════════════════════════════════════════════════════╗');
   console.log('║            MAGECTOR UNIT TESTS                          ║');
@@ -4635,6 +4646,7 @@ async function main() {
   testReindexTempPathLogic();
   testReindexInterruptKeepsTempDb();
   testRustSearchAsyncGuards();
+  testIsClassCandidate();
   testReindexDeduplication();
   testSingletonAndWarmup();
   await testStdinCleanup();
