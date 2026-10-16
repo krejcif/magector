@@ -858,32 +858,7 @@ impl Indexer {
 
     /// Discover files to index (no symlink following for speed)
     pub(crate) fn discover_files(&self) -> Result<Vec<PathBuf>> {
-        let mut files = Vec::new();
-        let root = &self.magento_root;
-        let ignore = &self.ignore_patterns;
-
-        for entry in WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|e| !Self::should_skip_entry(e, root, ignore))
-        {
-            let entry = entry?;
-            if entry.file_type().is_file() {
-                let path = entry.path();
-
-                // Check the name first (cheap), then file size
-                if is_indexed_file(path, root) {
-                    // Use entry metadata (already cached from DirEntry)
-                    if let Ok(meta) = entry.metadata() {
-                        if meta.len() <= MAX_FILE_SIZE {
-                            files.push(path.to_path_buf());
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(files)
+        Ok(walk_indexable_files(&self.magento_root, &self.ignore_patterns))
     }
 
     /// Check if a directory entry should be skipped during traversal.
@@ -1707,9 +1682,71 @@ impl Indexer {
     }
 }
 
+/// Walk `root` and return the indexable files. An entry that cannot be read
+/// (e.g. a directory without permission) is skipped with a warning instead of
+/// failing the whole walk.
+fn walk_indexable_files(root: &Path, ignore: &[String]) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !Indexer::should_skip_entry(e, root, ignore))
+    {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("Skipping unreadable entry: {}", e);
+                continue;
+            }
+        };
+        if entry.file_type().is_file() {
+            let path = entry.path();
+
+            // Check the name first (cheap), then file size
+            if is_indexed_file(path, root) {
+                // Use entry metadata (already cached from DirEntry)
+                if let Ok(meta) = entry.metadata() {
+                    if meta.len() <= MAX_FILE_SIZE {
+                        files.push(path.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+
+    files
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_skips_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::write(root.join("a/ok.php"), b"<?php").unwrap();
+        let bad = root.join("b");
+        fs::create_dir_all(&bad).unwrap();
+        fs::write(bad.join("hidden.php"), b"<?php").unwrap();
+        fs::set_permissions(&bad, fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = fs::read_dir(&bad).is_err();
+
+        let files = walk_indexable_files(root, &[]);
+
+        // Restore before asserting so a failure cannot leave an undeletable dir.
+        fs::set_permissions(&bad, fs::Permissions::from_mode(0o755)).unwrap();
+        if !unreadable {
+            eprintln!("skipped: running as root, chmod 000 is still readable");
+            return;
+        }
+        assert!(files.iter().any(|f| f.ends_with("a/ok.php")), "{:?}", files);
+        assert!(!files.iter().any(|f| f.ends_with("hidden.php")), "{:?}", files);
+    }
 
     #[test]
     fn test_replaced_since() {
