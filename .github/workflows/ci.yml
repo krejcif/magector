@@ -8,6 +8,7 @@ on:
 jobs:
   node:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
       MAGECTOR_AUTO_INDEX: '0'
     steps:
@@ -26,6 +27,7 @@ jobs:
 
   rust:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

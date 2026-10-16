@@ -49,6 +49,7 @@ const server = spawn('node', [SERVER_PATH], {
   stdio: ['pipe', 'ignore', 'ignore'], // stdin stays open: the server exits when it closes
   env: {
     ...process.env,
+    MAGECTOR_AUTO_INDEX: '1', // this test needs the startup re-index; CI exports 0
     MAGENTO_ROOT: root,
     MAGECTOR_BIN: fakeCore,
     MAGECTOR_NO_UPDATE: '1',
