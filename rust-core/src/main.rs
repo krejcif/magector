@@ -928,11 +928,13 @@ fn handle_serve_request(
             let mg_root_prefix = format!("{}/", mg_root);
 
             let ddb = lock_recover(&data_db, "data_db");
-            if let Err(e) = ddb.begin() {
-                return format!(r#"{{"ok":false,"error":"Transaction begin failed: {}"}}"#, e);
-            }
+            let tx = match ddb.transaction() {
+                Ok(tx) => tx,
+                Err(e) => {
+                    return format!(r#"{{"ok":false,"error":"Transaction begin failed: {}"}}"#, e);
+                }
+            };
             if let Err(e) = ddb.enrich_clear() {
-                let _ = ddb.rollback();
                 return format!(r#"{{"ok":false,"error":"Clear failed: {}"}}"#, e);
             }
 
@@ -1014,7 +1016,6 @@ fn handle_serve_request(
                         has_guard,
                         now,
                     ) {
-                        let _ = ddb.rollback();
                         return format!(r#"{{"ok":false,"error":"Insert failed: {}"}}"#, e);
                     }
                     chains += 1;
@@ -1022,7 +1023,7 @@ fn handle_serve_request(
                 scanned += 1;
             }
 
-            if let Err(e) = ddb.commit() {
+            if let Err(e) = tx.commit() {
                 return format!(r#"{{"ok":false,"error":"Commit failed: {}"}}"#, e);
             }
 
