@@ -27,7 +27,7 @@ npm run validate                  # Full validation suite (downloads Magento 2.4
 npm run benchmark                 # Performance benchmarks (latency, throughput)
 ```
 
-Rust tests: `cd rust-core && cargo test` (557 unit tests in `validation.rs`).
+Rust tests: `cd rust-core && cargo test` (unit tests live beside the code in each module; `validation.rs` holds the accuracy ground-truth data, not tests).
 
 Tests use no framework — direct Node.js scripts spawning the MCP server via stdio and validating JSON-RPC responses.
 
@@ -103,7 +103,7 @@ src/cli.js (Node.js)
          └─ watcher.rs   → file watcher for incremental re-indexing
 ```
 
-The MCP server (`src/mcp-server.js`, 20 tools) wraps the same binary in a persistent `serve` subprocess that keeps the ONNX model + HNSW index resident in memory, eliminating the ~2.6s cold start. It also maintains an LRU query cache (200 entries).
+The MCP server (`src/mcp-server.js`, 48 tools) wraps the same binary in a persistent `serve` subprocess that keeps the ONNX model + HNSW index resident in memory, eliminating the ~2.6s cold start. It also maintains an LRU query cache (200 entries).
 
 ### Binary Resolution (src/binary.js)
 

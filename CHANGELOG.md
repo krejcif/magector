@@ -6,6 +6,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 
 ## [Unreleased]
 
+### Changed
+- package.json now declares engines.node >=20 (glob 13 needs it); npm warns on older Node instead of failing at import.
+
 ## [2.23.0] - 2026-10-06
 
 ### Added
