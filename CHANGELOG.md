@@ -6,25 +6,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 
 ## [Unreleased]
 
-### Fixed
-- Module READMEs that use `#` for every section, or very long paragraphs on one line, are now indexed section by section.
-- `magento_find_class` could list README sections of a module whose name contains the class name.
-- `magento_index` no longer freezes the MCP server while the index runs, and no longer fails when the indexer prints more than 1 MB.
-- `magento_analyze_diff` passed `commitHash` to a shell; it now rejects anything but a git ref and runs git without a shell, in `MAGENTO_ROOT`.
-- `magento_complexity` now rejects paths outside `MAGENTO_ROOT` (it used to accept any absolute path) and malformed module names, and `magento_index` refuses a `path` that is not a directory.
-- The binary self-heal install and the auto-update re-exec now work on Windows (they ran `npm`/`npx`, which are `.cmd` shims there and failed to start). On Windows the auto-update is skipped, and the current version runs, when the command's arguments contain characters `cmd.exe` would interpret (spaces, `&`, `|`, quotes).
-- A serve query that timed out in the MCP server could hand its late reply to the next query; replies now carry the request id.
-- serve no longer answers "Internal panic caught" to every request after one handler panic; a panic during enrich no longer leaves the descriptions database inside an open transaction.
-- `magento_search` no longer waits while the serve watcher walks the whole tree at start or after an external reindex.
-- An interrupted download of the embedding model no longer leaves a broken model that fails every start; a missing tokenizer is downloaded again.
-- A crash while saving no longer risks an empty index.db or a truncated learning-state file: both are flushed to disk before they replace the old file.
-- Indexing skips a directory it cannot read instead of failing the whole run; files already indexed under it are kept. A missing or unreadable root still fails.
-- The reindex lock is created exclusively and a lock held by another user's live process is no longer deleted.
+### Security
+- `magento_analyze_diff` passed `commitHash` to a shell; it now rejects anything but a git ref and runs git without a shell, in `MAGENTO_ROOT`. An invalid or unknown ref, or a root that is not a git repository, now returns git's error instead of "No changes found".
 
 ### Changed
 - package.json now declares engines.node >=20 (glob 13 depends on lru-cache, which requires Node 20); npm warns on older Node instead of failing at import.
 - Feedback signals no longer embed the query for a LoRA update that could not change anything; feedback is cheaper and the serve lock is held shorter.
 - Build: four unused Rust crates removed, ONNX Runtime pinned to the version the lockfile already used.
+- A message about a held reindex lock now ends with "If no indexer is running, delete .magector/reindex.pid."
+- `magento_index` returns at most the last 16 KB of the indexer's output; the full output is in `.magector/magector.log`.
+
+### Fixed
+- Module READMEs that use `#` for every section, or very long paragraphs on one line, are now indexed section by section. Existing indexes pick this up when a README changes, or with `magector index --force`.
+- `magento_find_class` could list README sections of a module whose name contains the class name.
+- `magento_index` no longer freezes the MCP server while the index runs, and no longer fails when the indexer prints more than 1 MB.
+- `magento_complexity` now rejects paths outside `MAGENTO_ROOT` (it used to accept any absolute path) and malformed module names, and `magento_index` refuses a `path` that is not a directory.
+- The binary self-heal install and the auto-update re-exec now work on Windows (they ran `npm`/`npx`, which are `.cmd` shims there and failed to start). On Windows the auto-update is skipped, and the current version runs, when the command's arguments contain characters `cmd.exe` would interpret (spaces, `&`, `|`, quotes).
+- A serve query that timed out in the MCP server could hand its late reply to the next query; replies now carry the request id.
+- A serve error whose message contained a quote or backslash no longer leaves the query waiting until its timeout.
+- serve no longer answers "Internal panic caught" to every request after one handler panic; a panic during enrich no longer leaves the descriptions database inside an open transaction.
+- `magento_search` no longer waits while the serve watcher walks the whole tree at start or after an external reindex.
+- An interrupted download of the embedding model no longer leaves a broken model that fails every start; a missing tokenizer is downloaded again.
+- A crash while saving no longer risks an empty index.db or a truncated learning-state file: both are flushed to disk before they replace the old file.
+- Indexing skips a directory it cannot read instead of failing the whole run; on an incremental run, files already indexed under it are kept. A missing or unreadable root still fails.
+- The reindex lock is created exclusively and a lock held by another user's live process is no longer deleted.
+- `magento_describe` no longer saves the index while another indexer holds the reindex lock (it could overwrite that indexer's index.db).
 
 ## [2.23.0] - 2026-10-06
 
