@@ -390,7 +390,7 @@ impl Indexer {
 
         println!("🔍 Discovering files...");
 
-        let all_files = self.discover_files()?;
+        let (all_files, skipped_dirs) = self.discover_files_with_skipped()?;
         stats.files_found = all_files.len();
 
         // In resume mode, use FileManifest for true incremental indexing:
@@ -439,7 +439,8 @@ impl Indexer {
             }
 
             // Detect changes against manifest
-            let changes = manifest.detect_changes(&self.magento_root)?;
+            let mut changes = manifest.detect_changes(&self.magento_root)?;
+            keep_files_under_skipped_dirs(&mut changes.deleted, &skipped_dirs, &self.magento_root);
             manifest.apply_touched(&changes.touched);
             let touched_count = changes.touched.len();
             let modified_count = changes.modified.len();
@@ -858,7 +859,12 @@ impl Indexer {
 
     /// Discover files to index (no symlink following for speed)
     pub(crate) fn discover_files(&self) -> Result<Vec<PathBuf>> {
-        Ok(walk_indexable_files(&self.magento_root, &self.ignore_patterns))
+        Ok(self.discover_files_with_skipped()?.0)
+    }
+
+    /// Like `discover_files`, also returning the directories that could not be read.
+    pub(crate) fn discover_files_with_skipped(&self) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+        walk_indexable_files(&self.magento_root, &self.ignore_patterns)
     }
 
     /// Check if a directory entry should be skipped during traversal.
@@ -1682,10 +1688,18 @@ impl Indexer {
     }
 }
 
-/// Walk `root` and return the indexable files. An entry that cannot be read
-/// (e.g. a directory without permission) is skipped with a warning instead of
-/// failing the whole walk.
-fn walk_indexable_files(root: &Path, ignore: &[String]) -> Vec<PathBuf> {
+/// Walk `root` and return the indexable files plus the directories that could not
+/// be read. Errors if the root itself is missing, not a directory or unreadable (so
+/// a typo or an unmounted root cannot look like "every file was deleted"). Any other
+/// unreadable entry is skipped with a warning and reported in the second list.
+fn walk_indexable_files(root: &Path, ignore: &[String]) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    if !root.is_dir() {
+        anyhow::bail!("{:?} does not exist or is not a directory", root);
+    }
+    if let Err(e) = fs::read_dir(root) {
+        anyhow::bail!("Cannot read {:?}: {}", root, e);
+    }
+    let mut skipped = Vec::new();
     let mut files = Vec::new();
 
     for entry in WalkDir::new(root)
@@ -1697,6 +1711,9 @@ fn walk_indexable_files(root: &Path, ignore: &[String]) -> Vec<PathBuf> {
             Ok(e) => e,
             Err(e) => {
                 tracing::warn!("Skipping unreadable entry: {}", e);
+                if let Some(p) = e.path() {
+                    skipped.push(p.to_path_buf());
+                }
                 continue;
             }
         };
@@ -1715,7 +1732,22 @@ fn walk_indexable_files(root: &Path, ignore: &[String]) -> Vec<PathBuf> {
         }
     }
 
-    files
+    Ok((files, skipped))
+}
+
+/// Drop from `deleted` (manifest-relative paths) every file under a directory the walk
+/// could not read: it is unknown, not deleted, so its index entries stay as they were.
+fn keep_files_under_skipped_dirs(deleted: &mut Vec<String>, skipped: &[PathBuf], root: &Path) {
+    for dir in skipped {
+        let rel = dir.strip_prefix(root).unwrap_or(dir);
+        let before = deleted.len();
+        deleted.retain(|f| !Path::new(f).starts_with(rel));
+        tracing::warn!(
+            "Could not read {:?}; keeping {} indexed files under it",
+            dir,
+            before - deleted.len()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1736,7 +1768,7 @@ mod tests {
         fs::set_permissions(&bad, fs::Permissions::from_mode(0o000)).unwrap();
         let unreadable = fs::read_dir(&bad).is_err();
 
-        let files = walk_indexable_files(root, &[]);
+        let (files, skipped) = walk_indexable_files(root, &[]).unwrap();
 
         // Restore before asserting so a failure cannot leave an undeletable dir.
         fs::set_permissions(&bad, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1746,6 +1778,39 @@ mod tests {
         }
         assert!(files.iter().any(|f| f.ends_with("a/ok.php")), "{:?}", files);
         assert!(!files.iter().any(|f| f.ends_with("hidden.php")), "{:?}", files);
+        assert_eq!(skipped, vec![bad.clone()]);
+
+        // Files indexed earlier under the unreadable dir are not "deleted"; others are.
+        let mut deleted = vec!["b/hidden.php".to_string(), "b/x/y.php".to_string(), "bb/z.php".to_string(), "a/gone.php".to_string()];
+        keep_files_under_skipped_dirs(&mut deleted, &skipped, root);
+        assert_eq!(deleted, vec!["bb/z.php".to_string(), "a/gone.php".to_string()]);
+    }
+
+    #[test]
+    fn walk_errors_on_missing_or_non_directory_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(walk_indexable_files(&tmp.path().join("typo"), &[]).is_err());
+        let f = tmp.path().join("file");
+        fs::write(&f, b"x").unwrap();
+        assert!(walk_indexable_files(&f, &[]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_errors_on_unreadable_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        fs::create_dir_all(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = fs::read_dir(&root).is_err();
+        let res = walk_indexable_files(&root, &[]);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        if !unreadable {
+            eprintln!("skipped: running as root");
+            return;
+        }
+        assert!(res.is_err());
     }
 
     #[test]
