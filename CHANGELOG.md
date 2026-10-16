@@ -14,6 +14,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 - A serve query that timed out in the MCP server could hand its late reply to the next query; replies now carry the request id.
 - serve no longer answers "Internal panic caught" to every request after one handler panic; a panic during enrich no longer leaves the descriptions database inside an open transaction.
 - `magento_search` no longer waits while the serve watcher walks the whole tree at start or after an external reindex.
+- An interrupted download of the embedding model no longer leaves a broken model that fails every start; a missing tokenizer is downloaded again.
 
 ### Changed
 - package.json now declares engines.node >=20 (glob 13 depends on lru-cache, which requires Node 20); npm warns on older Node instead of failing at import.

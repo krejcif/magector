@@ -9,6 +9,14 @@ use ort::value::Tensor;
 use std::path::Path;
 use tokenizers::Tokenizer;
 
+const MODEL_FILE: &str = "bge-small-en-v1.5.onnx";
+const TOKENIZER_FILE: &str = "tokenizer.json";
+
+/// True when the model or the tokenizer is missing from `cache_dir`.
+pub(crate) fn files_missing(cache_dir: &Path) -> bool {
+    !cache_dir.join(MODEL_FILE).exists() || !cache_dir.join(TOKENIZER_FILE).exists()
+}
+
 /// Embedding dimension for bge-small-en-v1.5
 pub const EMBEDDING_DIM: usize = 384;
 
@@ -75,53 +83,53 @@ impl Embedder {
 
     /// Download and initialize with thread limit
     pub fn from_pretrained_with_threads(cache_dir: &Path, max_threads: Option<usize>) -> Result<Self> {
-        let model_path = cache_dir.join("bge-small-en-v1.5.onnx");
-        let tokenizer_path = cache_dir.join("tokenizer.json");
+        let model_path = cache_dir.join(MODEL_FILE);
+        let tokenizer_path = cache_dir.join(TOKENIZER_FILE);
 
-        // Download if not exists
-        if !model_path.exists() {
+        // Download if either file is missing (a half-finished earlier download
+        // leaves only some of them behind).
+        if files_missing(cache_dir) {
             Self::download_model(cache_dir)?;
         }
 
         Self::new(&model_path, &tokenizer_path, max_threads)
     }
 
-    /// Download the default model
-    fn download_model(cache_dir: &Path) -> Result<()> {
+    /// Download one file to `<final>.part`, fsync it, then rename it into place,
+    /// so an interrupted download never leaves a truncated file under the final name.
+    fn download_file(url: &str, final_path: &Path, what: &str) -> Result<()> {
         use std::fs;
         use std::io::{Read, Write};
 
-        fs::create_dir_all(cache_dir)?;
+        let mut resp = ureq::get(url).call()
+            .map_err(|e| anyhow::anyhow!("Failed to download {}: {}", what, e))?;
+        let mut bytes = Vec::new();
+        resp.body_mut().as_reader()
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("Failed to read {} bytes", what))?;
+
+        let mut part_name = final_path.as_os_str().to_owned();
+        part_name.push(".part");
+        let part_path = std::path::PathBuf::from(part_name);
+
+        let mut file = fs::File::create(&part_path)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&part_path, final_path)?;
+        Ok(())
+    }
+
+    /// Download the default model and tokenizer (both, whichever was missing)
+    fn download_model(cache_dir: &Path) -> Result<()> {
+        std::fs::create_dir_all(cache_dir)?;
 
         let model_url = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model.onnx";
         let tokenizer_url = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json";
 
         tracing::info!("Downloading embedding model...");
-
-        // Download model
-        let mut model_resp = ureq::get(model_url).call()
-            .map_err(|e| anyhow::anyhow!("Failed to download model: {}", e))?;
-        let mut model_bytes = Vec::new();
-        model_resp.body_mut().as_reader()
-            .read_to_end(&mut model_bytes)
-            .context("Failed to read model bytes")?;
-
-        let model_path = cache_dir.join("bge-small-en-v1.5.onnx");
-        let mut file = fs::File::create(&model_path)?;
-        file.write_all(&model_bytes)?;
-
-        // Download tokenizer
-        let mut tokenizer_resp = ureq::get(tokenizer_url).call()
-            .map_err(|e| anyhow::anyhow!("Failed to download tokenizer: {}", e))?;
-        let mut tokenizer_bytes = Vec::new();
-        tokenizer_resp.body_mut().as_reader()
-            .read_to_end(&mut tokenizer_bytes)
-            .context("Failed to read tokenizer bytes")?;
-
-        let tokenizer_path = cache_dir.join("tokenizer.json");
-        let mut file = fs::File::create(&tokenizer_path)?;
-        file.write_all(&tokenizer_bytes)?;
-
+        Self::download_file(model_url, &cache_dir.join(MODEL_FILE), "model")?;
+        Self::download_file(tokenizer_url, &cache_dir.join(TOKENIZER_FILE), "tokenizer")?;
         tracing::info!("Model downloaded successfully");
         Ok(())
     }
@@ -248,6 +256,18 @@ impl Embedder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_needed_when_tokenizer_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(files_missing(dir.path()), "empty cache");
+        std::fs::write(dir.path().join(MODEL_FILE), b"x").unwrap();
+        assert!(files_missing(dir.path()), "model only: tokenizer missing");
+        std::fs::write(dir.path().join(TOKENIZER_FILE), b"x").unwrap();
+        assert!(!files_missing(dir.path()), "both present");
+        std::fs::remove_file(dir.path().join(MODEL_FILE)).unwrap();
+        assert!(files_missing(dir.path()), "tokenizer only: model missing");
+    }
 
     #[test]
     fn test_embedding_dimension() {
