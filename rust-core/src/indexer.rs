@@ -75,8 +75,9 @@ pub(crate) fn is_indexed_file(path: &Path, root: &Path) -> bool {
 }
 
 /// Splits a module README into `(heading, text)` chunks of at most `README_CHUNK_CHARS`
-/// (a single longer line stays whole). Text before the first `## ` is "Summary", a `### X`
-/// under `## Y` is "Y > X", `# ` titles are dropped and headings inside code fences are text.
+/// (a single longer line is split at its last space before the limit). Text before the first
+/// `## ` is "Summary", a `### X` under `## Y` is "Y > X", the first `# ` line is the title and
+/// is dropped (later `# ` lines are sections like `## `), headings inside code fences are text.
 /// Sections that say nothing are dropped: empty, or the module README template's
 /// placeholders `None.` and `Not documented yet.`.
 pub(crate) fn readme_sections(content: &str) -> Vec<(String, String)> {
@@ -87,7 +88,28 @@ pub(crate) fn readme_sections(content: &str) -> Vec<(String, String)> {
             return;
         }
         let mut piece = String::new();
-        for line in text.lines() {
+        let mut lines: Vec<&str> = Vec::new();
+        for mut line in text.lines() {
+            while line.len() > README_CHUNK_CHARS {
+                let mut cut = README_CHUNK_CHARS;
+                while !line.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                let space = if line.as_bytes()[cut] == b' ' { Some(cut) } else { line[..cut].rfind(' ') };
+                match space.filter(|&i| i > 0) {
+                    Some(i) => {
+                        lines.push(&line[..i]);
+                        line = &line[i + 1..];
+                    }
+                    None => {
+                        lines.push(&line[..cut]);
+                        line = &line[cut..];
+                    }
+                }
+            }
+            lines.push(line);
+        }
+        for line in lines {
             if !piece.is_empty() && piece.len() + line.len() + 1 > README_CHUNK_CHARS {
                 chunks.push((heading.clone(), piece.trim().to_string()));
                 piece.clear();
@@ -105,6 +127,7 @@ pub(crate) fn readme_sections(content: &str) -> Vec<(String, String)> {
     let mut sub: Option<String> = None;
     let mut body = String::new();
     let mut in_fence = false;
+    let mut seen_title = false;
     let heading = |section: &str, sub: &Option<String>| match sub {
         Some(s) => format!("{} > {}", section, s),
         None => section.to_string(),
@@ -115,7 +138,12 @@ pub(crate) fn readme_sections(content: &str) -> Vec<(String, String)> {
         if fence.starts_with("```") || fence.starts_with("~~~") {
             in_fence = !in_fence;
         } else if !in_fence {
-            if let Some(h) = line.strip_prefix("## ") {
+            let h1 = line.strip_prefix("# ");
+            if h1.is_some() && !seen_title {
+                seen_title = true;
+                continue;
+            }
+            if let Some(h) = line.strip_prefix("## ").or(h1) {
                 push(&mut chunks, heading(&section, &sub), &body);
                 body.clear();
                 section = h.trim().to_string();
@@ -126,9 +154,6 @@ pub(crate) fn readme_sections(content: &str) -> Vec<(String, String)> {
                 push(&mut chunks, heading(&section, &sub), &body);
                 body.clear();
                 sub = Some(h.trim().to_string());
-                continue;
-            }
-            if line.starts_with("# ") {
                 continue;
             }
         }
@@ -1879,6 +1904,32 @@ mod tests {
         assert!(chunks.iter().all(|(h, t)| h == "How it works" && t.len() <= README_CHUNK_CHARS));
         let rejoined: Vec<String> = chunks.iter().map(|(_, t)| t.clone()).collect();
         assert_eq!(rejoined.join("\n"), long.trim(), "nothing is lost at the cut");
+
+        // `# ` headings after the title are sections
+        assert_eq!(
+            readme_sections("# Acme_Export\n# Purpose\nExports orders.\n# How it works\n1. cron\n"),
+            vec![
+                ("Purpose".to_string(), "Exports orders.".to_string()),
+                ("How it works".to_string(), "1. cron".to_string()),
+            ]
+        );
+
+        // one unwrapped paragraph is split at spaces, nothing lost
+        let words: String = (0..410).map(|i| format!("w{:03}", i % 1000)).collect::<Vec<_>>().join(" ");
+        assert!(words.len() >= 2000);
+        let chunks = readme_sections(&format!("## Long\n{}\n", words));
+        assert!(chunks.len() > 1, "a long line is split");
+        assert!(chunks.iter().all(|(h, t)| h == "Long" && t.len() <= README_CHUNK_CHARS));
+        let rejoined: Vec<String> = chunks.iter().map(|(_, t)| t.clone()).collect();
+        assert_eq!(rejoined.join(" "), words);
+
+        // no space and multi-byte chars: hard split on char boundaries, nothing lost
+        let solid = "\u{00e9}".repeat(1500);
+        let chunks = readme_sections(&format!("## Solid\n{}\n", solid));
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|(_, t)| t.len() <= README_CHUNK_CHARS));
+        let rejoined: String = chunks.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(rejoined, solid);
     }
 
     #[test]
