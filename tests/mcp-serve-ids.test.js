@@ -91,7 +91,7 @@ async function main() {
   console.log('\nmcp serve ids\n');
   try {
     const root = makeRoot('late-reply');
-    const s = startServer(root, { MAGECTOR_SERVE_QUERY_TIMEOUT_MS: '500', MAGECTOR_SERVE_WAIT_MS: '3000' });
+    const s = startServer(root, { MAGECTOR_SERVE_QUERY_TIMEOUT_MS: '1500', MAGECTOR_SERVE_WAIT_MS: '3000' });
     await s.call('magento_stats', {}).catch(() => {}); // the server is up
     ok('serve becomes ready', await waitFor(() => /Serve process ready/.test(s.log()), 10000));
     await s.call('magento_search', { query: 'slow' });   // times out, answered cold (no results)

@@ -1309,8 +1309,9 @@ function serveQuery(command, params = {}, timeoutMs = 30000) {
     servePending.set(id, {
       resolve: (v) => { clearTimeout(timer); resolve(v); }
     });
-    // params never carry an `id` of their own; the core echoes this one in its reply
-    const msg = JSON.stringify({ id, command, ...params });
+    // The core echoes `id` in its reply. It goes last so that a params.id (e.g. from a
+    // socket client) cannot override the routing id.
+    const msg = JSON.stringify({ command, ...params, id });
     serveProcess.stdin.write(msg + '\n');
   });
 }
