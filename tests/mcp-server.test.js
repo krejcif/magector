@@ -387,6 +387,22 @@ async function main() {
       log('FAIL', 'tools/call magento_complexity', e.message);
     }
 
+    try {
+      const escRes = await client.callTool('magento_complexity', { path: '../../etc' });
+      const escText = escRes?.content?.[0]?.text || '';
+      log(escText.includes('Path escapes project root') ? 'PASS' : 'FAIL', 'magento_complexity refuses a path outside the root', escText.slice(0, 80));
+    } catch (e) {
+      log('FAIL', 'magento_complexity refuses a path outside the root', e.message);
+    }
+
+    try {
+      const modRes = await client.callTool('magento_complexity', { module: 'Magento_Catalog; rm -rf /' });
+      const modText = modRes?.content?.[0]?.text || '';
+      log(modText.includes('Invalid module name') ? 'PASS' : 'FAIL', 'magento_complexity rejects a malformed module name', modText.slice(0, 80));
+    } catch (e) {
+      log('FAIL', 'magento_complexity rejects a malformed module name', e.message);
+    }
+
     // ── stdout integrity ────────────────────────────────────────
     console.log('\n── stdout Integrity (critical for Cursor/Claude Code) ──');
 

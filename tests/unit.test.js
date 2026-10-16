@@ -20,6 +20,7 @@ import { defaultDbPath, dbPathForRoot, manifestPath, tempDbPathFor, swapInIndex 
 import { modelDownloadDir, downloadFile } from '../src/model.js';
 import { binaryVersion, acceptPathBinary } from '../src/binary.js';
 import { extractJson } from '../src/cli-json.js';
+import { resolveIndexRoot } from '../src/index-root.js';
 import { mcpServerEnv } from '../src/init.js';
 import { serializeScan, deserializeScan, checkSnapshot, loadSnapshot, writeSnapshot, snapshotPathFor, scanLockPathFor, acquireScanLock, releaseScanLock, scanLockHolder, waitForScanLock, fileStampOf, SNAPSHOT_FORMAT } from '../src/php-scan-snapshot.js';
 import { spawn as spawnChild } from 'child_process';
@@ -1506,6 +1507,15 @@ async function testGrepFilesOnly() {
 }
 
 // ─── magento_read methodName hint Tests ─────────────────────────
+
+function testResolveIndexRoot() {
+  console.log('\n── resolveIndexRoot ──');
+  const bad = resolveIndexRoot('/nonexistent/dir/xyz', '/srv/m');
+  assert(typeof bad.error === 'string' && bad.error.includes('not a directory'), 'nonexistent path is refused', bad.error);
+  assertEq(resolveIndexRoot(undefined, __dirname).root, __dirname, 'no arg falls back to configured root');
+  assertEq(resolveIndexRoot(__dirname, '/x').root, __dirname, 'existing directory arg is used');
+  assert(resolveIndexRoot(path.join(__dirname, 'unit.test.js'), '/x').error !== undefined, 'a file is refused');
+}
 
 async function testGitDiffHelpers() {
   console.log('\n── git-diff helpers ──');
@@ -4663,6 +4673,7 @@ async function main() {
   await testGrepFilesOnly();
   await testReadMethodNameHint();
   await testGitDiffHelpers();
+  testResolveIndexRoot();
   testHasNullGuard();
   testEnrichChainRegex();
   testExpandIncludePattern();

@@ -49,6 +49,7 @@ import { defaultDbPath, manifestPath, tempDbPathFor, swapInIndex } from './paths
 import { extractPhpFacts, createDispatchResolver, parseNameExpr, dependsOnCalledClass, nameMatches, shownName, isInformative, sharesKnownParts, WILD, COND, plainName } from './php-dispatch.js';
 import { walkPhpFiles, buildPhpScan as buildPhpScanData, scanPhpFile as scanPhpFileInto } from './php-scan.js';
 import { extractJson } from './cli-json.js';
+import { resolveIndexRoot } from './index-root.js';
 import { loadSnapshot, writeSnapshot, acquireScanLock, releaseScanLock, scanLockHolder, waitForScanLock } from './php-scan-snapshot.js';
 import { createRequire } from 'module';
 const __pkg = createRequire(import.meta.url)('../package.json');
@@ -6866,7 +6867,11 @@ const _callToolHandler = async (request) => {
       }
 
       case 'magento_index': {
-        const root = args.path || config.magentoRoot;
+        const resolved = resolveIndexRoot(args.path, config.magentoRoot);
+        if (resolved.error) {
+          return { content: [{ type: 'text', text: resolved.error }], isError: true };
+        }
+        const root = resolved.root;
         const output = rustIndex(root);
         // Auto-enrich after indexing: runs in background via Rust serve, doesn't block response
         logToFile('INFO', 'Auto-enrich: starting in background after index');
@@ -7352,12 +7357,20 @@ const _callToolHandler = async (request) => {
       case 'magento_complexity': {
         let filePaths = [];
 
+        const complexityAbs = args.path ? safePath(config.magentoRoot, args.path) : null;
+        if (args.path && !complexityAbs) {
+          return { content: [{ type: 'text', text: `Path escapes project root: ${args.path}` }], isError: true };
+        }
+        if (!args.path && args.module && !/^[A-Za-z][A-Za-z0-9]*_[A-Za-z][A-Za-z0-9]*$/.test(args.module)) {
+          return { content: [{ type: 'text', text: `Invalid module name: ${args.module}` }], isError: true };
+        }
+
         if (args.path) {
-          const pathStat = await stat(args.path).catch(() => null);
+          const pathStat = await stat(complexityAbs).catch(() => null);
           if (pathStat && pathStat.isDirectory()) {
-            filePaths = await glob('**/*.php', { cwd: args.path, absolute: true, nodir: true });
+            filePaths = await glob('**/*.php', { cwd: complexityAbs, absolute: true, nodir: true });
           } else if (pathStat) {
-            filePaths = [args.path];
+            filePaths = [complexityAbs];
           }
         } else if (args.module) {
           const modulePath = args.module.replace('_', '/');
