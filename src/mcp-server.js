@@ -27,6 +27,7 @@ import { PROCESS_SCOPE, readPidRecord, isRecordAlive } from './process-scope.js'
 import { shouldRespawnServe, RESPAWN_WINDOW_MS } from './serve-respawn.js';
 import { analyzeFileDiff } from 'ruvector/dist/core/diff-embeddings.js';
 import { isSafeGitRef, commitDiff, stagedDiff, commitSubject } from './git-diff.js';
+import { clientOutputTail } from './tool-output.js';
 import {
   analyzeFiles as analyzeComplexityFiles,
   getComplexityRating
@@ -1532,7 +1533,11 @@ async function rustIndex(magentoRoot) {
           ));
         } else if (code !== 0) {
           const tail = (err.get() || out.get()).trim();
-          reject(new Error(`Indexer ${signal ? `killed by ${signal}` : `exited with code ${code}`}${tail ? `:\n${tail}` : ''}`));
+          const what = `Indexer ${signal ? `killed by ${signal}` : `exited with code ${code}`}`;
+          // The full output goes to the log; the MCP client gets its last 16 KB.
+          logToFile('ERR', `magento_index: ${what}${tail ? `:\n${tail}` : ''}`);
+          const shown = clientOutputTail(tail);
+          reject(new Error(`${what}${shown ? `:\n${shown}` : ''}`));
         } else {
           resolve(out.get());
         }
@@ -6922,7 +6927,9 @@ const _callToolHandler = async (request) => {
           return { content: [{ type: 'text', text: resolved.error }], isError: true };
         }
         const root = resolved.root;
-        const output = await rustIndex(root);
+        const fullOutput = await rustIndex(root);
+        logToFile('INFO', `magento_index output:\n${fullOutput}`);
+        const output = clientOutputTail(fullOutput); // the full output is in the log
         // Auto-enrich after indexing: runs in background via Rust serve, doesn't block response
         logToFile('INFO', 'Auto-enrich: starting in background after index');
         serveQuery('enrich', { magento_root: root }, 120000).then(resp => {

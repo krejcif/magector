@@ -22,6 +22,7 @@ import { binaryVersion, acceptPathBinary } from '../src/binary.js';
 import { extractJson } from '../src/cli-json.js';
 import { npmInvocation } from '../src/npm-cli.js';
 import { resolveIndexRoot } from '../src/index-root.js';
+import { clientOutputTail, CLIENT_OUTPUT_LIMIT, TRUNCATED_PREFIX } from '../src/tool-output.js';
 import { isClassCandidate } from '../src/find-class-filter.js';
 import { mcpServerEnv } from '../src/init.js';
 import { serializeScan, deserializeScan, checkSnapshot, loadSnapshot, writeSnapshot, snapshotPathFor, scanLockPathFor, acquireScanLock, releaseScanLock, scanLockHolder, waitForScanLock, fileStampOf, SNAPSHOT_FORMAT } from '../src/php-scan-snapshot.js';
@@ -1517,6 +1518,21 @@ function testResolveIndexRoot() {
   assertEq(resolveIndexRoot(undefined, __dirname).root, __dirname, 'no arg falls back to configured root');
   assertEq(resolveIndexRoot(__dirname, '/x').root, __dirname, 'existing directory arg is used');
   assert(resolveIndexRoot(path.join(__dirname, 'unit.test.js'), '/x').error !== undefined, 'a file is refused');
+}
+
+function testClientOutputTail() {
+  console.log('\n── magento_index output cap ──');
+  assertEq(CLIENT_OUTPUT_LIMIT, 16 * 1024, 'the client sees at most 16 KB');
+  assertEq(TRUNCATED_PREFIX, '…(truncated; full output in .magector/magector.log)', 'truncation prefix text');
+  assertEq(clientOutputTail('short output'), 'short output', 'short output is unchanged');
+  const exact = 'x'.repeat(CLIENT_OUTPUT_LIMIT);
+  assert(clientOutputTail(exact) === exact, 'output of exactly the limit is unchanged');
+  const long = 'HEAD'.repeat(10000) + 'y'.repeat(CLIENT_OUTPUT_LIMIT - 4) + 'TAIL';
+  const capped = clientOutputTail(long);
+  assert(capped.startsWith(TRUNCATED_PREFIX + '\n'), 'long output starts with the truncation prefix');
+  assert(capped.endsWith('TAIL') && !capped.includes('HEAD'), 'long output keeps only the end');
+  assertEq(capped.length, TRUNCATED_PREFIX.length + 1 + CLIENT_OUTPUT_LIMIT, 'long output is capped to the limit plus the prefix');
+  assertEq(clientOutputTail(''), '', 'empty output stays empty');
 }
 
 async function testGitDiffHelpers() {
@@ -4713,6 +4729,7 @@ async function main() {
   testGrepDefaultContext();
   await testGrepFilesOnly();
   await testReadMethodNameHint();
+  testClientOutputTail();
   await testGitDiffHelpers();
   testResolveIndexRoot();
   testHasNullGuard();
