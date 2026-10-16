@@ -12,6 +12,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use magector_core::{Indexer, VectorDB, Embedder, Validator, WatcherStatus, EMBEDDING_DIM};
 use magector_core::datadb::DataDb;
+use magector_core::sync_util::lock_recover;
 
 const MAGENTO2_REPO: &str = "https://github.com/magento/magento2.git";
 const MAGENTO2_TAG: &str = "2.4.7"; // Latest stable version
@@ -563,7 +564,7 @@ fn run_serve(
         let status = Arc::clone(&watcher_status);
 
         {
-            let mut s = status.lock().unwrap();
+            let mut s = lock_recover(&status, "status");
             s.running = true;
         }
 
@@ -579,7 +580,7 @@ fn run_serve(
 
     // Write own PID to data.db so Node.js can discover us via DB query
     {
-        let ddb = data_db.lock().unwrap();
+        let ddb = lock_recover(&data_db, "data_db");
         let pid = std::process::id();
         let version = env!("CARGO_PKG_VERSION");
         let now = std::time::SystemTime::now()
@@ -716,7 +717,7 @@ fn handle_serve_request(
             };
             let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
-            let mut idx = indexer.lock().unwrap();
+            let mut idx = lock_recover(&indexer, "indexer");
 
             let mut results = match idx.search(query, limit) {
                 Ok(r) => r,
@@ -731,12 +732,12 @@ fn handle_serve_request(
             }
         }
         "stats" => {
-            let idx = indexer.lock().unwrap();
+            let idx = lock_recover(&indexer, "indexer");
             let stats = idx.stats();
             format!(r#"{{"ok":true,"data":{{"vectors":{}}}}}"#, stats.vectors_created)
         }
         "watcher_status" => {
-            let s = watcher_status.lock().unwrap();
+            let s = lock_recover(&watcher_status, "status");
             match serde_json::to_string(&*s) {
                 Ok(json) => format!(r#"{{"ok":true,"data":{}}}"#, json),
                 Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
@@ -750,7 +751,7 @@ fn handle_serve_request(
             if signals.is_empty() {
                 return r#"{"ok":true,"data":{"learned":0}}"#.to_string();
             }
-            let mut idx = indexer.lock().unwrap();
+            let mut idx = lock_recover(&indexer, "indexer");
             for signal in &signals {
                 // Re-embed the query for LoRA training
                 let query = if signal.query.is_empty() {
@@ -780,7 +781,7 @@ fn handle_serve_request(
         }
 
         "sona_status" => {
-            let idx = indexer.lock().unwrap();
+            let idx = lock_recover(&indexer, "indexer");
             let patterns = idx.sona.as_ref()
                 .map(|s| s.learned.adjustments.len()).unwrap_or(0);
             let observations: u32 = idx.sona.as_ref()
@@ -828,7 +829,7 @@ fn handle_serve_request(
                             .filter(|p| p.exists())
                             .collect();
                         if !files_to_reindex.is_empty() {
-                            let mut idx = indexer.lock().unwrap();
+                            let mut idx = lock_recover(&indexer, "indexer");
                             // Ensure descriptions DB is set for re-embedding
                             idx.set_descriptions_db(std::path::PathBuf::from(&output));
                             // The sidecar must stop claiming these files before their vectors change
@@ -863,7 +864,7 @@ fn handle_serve_request(
 
         "descriptions" => {
             // Return all descriptions as JSON — try DataDb first, fall back to legacy DescriptionDb
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             match ddb.desc_all() {
                 Ok(all) if !all.is_empty() => {
                     match serde_json::to_string(&all) {
@@ -926,7 +927,7 @@ fn handle_serve_request(
             let mut chains: usize = 0;
             let mg_root_prefix = format!("{}/", mg_root);
 
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             if let Err(e) = ddb.begin() {
                 return format!(r#"{{"ok":false,"error":"Transaction begin failed: {}"}}"#, e);
             }
@@ -1034,7 +1035,7 @@ fn handle_serve_request(
             let first_method = first_method.filter(|s| !s.is_empty());
             let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
 
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             match ddb.enrich_query_null_risks(first_method, limit) {
                 Ok(rows) => {
                     let data: Vec<serde_json::Value> = rows.into_iter().map(|(file, line, chain, first, second)| {
@@ -1072,7 +1073,7 @@ fn handle_serve_request(
                     .unwrap_or_default()
                     .as_secs() as i64
             });
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             match ddb.process_set(name, pid, version, ts) {
                 Ok(()) => r#"{"ok":true}"#.to_string(),
                 Err(e) => format!(r#"{{"ok":false,"error":"process_set failed: {}"}}"#, e),
@@ -1084,7 +1085,7 @@ fn handle_serve_request(
                 Some(n) => n,
                 None => return r#"{"ok":false,"error":"Missing 'name' field"}"#.to_string(),
             };
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             match ddb.process_get(name) {
                 Some((pid, version, started_at)) => {
                     let ver_json = match &version {
@@ -1105,7 +1106,7 @@ fn handle_serve_request(
                 Some(n) => n,
                 None => return r#"{"ok":false,"error":"Missing 'name' field"}"#.to_string(),
             };
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             match ddb.process_remove(name) {
                 Ok(()) => r#"{"ok":true}"#.to_string(),
                 Err(e) => format!(r#"{{"ok":false,"error":"process_remove failed: {}"}}"#, e),
@@ -1128,7 +1129,7 @@ fn handle_serve_request(
                     .unwrap_or_default()
                     .as_secs() as i64
             });
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             match ddb.cache_set(key, value, ts) {
                 Ok(()) => r#"{"ok":true}"#.to_string(),
                 Err(e) => format!(r#"{{"ok":false,"error":"cache_set failed: {}"}}"#, e),
@@ -1140,7 +1141,7 @@ fn handle_serve_request(
                 Some(k) => k,
                 None => return r#"{"ok":false,"error":"Missing 'key' field"}"#.to_string(),
             };
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             match ddb.cache_get(key) {
                 Some((value, updated_at)) => {
                     // Escape the value string for JSON embedding

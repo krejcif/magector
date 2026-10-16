@@ -7,7 +7,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
+use crate::sync_util::lock_recover;
 use std::time::{Duration, SystemTime};
 use walkdir::WalkDir;
 use sha2::{Digest, Sha256};
@@ -59,27 +60,6 @@ fn external_reindex_pid(magento_root: &Path) -> Option<u32> {
     } else {
         let _ = std::fs::remove_file(&lock_path);
         None
-    }
-}
-
-/// Lock a mutex, recovering from poisoning instead of propagating the panic.
-///
-/// A poisoned mutex means another thread panicked while holding the lock
-/// (for example, the `feedback` handler panicking inside `update_fisher`).
-/// The watcher thread must keep running so that incremental re-indexing
-/// resumes as soon as the offending call path is patched — otherwise a
-/// single transient panic takes the watcher offline until the MCP server
-/// is restarted.
-fn lock_recover<'a, T>(mutex: &'a Mutex<T>, label: &str) -> MutexGuard<'a, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            tracing::warn!(
-                "Watcher: {} mutex was poisoned by a prior panic — recovering and continuing",
-                label
-            );
-            poisoned.into_inner()
-        }
     }
 }
 
