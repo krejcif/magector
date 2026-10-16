@@ -33,7 +33,7 @@
     "test:dispatch-resolution": "node tests/dispatch-resolution.test.js",
     "test:index-snapshot": "node tests/index-snapshot.test.js",
     "test:serve-start": "node tests/mcp-serve-start.test.js",
-    "version": "node scripts/sync-optional-deps.mjs && npm install --package-lock-only --no-audit --no-fund && git add package.json package-lock.json"
+    "version": "node scripts/sync-optional-deps.mjs && git add package.json"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
