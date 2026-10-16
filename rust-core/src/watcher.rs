@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use crate::sync_util::lock_recover;
@@ -517,15 +517,17 @@ fn zero_entry_paths(
 /// current stat, the content hashes and stale sentinels of the sidecar that describes that
 /// index.db, and every indexed file the walk no longer finds tracked stale, so the first scan
 /// drops its vectors.
-fn manifest_for(idx: &Indexer, magento_root: &Path, db_path: &Path) -> FileManifest {
-    let paths = idx.indexed_paths();
-    let mut manifest = FileManifest::from_existing_index(magento_root, &paths);
+///
+/// Takes the indexed path set, not the `Indexer`: the tree walk must run with the indexer
+/// lock released, or every search waits for it.
+fn manifest_for(paths: &HashSet<String>, magento_root: &Path, db_path: &Path) -> FileManifest {
+    let mut manifest = FileManifest::from_existing_index(magento_root, paths);
     // The sidecar describes the index.db this serve just loaded: take its content hashes
     // (and stale sentinels) so a checkout during serve is "touched", not re-embedded.
     if let Some(sidecar) = FileManifest::load(&FileManifest::sidecar_path(db_path)) {
         manifest.seed_from(&sidecar);
     }
-    manifest.track_indexed(&paths);
+    manifest.track_indexed(paths);
     manifest
 }
 
@@ -547,10 +549,10 @@ pub fn watcher_loop(
     );
 
     // Build initial manifest
-    let mut manifest = {
-        let idx = lock_recover(&indexer, "indexer");
-        manifest_for(&idx, &magento_root, &db_path)
-    };
+    // The guard is a temporary dropped at the end of this statement: the walk below runs
+    // without the indexer lock.
+    let paths = lock_recover(&indexer, "indexer").indexed_paths();
+    let mut manifest = manifest_for(&paths, &magento_root, &db_path);
 
     {
         let mut s = lock_recover(&status, "status");
@@ -568,26 +570,35 @@ pub fn watcher_loop(
         // this loop's next save would write it back over the new one. Not while an indexer
         // holds the lock: it is still writing.
         if external_reindex_pid(&magento_root).is_none() {
-            let mut idx = lock_recover(&indexer, "indexer");
-            match idx.reload_if_replaced() {
-                Ok(false) => {}
-                Ok(true) => {
-                    idx.warm_search();
-                    manifest = manifest_for(&idx, &magento_root, &db_path);
-                    lock_recover(&status, "status").tracked_files = manifest.files.len();
-                    tracing::info!(
-                        "index.db was replaced by another process — reloaded {} vectors, {} files tracked",
-                        idx.stats().vectors_created,
-                        manifest.files.len()
-                    );
+            // Reloaded index's (paths, vector count), captured under the lock; the manifest
+            // walk happens after the guard is dropped so searches are not blocked.
+            let mut reloaded: Option<(HashSet<String>, usize)> = None;
+            {
+                let mut idx = lock_recover(&indexer, "indexer");
+                match idx.reload_if_replaced() {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        idx.warm_search();
+                        reloaded = Some((idx.indexed_paths(), idx.stats().vectors_created));
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "index.db was replaced by another process but could not be loaded ({:#}); keeping the loaded index and not writing index.db",
+                            e
+                        );
+                        continue;
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        "index.db was replaced by another process but could not be loaded ({:#}); keeping the loaded index and not writing index.db",
-                        e
-                    );
-                    continue;
-                }
+            }
+            // Rebuild before change detection below, which compares against `manifest`.
+            if let Some((paths, vectors)) = reloaded {
+                manifest = manifest_for(&paths, &magento_root, &db_path);
+                lock_recover(&status, "status").tracked_files = manifest.files.len();
+                tracing::info!(
+                    "index.db was replaced by another process — reloaded {} vectors, {} files tracked",
+                    vectors,
+                    manifest.files.len()
+                );
             }
         }
 
@@ -1230,6 +1241,19 @@ mod tests {
         assert!(FileManifest::load(&path).is_none());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_manifest_for_needs_no_indexer() {
+        // manifest_for takes the path set, not the Indexer: the tree walk runs with no
+        // indexer (and so no indexer lock) in scope.
+        let dir = make_temp_dir();
+        std::fs::write(dir.join("a.php"), "<?php echo 1;").unwrap();
+        let db = dir.join(".magector").join("index.db");
+        let paths: HashSet<String> = ["a.php".to_string(), "gone.php".to_string()].into_iter().collect();
+        let manifest = manifest_for(&paths, &dir, &db);
+        assert!(manifest.files.keys().any(|k| k.ends_with("a.php")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

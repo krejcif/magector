@@ -12,6 +12,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 - The binary self-heal install and the auto-update re-exec now work on Windows (they ran `npm`/`npx`, which are `.cmd` shims there and failed to start). On Windows the auto-update is skipped, and the current version runs, when the command's arguments contain characters `cmd.exe` would interpret (spaces, `&`, `|`, quotes).
 - A serve query that timed out in the MCP server could hand its late reply to the next query; replies now carry the request id.
 - serve no longer answers "Internal panic caught" to every request after one handler panic; a panic during enrich no longer leaves the descriptions database inside an open transaction.
+- `magento_search` no longer waits while the serve watcher walks the whole tree at start or after an external reindex.
 
 ### Changed
 - package.json now declares engines.node >=20 (glob 13 depends on lru-cache, which requires Node 20); npm warns on older Node instead of failing at import.
