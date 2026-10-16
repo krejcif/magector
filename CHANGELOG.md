@@ -17,6 +17,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 
 ### Changed
 - package.json now declares engines.node >=20 (glob 13 depends on lru-cache, which requires Node 20); npm warns on older Node instead of failing at import.
+- Feedback signals no longer embed the query for a LoRA update that could not change anything; feedback is cheaper and the serve lock is held shorter.
 
 ## [2.23.0] - 2026-10-06
 

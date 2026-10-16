@@ -753,24 +753,13 @@ fn handle_serve_request(
             }
             let mut idx = lock_recover(&indexer, "indexer");
             for signal in &signals {
-                // Re-embed the query for LoRA training
-                let query = if signal.query.is_empty() {
-                    signal.original_query.as_deref().unwrap_or("")
-                } else {
-                    &signal.query
-                };
-                let query_emb = if !query.is_empty() {
-                    idx.embed_query(query).ok()
-                } else {
-                    None
-                };
+                // Pattern learning only. The MicroLoRA update was dropped: with the
+                // query as its own target, delta = target - query = 0, so it changed
+                // nothing and cost an ONNX pass per signal under the indexer lock.
+                // Follow-up (design separately): a real target is the embedding of the
+                // result the agent followed (`signal.followed_args.path`).
                 if let Some(ref mut sona) = idx.sona {
-                    if let Some(ref qe) = query_emb {
-                        // Use query as its own target for self-supervised LoRA learning
-                        sona.learn_with_embeddings(signal, Some(qe), Some(qe));
-                    } else {
-                        sona.learn(signal);
-                    }
+                    sona.learn(signal);
                 }
             }
             if let Some(ref sona) = idx.sona {
