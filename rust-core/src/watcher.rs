@@ -23,19 +23,18 @@ fn reindex_lock_path(magento_root: &Path) -> PathBuf {
 }
 
 /// Check whether the PID in `.magector/reindex.pid` belongs to a still-running
-/// process. Mirrors `getRunningIndexPid()` in `src/index-lock.js` — signal 0 /
-/// `kill -0` is an existence check, it does not actually send a signal.
+/// process. Mirrors `getRunningIndexPid()` in `src/index-lock.js`: signal 0 is an
+/// existence check (no signal is sent), and EPERM — a live process owned by another
+/// user — counts as alive. PID 0 and PIDs above `i32::MAX` are never alive
+/// (`kill(0, …)` / negative PIDs address process groups).
 fn is_pid_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        std::process::Command::new("kill")
-            .arg("-0")
-            .arg(pid.to_string())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        if pid == 0 || pid > i32::MAX as u32 {
+            return false;
+        }
+        let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
     #[cfg(not(unix))]
     {
@@ -1612,6 +1611,29 @@ mod tests {
     fn test_is_pid_alive_false_for_impossible_pid() {
         // PIDs this large cannot exist on Linux (pid_max) or macOS.
         assert!(!is_pid_alive(999_999_999));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_is_pid_alive_counts_foreign_user_process() {
+        // PID 1 (init/launchd) always exists and is root-owned: as a non-root user kill(1, 0)
+        // fails with EPERM, which still means "alive" — like getRunningIndexPid() in Node.
+        assert!(is_pid_alive(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_is_pid_alive_false_for_exited_child() {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap(); // reaped: the pid no longer exists
+        assert!(!is_pid_alive(pid));
+    }
+
+    #[test]
+    fn test_is_pid_alive_false_for_pid_zero() {
+        // kill(0, 0) would target our own process group, not "pid 0"
+        assert!(!is_pid_alive(0));
     }
 
     #[test]

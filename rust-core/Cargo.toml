@@ -19,6 +19,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 bincode = { version = "2", features = ["serde"] }
 
+# kill(pid, 0) liveness check for the reindex lock (EPERM = alive)
+libc = "0.2"
+
 # File handling
 walkdir = "2.5"
 glob = "0.3"

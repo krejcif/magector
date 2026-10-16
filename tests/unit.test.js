@@ -5151,15 +5151,22 @@ function testIndexLockConcurrencyGuard() {
     assertEq(readFileSync(lockPathFor(root), 'utf-8'), String(process.pid), 'Own lock still names this PID');
     removeIndexPidFile(root);
 
-    // An unreadable lock is neither treated as stale nor deleted
+    // A lock without a PID is taken over
+    writeFileSync(lockPathFor(root), 'garbage');
+    assertEq(writeIndexPidFile(root, process.pid), true, 'writeIndexPidFile takes over a lock without a PID');
+    assertEq(readFileSync(lockPathFor(root), 'utf-8'), String(process.pid), 'Taken-over invalid lock names the new holder');
+    removeIndexPidFile(root);
+
+    // An unreadable lock: getRunningIndexPid leaves it alone, writeIndexPidFile replaces it
+    // with one the Rust watcher can read (otherwise the watcher would not defer to us)
     if (process.platform !== 'win32' && process.getuid && process.getuid() !== 0) {
       writeFileSync(lockPathFor(root), '12345');
       chmodSync(lockPathFor(root), 0o000);
       try {
         assertEq(getRunningIndexPid(root), null, 'Unreadable lock: no PID reported');
         assert(existsSync(lockPathFor(root)), 'Unreadable lock is not deleted by getRunningIndexPid');
-        assertEq(writeIndexPidFile(root, process.pid), false, 'writeIndexPidFile does not take over an unreadable lock');
-        assert(existsSync(lockPathFor(root)), 'Unreadable lock is not deleted by writeIndexPidFile');
+        assertEq(writeIndexPidFile(root, process.pid), true, 'writeIndexPidFile takes over an unreadable lock');
+        assertEq(readFileSync(lockPathFor(root), 'utf-8'), String(process.pid), 'Taken-over unreadable lock names the new holder');
       } finally {
         chmodSync(lockPathFor(root), 0o644);
         removeIndexPidFile(root);

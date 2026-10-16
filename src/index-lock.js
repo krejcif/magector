@@ -17,8 +17,8 @@ export function lockPathFor(magentoRoot) {
 /**
  * Reads the lock and classifies it:
  *   { state: 'absent' }            no lock file
- *   { state: 'unreadable' }        exists but cannot be read (e.g. EACCES) — left alone
- *   { state: 'invalid' }           no PID in it — left alone
+ *   { state: 'unreadable' }        exists but cannot be read (e.g. EACCES) — not removed here
+ *   { state: 'invalid' }           no PID in it — not removed here
  *   { state: 'live', pid }         the holder exists (EPERM = another user's process: alive)
  *   { state: 'stale', pid }        the holder is gone (ESRCH) — the file has been removed
  */
@@ -51,9 +51,9 @@ export function getRunningIndexPid(magentoRoot) {
 
 /**
  * Takes the lock for `pid`, creating the file exclusively. Returns true when the lock now
- * names `pid` (including when it already did), false when a live holder, an unreadable lock
- * or an I/O error prevents that. Never throws: callers run in timers and child 'exit'
- * handlers with no try/catch.
+ * names `pid` (including when it already did), false when a live holder or an I/O error
+ * prevents that. A dead holder's, PID-less or unreadable lock is replaced (one retry).
+ * Never throws: callers run in timers and child 'exit' handlers with no try/catch.
  */
 export function writeIndexPidFile(magentoRoot, pid) {
   const lockPath = lockPathFor(magentoRoot);
@@ -74,12 +74,13 @@ export function writeIndexPidFile(magentoRoot, pid) {
       console.error(`magector: reindex lock ${lockPath} is held by live PID ${lock.pid}`);
       return false;
     }
-    if (lock.state === 'unreadable') {
-      console.error(`magector: reindex lock ${lockPath} exists but cannot be read — not taking it over`);
-      return false;
+    if (lock.state === 'invalid' || lock.state === 'unreadable') {
+      // A lock nobody can read a holder from (the Rust watcher would not defer to it):
+      // replace it with a proper one.
+      if (lock.state === 'unreadable') console.error(`magector: reindex lock ${lockPath} cannot be read — replacing it`);
+      try { unlinkSync(lockPath); } catch {}
     }
-    // stale (already removed), invalid, or vanished meanwhile: remove what is left and retry once
-    try { unlinkSync(lockPath); } catch {}
+    // stale: inspectLock already removed it; absent: vanished meanwhile — retry once
   }
   console.error(`magector: could not take the reindex lock ${lockPath} (another process took it first)`);
   return false;

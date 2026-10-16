@@ -1113,6 +1113,7 @@ dependencies = [
  "glob",
  "hnsw_rs",
  "indicatif",
+ "libc",
  "memmap2",
  "ndarray 0.16.1",
  "num_cpus",
