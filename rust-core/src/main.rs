@@ -12,6 +12,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use magector_core::{Indexer, VectorDB, Embedder, Validator, WatcherStatus, EMBEDDING_DIM};
 use magector_core::datadb::DataDb;
+use magector_core::sync_util::lock_recover;
 
 const MAGENTO2_REPO: &str = "https://github.com/magento/magento2.git";
 const MAGENTO2_TAG: &str = "2.4.7"; // Latest stable version
@@ -563,7 +564,7 @@ fn run_serve(
         let status = Arc::clone(&watcher_status);
 
         {
-            let mut s = status.lock().unwrap();
+            let mut s = lock_recover(&status, "status");
             s.running = true;
         }
 
@@ -579,7 +580,7 @@ fn run_serve(
 
     // Write own PID to data.db so Node.js can discover us via DB query
     {
-        let ddb = data_db.lock().unwrap();
+        let ddb = lock_recover(&data_db, "data_db");
         let pid = std::process::id();
         let version = env!("CARGO_PKG_VERSION");
         let now = std::time::SystemTime::now()
@@ -635,14 +636,14 @@ fn run_serve(
                         &req,
                     )
                 })) {
-                    Ok(resp) => resp,
+                    Ok(resp) => finish_response(&req, resp),
                     Err(_) => {
                         eprintln!("Panic caught in request handler, serve process continues");
-                        r#"{"ok":false,"error":"Internal panic caught"}"#.to_string()
+                        finish_response(&req, r#"{"ok":false,"error":"Internal panic caught"}"#.to_string())
                     }
                 }
             }
-            Err(e) => format!(r#"{{"ok":false,"error":"Invalid JSON: {}"}}"#, e),
+            Err(e) => serde_json::json!({"ok": false, "error": format!("Invalid JSON: {}", e)}).to_string(),
         };
 
         writeln!(out, "{}", response)?;
@@ -670,6 +671,51 @@ fn withdraw_sidecar_claims(db_path: &std::path::Path, paths: &[String]) -> bool 
     true
 }
 
+/// Runs `save` (an index.db write) unless an external indexer holds the reindex lock for
+/// `magento_root` — the watcher defers the same way, and two writers would clobber each
+/// other's index.db. Returns whether `save` ran.
+fn save_unless_external_indexer(magento_root: &std::path::Path, save: impl FnOnce() -> Result<()>) -> bool {
+    if let Some(pid) = magector_core::watcher::external_reindex_pid(magento_root) {
+        eprintln!(
+            "Warning: an indexer (PID {}) holds the reindex lock — skipping the index save after describe",
+            pid
+        );
+        return false;
+    }
+    if let Err(e) = save() {
+        eprintln!("Warning: failed to save index after re-embed: {}", e);
+    }
+    true
+}
+
+/// Final step for every serve reply: guarantees one valid JSON object and echoes the
+/// request's `id` (copied verbatim) when it carried one. Handlers build some replies with
+/// `format!`, which breaks on `"` or `\` in error text; such output is replaced by an error.
+fn finish_response(req: &serde_json::Value, raw: String) -> String {
+    let id = req.get("id");
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(serde_json::Value::Object(mut obj)) => {
+            if let Some(id) = id {
+                obj.insert("id".to_string(), id.clone());
+            }
+            serde_json::Value::Object(obj).to_string()
+        }
+        _ => {
+            let mut obj = serde_json::json!({
+                "ok": false,
+                "error": format!(
+                    "serve produced invalid JSON: {}",
+                    raw.chars().take(200).collect::<String>()
+                ),
+            });
+            if let Some(id) = id {
+                obj["id"] = id.clone();
+            }
+            obj.to_string()
+        }
+    }
+}
+
 fn handle_serve_request(
     indexer: &Arc<Mutex<Indexer>>,
     watcher_status: &Arc<Mutex<WatcherStatus>>,
@@ -688,7 +734,7 @@ fn handle_serve_request(
             };
             let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
-            let mut idx = indexer.lock().unwrap();
+            let mut idx = lock_recover(&indexer, "indexer");
 
             let mut results = match idx.search(query, limit) {
                 Ok(r) => r,
@@ -703,12 +749,12 @@ fn handle_serve_request(
             }
         }
         "stats" => {
-            let idx = indexer.lock().unwrap();
+            let idx = lock_recover(&indexer, "indexer");
             let stats = idx.stats();
             format!(r#"{{"ok":true,"data":{{"vectors":{}}}}}"#, stats.vectors_created)
         }
         "watcher_status" => {
-            let s = watcher_status.lock().unwrap();
+            let s = lock_recover(&watcher_status, "status");
             match serde_json::to_string(&*s) {
                 Ok(json) => format!(r#"{{"ok":true,"data":{}}}"#, json),
                 Err(e) => format!(r#"{{"ok":false,"error":"Serialize error: {}"}}"#, e),
@@ -722,26 +768,15 @@ fn handle_serve_request(
             if signals.is_empty() {
                 return r#"{"ok":true,"data":{"learned":0}}"#.to_string();
             }
-            let mut idx = indexer.lock().unwrap();
+            let mut idx = lock_recover(&indexer, "indexer");
             for signal in &signals {
-                // Re-embed the query for LoRA training
-                let query = if signal.query.is_empty() {
-                    signal.original_query.as_deref().unwrap_or("")
-                } else {
-                    &signal.query
-                };
-                let query_emb = if !query.is_empty() {
-                    idx.embed_query(query).ok()
-                } else {
-                    None
-                };
+                // Pattern learning only. The MicroLoRA update was dropped: with the
+                // query as its own target, delta = target - query = 0, so it changed
+                // nothing and cost an ONNX pass per signal under the indexer lock.
+                // Follow-up (design separately): a real target is the embedding of the
+                // result the agent followed (`signal.followed_args.path`).
                 if let Some(ref mut sona) = idx.sona {
-                    if let Some(ref qe) = query_emb {
-                        // Use query as its own target for self-supervised LoRA learning
-                        sona.learn_with_embeddings(signal, Some(qe), Some(qe));
-                    } else {
-                        sona.learn(signal);
-                    }
+                    sona.learn(signal);
                 }
             }
             if let Some(ref sona) = idx.sona {
@@ -752,7 +787,7 @@ fn handle_serve_request(
         }
 
         "sona_status" => {
-            let idx = indexer.lock().unwrap();
+            let idx = lock_recover(&indexer, "indexer");
             let patterns = idx.sona.as_ref()
                 .map(|s| s.learned.adjustments.len()).unwrap_or(0);
             let observations: u32 = idx.sona.as_ref()
@@ -800,7 +835,7 @@ fn handle_serve_request(
                             .filter(|p| p.exists())
                             .collect();
                         if !files_to_reindex.is_empty() {
-                            let mut idx = indexer.lock().unwrap();
+                            let mut idx = lock_recover(&indexer, "indexer");
                             // Ensure descriptions DB is set for re-embedding
                             idx.set_descriptions_db(std::path::PathBuf::from(&output));
                             // The sidecar must stop claiming these files before their vectors change
@@ -813,9 +848,7 @@ fn handle_serve_request(
                                 match reindex_result {
                                     Ok(indexed) => {
                                         eprintln!("Re-indexed {} files with descriptions", indexed.len());
-                                        if let Err(e) = idx.save_atomic_unless_replaced(db_path) {
-                                            eprintln!("Warning: failed to save index after re-embed: {}", e);
-                                        }
+                                        save_unless_external_indexer(mg_root_path, || idx.save_atomic_unless_replaced(db_path));
                                     }
                                     Err(e) => {
                                         eprintln!("Warning: re-index after describe failed: {}", e);
@@ -835,7 +868,7 @@ fn handle_serve_request(
 
         "descriptions" => {
             // Return all descriptions as JSON — try DataDb first, fall back to legacy DescriptionDb
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             match ddb.desc_all() {
                 Ok(all) if !all.is_empty() => {
                     match serde_json::to_string(&all) {
@@ -898,12 +931,14 @@ fn handle_serve_request(
             let mut chains: usize = 0;
             let mg_root_prefix = format!("{}/", mg_root);
 
-            let ddb = data_db.lock().unwrap();
-            if let Err(e) = ddb.begin() {
-                return format!(r#"{{"ok":false,"error":"Transaction begin failed: {}"}}"#, e);
-            }
+            let ddb = lock_recover(&data_db, "data_db");
+            let tx = match ddb.transaction() {
+                Ok(tx) => tx,
+                Err(e) => {
+                    return format!(r#"{{"ok":false,"error":"Transaction begin failed: {}"}}"#, e);
+                }
+            };
             if let Err(e) = ddb.enrich_clear() {
-                let _ = ddb.rollback();
                 return format!(r#"{{"ok":false,"error":"Clear failed: {}"}}"#, e);
             }
 
@@ -985,7 +1020,6 @@ fn handle_serve_request(
                         has_guard,
                         now,
                     ) {
-                        let _ = ddb.rollback();
                         return format!(r#"{{"ok":false,"error":"Insert failed: {}"}}"#, e);
                     }
                     chains += 1;
@@ -993,7 +1027,7 @@ fn handle_serve_request(
                 scanned += 1;
             }
 
-            if let Err(e) = ddb.commit() {
+            if let Err(e) = tx.commit() {
                 return format!(r#"{{"ok":false,"error":"Commit failed: {}"}}"#, e);
             }
 
@@ -1006,7 +1040,7 @@ fn handle_serve_request(
             let first_method = first_method.filter(|s| !s.is_empty());
             let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
 
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             match ddb.enrich_query_null_risks(first_method, limit) {
                 Ok(rows) => {
                     let data: Vec<serde_json::Value> = rows.into_iter().map(|(file, line, chain, first, second)| {
@@ -1044,7 +1078,7 @@ fn handle_serve_request(
                     .unwrap_or_default()
                     .as_secs() as i64
             });
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             match ddb.process_set(name, pid, version, ts) {
                 Ok(()) => r#"{"ok":true}"#.to_string(),
                 Err(e) => format!(r#"{{"ok":false,"error":"process_set failed: {}"}}"#, e),
@@ -1056,7 +1090,7 @@ fn handle_serve_request(
                 Some(n) => n,
                 None => return r#"{"ok":false,"error":"Missing 'name' field"}"#.to_string(),
             };
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             match ddb.process_get(name) {
                 Some((pid, version, started_at)) => {
                     let ver_json = match &version {
@@ -1077,7 +1111,7 @@ fn handle_serve_request(
                 Some(n) => n,
                 None => return r#"{"ok":false,"error":"Missing 'name' field"}"#.to_string(),
             };
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             match ddb.process_remove(name) {
                 Ok(()) => r#"{"ok":true}"#.to_string(),
                 Err(e) => format!(r#"{{"ok":false,"error":"process_remove failed: {}"}}"#, e),
@@ -1100,7 +1134,7 @@ fn handle_serve_request(
                     .unwrap_or_default()
                     .as_secs() as i64
             });
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             match ddb.cache_set(key, value, ts) {
                 Ok(()) => r#"{"ok":true}"#.to_string(),
                 Err(e) => format!(r#"{{"ok":false,"error":"cache_set failed: {}"}}"#, e),
@@ -1112,7 +1146,7 @@ fn handle_serve_request(
                 Some(k) => k,
                 None => return r#"{"ok":false,"error":"Missing 'key' field"}"#.to_string(),
             };
-            let ddb = data_db.lock().unwrap();
+            let ddb = lock_recover(&data_db, "data_db");
             match ddb.cache_get(key) {
                 Some((value, updated_at)) => {
                     // Escape the value string for JSON embedding
@@ -1874,6 +1908,21 @@ mod manifest_save_tests {
     use super::*;
 
     #[test]
+    fn describe_save_defers_to_an_external_indexer() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        let mut saves = 0;
+        assert!(save_unless_external_indexer(root, || { saves += 1; Ok(()) }), "no lock: the index is saved");
+        assert_eq!(saves, 1);
+
+        // A live PID (this test process) holds the reindex lock: describe must not write index.db.
+        fs::create_dir_all(root.join(".magector")).unwrap();
+        fs::write(root.join(".magector").join("reindex.pid"), std::process::id().to_string()).unwrap();
+        assert!(!save_unless_external_indexer(root, || { saves += 1; Ok(()) }), "lock held: the save is skipped");
+        assert_eq!(saves, 1);
+    }
+
+    #[test]
     fn a_failed_manifest_save_withdraws_the_old_sidecar_and_does_not_fail() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = dir.path().join("index.db");
@@ -1888,5 +1937,31 @@ mod manifest_save_tests {
         fs::write(&sidecar, b"the new manifest").unwrap();
         manifest_save_is_best_effort(Ok(()), &db);
         assert!(sidecar.exists());
+    }
+
+    #[test]
+    fn finish_response_echoes_id_and_keeps_payload() {
+        let req = serde_json::json!({"command": "search", "id": 7});
+        let out = finish_response(&req, r#"{"ok":true,"data":[1]}"#.to_string());
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["data"][0], 1);
+    }
+
+    #[test]
+    fn finish_response_without_id_adds_none() {
+        let out = finish_response(&serde_json::json!({"command": "stats"}), r#"{"ok":true}"#.to_string());
+        assert!(serde_json::from_str::<serde_json::Value>(&out).unwrap().get("id").is_none());
+    }
+
+    #[test]
+    fn finish_response_repairs_invalid_handler_output() {
+        let req = serde_json::json!({"id": "a"});
+        let out = finish_response(&req, r#"{"ok":false,"error":"path C:\new\dir"}"#.to_string());
+        let v: serde_json::Value = serde_json::from_str(&out).expect("one valid JSON line");
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["id"], "a");
+        assert!(v["error"].as_str().unwrap().contains("invalid JSON"));
     }
 }

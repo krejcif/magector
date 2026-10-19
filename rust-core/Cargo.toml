@@ -1,6 +1,6 @@
 [package]
 name = "magector-core"
-version = "1.7.3"
+version = "2.23.0"
 edition = "2021"
 description = "Magento source code indexer with semantic embeddings"
 license = "MIT"
@@ -8,7 +8,7 @@ license = "MIT"
 
 [dependencies]
 # ONNX Runtime for embeddings
-ort = { version = "2.0.0-rc.9", features = ["download-binaries"] }
+ort = { version = "=2.0.0-rc.11", features = ["download-binaries"] }
 ndarray = "0.16"
 
 # Vector search
@@ -19,16 +19,15 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 bincode = { version = "2", features = ["serde"] }
 
+# kill(pid, 0) liveness check for the reindex lock (EPERM = alive)
+libc = "0.2"
+
 # File handling
 walkdir = "2.5"
 glob = "0.3"
-memmap2 = "0.9"
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
-
-# Async runtime
-tokio = { version = "1.43", features = ["full"] }
 
 # Parallel processing
 rayon = "1.10"
@@ -36,7 +35,6 @@ num_cpus = "1.16"
 
 # Text processing
 regex = "1.11"
-unicode-normalization = "0.1"
 tokenizers = "0.21"
 
 # AST parsing with tree-sitter
@@ -56,7 +54,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Error handling
 anyhow = "1.0"
-thiserror = "2.0"
 
 # Logging
 tracing = "0.1"

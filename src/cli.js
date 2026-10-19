@@ -120,7 +120,7 @@ async function runSnapshot(argv) {
       releaseScanLock(root);
     }
     const running = getRunningIndexPid(root);
-    if (running) throw new Error(`an indexer (PID ${running}) is writing the index of ${root} — wait for it to finish`);
+    if (running) throw new Error(`an indexer (PID ${running}) is writing the index of ${root} — wait for it to finish. If no indexer is running, delete .magector/reindex.pid.`);
     writeIndexPidFile(root, process.pid);       // no background re-index while the index is read
     try {
       let git = null;
@@ -135,7 +135,7 @@ async function runSnapshot(argv) {
 
   // load
   const running = getRunningIndexPid(root);
-  if (running) throw new Error(`an indexer (PID ${running}) is writing the index of ${root} — wait for it to finish`);
+  if (running) throw new Error(`an indexer (PID ${running}) is writing the index of ${root} — wait for it to finish. If no indexer is running, delete .magector/reindex.pid.`);
   writeIndexPidFile(root, process.pid);
   let result;
   try {

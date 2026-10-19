@@ -5,9 +5,10 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
+use crate::sync_util::lock_recover;
 use std::time::{Duration, SystemTime};
 use walkdir::WalkDir;
 use sha2::{Digest, Sha256};
@@ -22,19 +23,18 @@ fn reindex_lock_path(magento_root: &Path) -> PathBuf {
 }
 
 /// Check whether the PID in `.magector/reindex.pid` belongs to a still-running
-/// process. Mirrors `getRunningIndexPid()` in `src/index-lock.js` — signal 0 /
-/// `kill -0` is an existence check, it does not actually send a signal.
+/// process. Mirrors `getRunningIndexPid()` in `src/index-lock.js`: signal 0 is an
+/// existence check (no signal is sent), and EPERM — a live process owned by another
+/// user — counts as alive. PID 0 and PIDs above `i32::MAX` are never alive
+/// (`kill(0, …)` / negative PIDs address process groups).
 fn is_pid_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        std::process::Command::new("kill")
-            .arg("-0")
-            .arg(pid.to_string())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        if pid == 0 || pid > i32::MAX as u32 {
+            return false;
+        }
+        let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
     #[cfg(not(unix))]
     {
@@ -50,36 +50,17 @@ fn is_pid_alive(pid: u32) -> bool {
 /// index`, or another MCP instance's background reindex) currently holding
 /// the reindex lock for this root, or `None` if the lock is absent or stale.
 /// A stale lock (dead PID) is removed so it doesn't block forever.
-fn external_reindex_pid(magento_root: &Path) -> Option<u32> {
+/// Also used by the serve `describe` handler, which defers its index save the same way.
+pub fn external_reindex_pid(magento_root: &Path) -> Option<u32> {
     let lock_path = reindex_lock_path(magento_root);
     let contents = std::fs::read_to_string(&lock_path).ok()?;
-    let pid: u32 = contents.trim().parse().ok()?;
+    // Only the first line holds the PID (forward-compatible with a multi-line lock).
+    let pid: u32 = contents.lines().next()?.trim().parse().ok()?;
     if is_pid_alive(pid) {
         Some(pid)
     } else {
         let _ = std::fs::remove_file(&lock_path);
         None
-    }
-}
-
-/// Lock a mutex, recovering from poisoning instead of propagating the panic.
-///
-/// A poisoned mutex means another thread panicked while holding the lock
-/// (for example, the `feedback` handler panicking inside `update_fisher`).
-/// The watcher thread must keep running so that incremental re-indexing
-/// resumes as soon as the offending call path is patched — otherwise a
-/// single transient panic takes the watcher offline until the MCP server
-/// is restarted.
-fn lock_recover<'a, T>(mutex: &'a Mutex<T>, label: &str) -> MutexGuard<'a, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            tracing::warn!(
-                "Watcher: {} mutex was poisoned by a prior panic — recovering and continuing",
-                label
-            );
-            poisoned.into_inner()
-        }
     }
 }
 
@@ -537,15 +518,17 @@ fn zero_entry_paths(
 /// current stat, the content hashes and stale sentinels of the sidecar that describes that
 /// index.db, and every indexed file the walk no longer finds tracked stale, so the first scan
 /// drops its vectors.
-fn manifest_for(idx: &Indexer, magento_root: &Path, db_path: &Path) -> FileManifest {
-    let paths = idx.indexed_paths();
-    let mut manifest = FileManifest::from_existing_index(magento_root, &paths);
+///
+/// Takes the indexed path set, not the `Indexer`: the tree walk must run with the indexer
+/// lock released, or every search waits for it.
+fn manifest_for(paths: &HashSet<String>, magento_root: &Path, db_path: &Path) -> FileManifest {
+    let mut manifest = FileManifest::from_existing_index(magento_root, paths);
     // The sidecar describes the index.db this serve just loaded: take its content hashes
     // (and stale sentinels) so a checkout during serve is "touched", not re-embedded.
     if let Some(sidecar) = FileManifest::load(&FileManifest::sidecar_path(db_path)) {
         manifest.seed_from(&sidecar);
     }
-    manifest.track_indexed(&paths);
+    manifest.track_indexed(paths);
     manifest
 }
 
@@ -567,10 +550,10 @@ pub fn watcher_loop(
     );
 
     // Build initial manifest
-    let mut manifest = {
-        let idx = lock_recover(&indexer, "indexer");
-        manifest_for(&idx, &magento_root, &db_path)
-    };
+    // The guard is a temporary dropped at the end of this statement: the walk below runs
+    // without the indexer lock.
+    let paths = lock_recover(&indexer, "indexer").indexed_paths();
+    let mut manifest = manifest_for(&paths, &magento_root, &db_path);
 
     {
         let mut s = lock_recover(&status, "status");
@@ -588,26 +571,35 @@ pub fn watcher_loop(
         // this loop's next save would write it back over the new one. Not while an indexer
         // holds the lock: it is still writing.
         if external_reindex_pid(&magento_root).is_none() {
-            let mut idx = lock_recover(&indexer, "indexer");
-            match idx.reload_if_replaced() {
-                Ok(false) => {}
-                Ok(true) => {
-                    idx.warm_search();
-                    manifest = manifest_for(&idx, &magento_root, &db_path);
-                    lock_recover(&status, "status").tracked_files = manifest.files.len();
-                    tracing::info!(
-                        "index.db was replaced by another process — reloaded {} vectors, {} files tracked",
-                        idx.stats().vectors_created,
-                        manifest.files.len()
-                    );
+            // Reloaded index's (paths, vector count), captured under the lock; the manifest
+            // walk happens after the guard is dropped so searches are not blocked.
+            let mut reloaded: Option<(HashSet<String>, usize)> = None;
+            {
+                let mut idx = lock_recover(&indexer, "indexer");
+                match idx.reload_if_replaced() {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        idx.warm_search();
+                        reloaded = Some((idx.indexed_paths(), idx.stats().vectors_created));
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "index.db was replaced by another process but could not be loaded ({:#}); keeping the loaded index and not writing index.db",
+                            e
+                        );
+                        continue;
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        "index.db was replaced by another process but could not be loaded ({:#}); keeping the loaded index and not writing index.db",
-                        e
-                    );
-                    continue;
-                }
+            }
+            // Rebuild before change detection below, which compares against `manifest`.
+            if let Some((paths, vectors)) = reloaded {
+                manifest = manifest_for(&paths, &magento_root, &db_path);
+                lock_recover(&status, "status").tracked_files = manifest.files.len();
+                tracing::info!(
+                    "index.db was replaced by another process — reloaded {} vectors, {} files tracked",
+                    vectors,
+                    manifest.files.len()
+                );
             }
         }
 
@@ -1253,6 +1245,19 @@ mod tests {
     }
 
     #[test]
+    fn test_manifest_for_needs_no_indexer() {
+        // manifest_for takes the path set, not the Indexer: the tree walk runs with no
+        // indexer (and so no indexer lock) in scope.
+        let dir = make_temp_dir();
+        std::fs::write(dir.join("a.php"), "<?php echo 1;").unwrap();
+        let db = dir.join(".magector").join("index.db");
+        let paths: HashSet<String> = ["a.php".to_string(), "gone.php".to_string()].into_iter().collect();
+        let manifest = manifest_for(&paths, &dir, &db);
+        assert!(manifest.files.keys().any(|k| k.ends_with("a.php")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_lock_recover_from_poisoned_mutex() {
         // Reproduces Bug 2: a panic in another thread while holding the lock
         // poisons it. The watcher used to crash on `lock().unwrap()` and stop
@@ -1366,7 +1371,7 @@ mod tests {
 
     #[test]
     fn test_scans_skip_what_a_full_index_skips() {
-        // `discover_files` honours EXCLUDE_PATHS and .magectorignore; the resume and serve
+        // `discover_files_with_skipped` honours EXCLUDE_PATHS and .magectorignore; the resume and serve
         // scans must too. Otherwise they index files a full index never saw (every Magento
         // root has dev/tools/**/*.js) and `files_found - to_process.len()` underflows.
         let dir = make_temp_dir();
@@ -1609,6 +1614,29 @@ mod tests {
         assert!(!is_pid_alive(999_999_999));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_is_pid_alive_counts_foreign_user_process() {
+        // PID 1 (init/launchd) always exists and is root-owned: as a non-root user kill(1, 0)
+        // fails with EPERM, which still means "alive" — like getRunningIndexPid() in Node.
+        assert!(is_pid_alive(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_is_pid_alive_false_for_exited_child() {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap(); // reaped: the pid no longer exists
+        assert!(!is_pid_alive(pid));
+    }
+
+    #[test]
+    fn test_is_pid_alive_false_for_pid_zero() {
+        // kill(0, 0) would target our own process group, not "pid 0"
+        assert!(!is_pid_alive(0));
+    }
+
     #[test]
     fn test_external_reindex_pid_none_without_lock_file() {
         let dir = make_temp_dir();
@@ -1626,6 +1654,20 @@ mod tests {
         let lock_path = reindex_lock_path(&dir);
         fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
         fs::write(&lock_path, std::process::id().to_string()).unwrap();
+
+        assert_eq!(external_reindex_pid(&dir), Some(std::process::id()));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_external_reindex_pid_reads_first_line() {
+        // Only the first line is the PID: a later lock format may append lines, and an
+        // old binary must still see today's holder.
+        let dir = make_temp_dir();
+        let lock_path = reindex_lock_path(&dir);
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        fs::write(&lock_path, format!("{}\nextra", std::process::id())).unwrap();
 
         assert_eq!(external_reindex_pid(&dir), Some(std::process::id()));
 

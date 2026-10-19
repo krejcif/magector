@@ -9,6 +9,7 @@
  */
 import { existsSync, chmodSync } from 'fs';
 import { execFileSync } from 'child_process';
+import { npmInvocation } from './npm-cli.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
@@ -73,7 +74,9 @@ export function resolveBinary() {
       const pkgRoot = path.join(__dirname, '..');
       // This package's version: an unpinned install takes the latest, which can be a
       // different binary than the JS it runs under.
-      execFileSync('npm', ['install', '--no-save', `${platformPkg}@${PACKAGE_VERSION}`], {
+      const inv = npmInvocation('npm', ['install', '--no-save', `${platformPkg}@${PACKAGE_VERSION}`]);
+      execFileSync(inv.file, inv.args, {
+        shell: inv.shell,
         cwd: pkgRoot,
         timeout: 60000,
         stdio: ['pipe', 'pipe', 'pipe']

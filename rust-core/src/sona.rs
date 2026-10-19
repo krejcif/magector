@@ -455,7 +455,16 @@ impl SonaEngine {
         };
         let mut bytes = vec![SONA_VERSION_V2];
         bytes.extend(bincode::serde::encode_to_vec(&state, bincode::config::standard())?);
-        std::fs::write(path, bytes)?;
+        // Write beside the target, flush to disk, then rename: a crash leaves the old file or the
+        // whole new one, never a truncated state.
+        let tmp_path = path.with_extension("tmp");
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&tmp_path)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&tmp_path, path)?;
         Ok(())
     }
 
@@ -865,6 +874,33 @@ mod tests {
         assert_eq!(adj_orig, adj_loaded);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_then_load_roundtrip_leaves_no_tmp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.sona");
+
+        let mut engine = SonaEngine::new();
+        engine.learn(&SonaSignal {
+            signal_type: "refinement_to_observer".to_string(),
+            query: "event dispatch".to_string(),
+            timestamp: 0,
+            search_result_paths: vec![],
+            followed_tool: None,
+            followed_args: None,
+            original_query: None,
+            refined_query: None,
+            original_result_paths: None,
+        });
+        engine.save(&path).unwrap();
+
+        assert!(!path.with_extension("tmp").exists(), "tmp file must be renamed away");
+        let loaded = SonaEngine::open(&path).unwrap();
+        let meta = make_meta(false, true, false);
+        let expected = engine.score_adjustment("event dispatch", &meta);
+        assert_ne!(expected, 0.0, "test must exercise learned state");
+        assert_eq!(loaded.score_adjustment("event dispatch", &meta), expected);
     }
 
     // ─── MicroLoRA tests ───────────────────────────────────────

@@ -11,7 +11,7 @@
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync, renameSync } from 'fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync, renameSync, chmodSync } from 'fs';
 import { Readable } from 'stream';
 import { syncOptionalDeps } from '../scripts/sync-optional-deps.mjs';
 import { getRunningIndexPid, writeIndexPidFile, removeIndexPidFile, lockPathFor } from '../src/index-lock.js';
@@ -20,6 +20,10 @@ import { defaultDbPath, dbPathForRoot, manifestPath, tempDbPathFor, swapInIndex 
 import { modelDownloadDir, downloadFile } from '../src/model.js';
 import { binaryVersion, acceptPathBinary } from '../src/binary.js';
 import { extractJson } from '../src/cli-json.js';
+import { npmInvocation } from '../src/npm-cli.js';
+import { resolveIndexRoot } from '../src/index-root.js';
+import { clientOutputTail, CLIENT_OUTPUT_LIMIT, TRUNCATED_PREFIX } from '../src/tool-output.js';
+import { isClassCandidate } from '../src/find-class-filter.js';
 import { mcpServerEnv } from '../src/init.js';
 import { serializeScan, deserializeScan, checkSnapshot, loadSnapshot, writeSnapshot, snapshotPathFor, scanLockPathFor, acquireScanLock, releaseScanLock, scanLockHolder, waitForScanLock, fileStampOf, SNAPSHOT_FORMAT } from '../src/php-scan-snapshot.js';
 import { spawn as spawnChild } from 'child_process';
@@ -1505,145 +1509,79 @@ async function testGrepFilesOnly() {
   rmSync(tmpDir, { recursive: true, force: true });
 }
 
-// ─── magento_ast_search Tests ────────────────────────────────────
-
-async function testAstSearch() {
-  console.log('\n── magento_ast_search (semgrep) ──');
-
-  const { execFileSync } = await import('child_process');
-  // Use /tmp to avoid being inside the magector git repo (semgrep uses git root for .semgrepignore lookup)
-  const tmpDir = '/tmp/magector_ast_test_' + Date.now();
-  mkdirSync(path.join(tmpDir, 'vendor', 'acme', 'module-test'), { recursive: true });
-  // Empty .semgrepignore overrides semgrep's default ignore list (which includes vendor/)
-  writeFileSync(path.join(tmpDir, '.semgrepignore'), '# Magector test: scan all\n');
-
-  // File with unsafe chain (no null guard)
-  writeFileSync(path.join(tmpDir, 'vendor/acme/module-test/Unsafe.php'), [
-    '<?php',
-    'class Unsafe {',
-    '    public function execute($order) {',
-    '        $method = $order->getPayment()->getMethod();',
-    '        return $method;',
-    '    }',
-    '}'
-  ].join('\n'));
-
-  // File with safe chain (null guard present)
-  writeFileSync(path.join(tmpDir, 'vendor/acme/module-test/Safe.php'), [
-    '<?php',
-    'class Safe {',
-    '    public function execute($order) {',
-    '        $payment = $order->getPayment();',
-    '        if ($payment !== null) {',
-    '            return $payment->getMethod();',
-    '        }',
-    '        return null;',
-    '    }',
-    '}'
-  ].join('\n'));
-
-  // semgrep should find the unsafe chain pattern in both-method-chain case
-  let semgrepOut;
-  try {
-    semgrepOut = execFileSync('semgrep', [
-      '--pattern', '$X->getPayment()->$Y(...)',
-      '--lang', 'php',
-      '--json',
-      '--no-git-ignore',
-      tmpDir
-    ], { encoding: 'utf-8', timeout: 30000, maxBuffer: 5 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'],
-         env: { ...process.env, PATH: process.env.PATH + ':/home/swed/.local/bin' } });
-  } catch (err) { semgrepOut = err.stdout || ''; }
-
-  let parsed;
-  try { parsed = JSON.parse(semgrepOut); } catch { parsed = { results: [] }; }
-
-  assert(parsed.results !== undefined, 'ast_search: semgrep returns results array');
-  assert(parsed.results.length >= 1, 'ast_search: finds at least 1 match for ->getPayment()->$Y(...)');
-  assert(parsed.results.some(r => r.path.includes('Unsafe.php')), 'ast_search: match found in Unsafe.php');
-  // The safe version splits the chain, so it may or may not match depending on semgrep version
-  assert(parsed.results.every(r => r.start && r.end), 'ast_search: each result has location info');
-
-  rmSync(tmpDir, { recursive: true, force: true });
-}
-
-// ─── magento_find_dataobject_issues Tests ────────────────────────
-
-async function testFindDataObjectIssues() {
-  console.log('\n── magento_find_dataobject_issues (DataObject set-null anti-pattern) ──');
-
-  const { execFileSync } = await import('child_process');
-  // Use /tmp to avoid being inside the magector git repo (.semgrepignore lookup)
-  const tmpDir = '/tmp/magector_dataobj_test_' + Date.now();
-  mkdirSync(path.join(tmpDir, 'vendor', 'acme', 'module-quote'), { recursive: true });
-  writeFileSync(path.join(tmpDir, '.semgrepignore'), '# Magector test: scan all\n');
-
-  // File with DataObject anti-pattern: setX(null) calls
-  writeFileSync(path.join(tmpDir, 'vendor/acme/module-quote/Address.php'), [
-    '<?php',
-    'class Address extends \\Magento\\Framework\\DataObject {',
-    '    public function resetDiscount() {',
-    '        $this->setCouponCode(null);',   // ← anti-pattern
-    '        $this->setDiscountAmount(null);', // ← anti-pattern
-    '    }',
-    '    public function clearActive() {',
-    '        $this->setActive(false);',       // ← NOT null — should NOT be detected
-    '        $this->unsetData(\'coupon_code\');', // ← correct — should NOT be detected
-    '    }',
-    '}'
-  ].join('\n'));
-
-  // File without anti-pattern (null passed to non-setter method)
-  writeFileSync(path.join(tmpDir, 'vendor/acme/module-quote/Safe.php'), [
-    '<?php',
-    'class Safe {',
-    '    public function process($order) {',
-    '        $order->getPayment()->setMethod(null);', // ← anti-pattern: setMethod(null)
-    '        $order->process(null);',                  // ← NOT setter — should NOT be detected
-    '    }',
-    '}'
-  ].join('\n'));
-
-  // Run semgrep directly with broad pattern, then filter
-  let semgrepOut;
-  try {
-    semgrepOut = execFileSync('semgrep', [
-      '--pattern', '$X->$SETTER(null)',
-      '--lang', 'php',
-      '--json',
-      '--no-git-ignore',
-      tmpDir
-    ], { encoding: 'utf-8', timeout: 30000, maxBuffer: 5 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'],
-         env: { ...process.env, PATH: process.env.PATH + ':/home/swed/.local/bin' } });
-  } catch (err) { semgrepOut = err.stdout || ''; }
-
-  let parsed;
-  try { parsed = JSON.parse(semgrepOut); } catch { parsed = { results: [] }; }
-
-  // semgrep >=1.100 may return "requires login" in extra.lines — fall back to extra.message
-  const getSnippet = r => {
-    const lines = r.extra?.lines || '';
-    return (lines && lines !== 'requires login') ? lines : (r.extra?.message || '');
-  };
-
-  // Post-filter: only ->setX(null) where X starts with uppercase (DataObject setter pattern)
-  const setterNullRegex = /->set[A-Z]\w+\s*\(\s*null\s*\)/;
-  const filtered = (parsed.results || []).filter(r => setterNullRegex.test(getSnippet(r)));
-
-  assert(parsed.results !== undefined, 'find_dataobject_issues: semgrep returns results array');
-  // Should find setCouponCode(null), setDiscountAmount(null), setMethod(null) — 3 hits
-  assert(filtered.length >= 2, `find_dataobject_issues: finds at least 2 setX(null) calls, got ${filtered.length}`);
-  // Should find hits in Address.php
-  assert(filtered.some(r => r.path.includes('Address.php')), 'find_dataobject_issues: match found in Address.php');
-  // process(null) should NOT be in filtered results
-  assert(!filtered.some(r => getSnippet(r).includes('->process(null)')), 'find_dataobject_issues: process(null) not included (not a setter)');
-  // setActive(false) should NOT be in filtered results (not null)
-  assert(!filtered.some(r => getSnippet(r).includes('setActive(false)')), 'find_dataobject_issues: setActive(false) not included (not null)');
-
-  rmSync(tmpDir, { recursive: true, force: true });
-}
-
 // ─── magento_read methodName hint Tests ─────────────────────────
+
+function testResolveIndexRoot() {
+  console.log('\n── resolveIndexRoot ──');
+  const bad = resolveIndexRoot('/nonexistent/dir/xyz', '/srv/m');
+  assert(typeof bad.error === 'string' && bad.error.includes('not a directory'), 'nonexistent path is refused', bad.error);
+  assertEq(resolveIndexRoot(undefined, __dirname).root, __dirname, 'no arg falls back to configured root');
+  assertEq(resolveIndexRoot(__dirname, '/x').root, __dirname, 'existing directory arg is used');
+  assert(resolveIndexRoot(path.join(__dirname, 'unit.test.js'), '/x').error !== undefined, 'a file is refused');
+}
+
+function testClientOutputTail() {
+  console.log('\n── magento_index output cap ──');
+  assertEq(CLIENT_OUTPUT_LIMIT, 16 * 1024, 'the client sees at most 16 KB');
+  assertEq(TRUNCATED_PREFIX, '…(truncated; full output in .magector/magector.log)', 'truncation prefix text');
+  assertEq(clientOutputTail('short output'), 'short output', 'short output is unchanged');
+  const exact = 'x'.repeat(CLIENT_OUTPUT_LIMIT);
+  assert(clientOutputTail(exact) === exact, 'output of exactly the limit is unchanged');
+  const long = 'HEAD'.repeat(10000) + 'y'.repeat(CLIENT_OUTPUT_LIMIT - 4) + 'TAIL';
+  const capped = clientOutputTail(long);
+  assert(capped.startsWith(TRUNCATED_PREFIX + '\n'), 'long output starts with the truncation prefix');
+  assert(capped.endsWith('TAIL') && !capped.includes('HEAD'), 'long output keeps only the end');
+  assertEq(capped.length, TRUNCATED_PREFIX.length + 1 + CLIENT_OUTPUT_LIMIT, 'long output is capped to the limit plus the prefix');
+  assertEq(clientOutputTail(''), '', 'empty output stays empty');
+}
+
+async function testGitDiffHelpers() {
+  console.log('\n── git-diff helpers ──');
+  const { isSafeGitRef, commitDiff, stagedDiff, commitSubject } = await import('../src/git-diff.js');
+  assert(isSafeGitRef('HEAD'), 'HEAD is a safe ref');
+  assert(isSafeGitRef('0f32c5f'), 'short sha is safe');
+  assert(isSafeGitRef('main~2'), 'main~2 is safe');
+  assert(!isSafeGitRef('HEAD; touch /tmp/pwned'), 'shell metachars rejected');
+  assert(!isSafeGitRef('$(id)'), 'command substitution rejected');
+  assert(!isSafeGitRef('--output=/tmp/x'), 'leading dash rejected');
+  assert(!isSafeGitRef('a/../b'), 'dotdot rejected');
+  assert(!isSafeGitRef(''), 'empty rejected');
+  assert(isSafeGitRef('HEAD@{1}'), 'reflog ref HEAD@{1} is safe');
+  assert(isSafeGitRef('stash@{0}'), 'reflog ref stash@{0} is safe');
+  assert(!isSafeGitRef('HEAD@{-1}'), 'HEAD@{-1} rejected');
+  assert(!isSafeGitRef('HEAD@{now}'), 'HEAD@{now} rejected');
+  assert(!isSafeGitRef('HEAD@{1}x'), 'text after @{n} rejected');
+  assert(!isSafeGitRef('@{1}'), 'bare @{1} rejected');
+  // real repo: this project
+  const root = path.join(__dirname, '..');
+  // A throwaway repo with one known commit: CI checkouts are shallow, so HEAD~1 of
+  // this project may not exist there.
+  const { execFileSync } = await import('child_process');
+  const { mkdtempSync } = await import('fs');
+  const gitRepo = mkdtempSync(path.join(os.tmpdir(), 'magector-git-'));
+  const g = (...a) => execFileSync('git', ['-C', gitRepo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { encoding: 'utf-8' });
+  g('init', '-q');
+  writeFileSync(path.join(gitRepo, 'a.txt'), 'one\n');
+  g('add', 'a.txt');
+  g('commit', '-q', '-m', 'first commit');
+  const known = g('rev-parse', 'HEAD').trim();
+  assert(commitDiff(gitRepo, known).includes('diff --git'), 'commitDiff of a known commit includes a diff');
+  assertEq(commitSubject(gitRepo, known), 'first commit', 'commitSubject of a known commit');
+  let unknownErr = null;
+  try { commitDiff(gitRepo, 'deadbeefdeadbeef'); } catch (e) { unknownErr = e; }
+  assert(unknownErr && unknownErr.message.startsWith('git show failed for deadbeefdeadbeef:') && unknownErr.message.length > 'git show failed for deadbeefdeadbeef:'.length + 2,
+    'commitDiff of an unknown ref throws with git\'s message', unknownErr && unknownErr.message);
+  const notRepo = mkdtempSync(path.join(os.tmpdir(), 'magector-nogit-'));
+  let stagedErr = null;
+  try { stagedDiff(notRepo); } catch (e) { stagedErr = e; }
+  assert(stagedErr && /not a git repository/i.test(stagedErr.message), 'stagedDiff outside a repo throws git\'s error', stagedErr && stagedErr.message);
+  rmSync(notRepo, { recursive: true, force: true });
+  rmSync(gitRepo, { recursive: true, force: true });
+  assertEq(commitDiff(root, 'HEAD; echo x'), '', 'unsafe ref yields empty diff without running');
+  assertEq(typeof stagedDiff(root), 'string', 'stagedDiff returns a string');
+  assert(typeof commitSubject(root, 'HEAD') === 'string' && commitSubject(root, 'HEAD').length > 0, 'commitSubject(HEAD) is a non-empty string');
+  assertEq(commitSubject(root, 'HEAD; echo x'), '', 'commitSubject of an unsafe ref is empty');
+}
 
 async function testReadMethodNameHint() {
   console.log('\n── magento_read methodName hint ──');
@@ -4712,6 +4650,16 @@ async function testPhpScanSnapshot() {
   }
 }
 
+function testIsClassCandidate() {
+  console.log('\n── find_class filter: README hits ──');
+  assert(isClassCandidate({ path: 'app/code/Acme/Price/README.md', type: 'markdown', magentoType: 'readme' }, 'price') === false,
+    'find_class: README of a module named like the class is not a candidate');
+  assert(isClassCandidate({ path: 'app/code/Acme/Other/README.md', type: 'markdown', magentoType: 'readme' }, 'price') === false,
+    'find_class: README whose path lacks the class name is not a candidate');
+  assert(isClassCandidate({ path: 'app/code/Acme/Price/Model/Price.php', className: 'Acme\\Price\\Model\\Price' }, 'price') === true,
+    'find_class: the class itself is a candidate');
+}
+
 async function main() {
   console.log('╔═══════════════════════════════════════════════════════════╗');
   console.log('║            MAGECTOR UNIT TESTS                          ║');
@@ -4742,6 +4690,7 @@ async function main() {
   testReindexTempPathLogic();
   testReindexInterruptKeepsTempDb();
   testRustSearchAsyncGuards();
+  testIsClassCandidate();
   testReindexDeduplication();
   testSingletonAndWarmup();
   await testStdinCleanup();
@@ -4779,13 +4728,15 @@ async function main() {
   await testMagentoRead();
   testGrepDefaultContext();
   await testGrepFilesOnly();
-  await testAstSearch();
-  await testFindDataObjectIssues();
   await testReadMethodNameHint();
+  testClientOutputTail();
+  await testGitDiffHelpers();
+  testResolveIndexRoot();
   testHasNullGuard();
   testEnrichChainRegex();
   testExpandIncludePattern();
   testSafePath();
+  testNpmInvocation();
   testGetReindexWarning();
   testExcludeByModule();
   testConfigDataLoading();
@@ -4963,6 +4914,25 @@ function testExpandIncludePattern() {
 // magento_read, magento_grep and magento_ast_search funnel all
 // user-supplied paths through them, so a regression here is a
 // silent path-traversal vulnerability.
+
+function testNpmInvocation() {
+  console.log('\nnpmInvocation (npm/npx on Windows)');
+  const w = npmInvocation('npx', ['-y', 'magector@2.23.0'], 'win32');
+  assertEq(w.file, 'npx.cmd', 'win32: npx -> npx.cmd');
+  assertEq(w.shell, true, 'win32: shell true');
+  assertEq(npmInvocation('npm', ['install', '--no-save', '@magector/cli-win32-x64@2.23.0'], 'win32').file, 'npm.cmd', 'win32: npm -> npm.cmd');
+  for (const bad of ['magector@2.23.0 && calc', 'a b', 'a|b', 'a"b', 'a&b', 'a;b', '$(x)']) {
+    let threw = false;
+    try { npmInvocation('npx', ['-y', bad], 'win32'); } catch (e) { threw = /unsafe argument for shell/.test(e.message); }
+    assert(threw, `win32: rejects ${JSON.stringify(bad)}`);
+  }
+  const d = npmInvocation('npx', ['-y', 'magector@2.23.0', 'search', 'product price && x'], 'darwin');
+  assertEq(d.file, 'npx', 'posix: file is npx');
+  assertEq(d.shell, false, 'posix: shell false');
+  assertEq(d.args[3], 'product price && x', 'posix: args pass through unchanged');
+  const cur = npmInvocation('npm', ['--version']);
+  assertEq(cur.shell, process.platform === 'win32', 'default platform = process.platform');
+}
 
 function testSafePath() {
   console.log('\n── safePath / safeRelPath ──');
@@ -5199,6 +5169,59 @@ function testIndexLockConcurrencyGuard() {
     writeIndexPidFile(root, 999999999);
     assertEq(getRunningIndexPid(root), null, 'Dead/impossible PID in lock file is not treated as a conflict');
     assert(!existsSync(lockPathFor(root)), 'Stale lock file is cleaned up on detection');
+
+    // Exclusive creation: a live holder's lock is never overwritten. PID 1 (init/launchd)
+    // is alive on every Unix box; as a non-root user process.kill(1, 0) throws EPERM,
+    // which is exactly the "another user's live process" case.
+    let pid1Alive = true;
+    try { process.kill(1, 0); } catch (e) { if (e.code === 'ESRCH') pid1Alive = false; }
+    if (pid1Alive) {
+      assertEq(writeIndexPidFile(root, 1), true, 'writeIndexPidFile creates a missing lock and returns true');
+      assertEq(writeIndexPidFile(root, 2), false, 'writeIndexPidFile refuses a lock held by a live process');
+      assertEq(readFileSync(lockPathFor(root), 'utf-8'), '1', 'Live holder\'s lock is left untouched');
+      assertEq(getRunningIndexPid(root), 1, 'A live process we may not signal (EPERM) holds the lock');
+      assert(existsSync(lockPathFor(root)), 'Lock of a live foreign-user process is not deleted');
+      removeIndexPidFile(root);
+    } else {
+      console.log('  ○ PID 1 not alive here — live-holder assertions skipped');
+    }
+
+    // A dead holder's lock is replaced
+    writeFileSync(lockPathFor(root), '999999');
+    assertEq(writeIndexPidFile(root, process.pid), true, 'writeIndexPidFile replaces a dead holder\'s lock');
+    assertEq(readFileSync(lockPathFor(root), 'utf-8'), String(process.pid), 'Replaced lock names the new holder');
+
+    // Re-taking our own lock succeeds (e.g. the re-index exit handler / rustIndex)
+    assertEq(writeIndexPidFile(root, process.pid), true, 'writeIndexPidFile returns true when the lock already names this PID');
+    assertEq(readFileSync(lockPathFor(root), 'utf-8'), String(process.pid), 'Own lock still names this PID');
+    removeIndexPidFile(root);
+
+    // A lock without a PID is taken over
+    writeFileSync(lockPathFor(root), 'garbage');
+    assertEq(writeIndexPidFile(root, process.pid), true, 'writeIndexPidFile takes over a lock without a PID');
+    assertEq(readFileSync(lockPathFor(root), 'utf-8'), String(process.pid), 'Taken-over invalid lock names the new holder');
+    removeIndexPidFile(root);
+
+    // An unreadable lock: getRunningIndexPid leaves it alone, writeIndexPidFile replaces it
+    // with one the Rust watcher can read (otherwise the watcher would not defer to us)
+    if (process.platform !== 'win32' && process.getuid && process.getuid() !== 0) {
+      writeFileSync(lockPathFor(root), '12345');
+      chmodSync(lockPathFor(root), 0o000);
+      try {
+        assertEq(getRunningIndexPid(root), null, 'Unreadable lock: no PID reported');
+        assert(existsSync(lockPathFor(root)), 'Unreadable lock is not deleted by getRunningIndexPid');
+        assertEq(writeIndexPidFile(root, process.pid), true, 'writeIndexPidFile takes over an unreadable lock');
+        assertEq(readFileSync(lockPathFor(root), 'utf-8'), String(process.pid), 'Taken-over unreadable lock names the new holder');
+      } finally {
+        chmodSync(lockPathFor(root), 0o644);
+        removeIndexPidFile(root);
+      }
+    }
+
+    // Never throws, even when the lock cannot be created at all
+    let threw = false, ret;
+    try { ret = writeIndexPidFile(path.join(root, 'no', 'such', 'dir'), process.pid); } catch { threw = true; }
+    assert(!threw && ret === false, 'writeIndexPidFile returns false instead of throwing when the lock cannot be written');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

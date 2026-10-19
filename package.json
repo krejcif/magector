@@ -20,7 +20,7 @@
     "validate:verbose": "node src/cli.js validate --verbose",
     "validate:keep": "node src/cli.js validate --verbose --keep",
     "benchmark": "node src/cli.js benchmark",
-    "test": "node tests/unit.test.js && node tests/mcp-server.test.js && node tests/mcp-reindex-lock.test.js && node tests/trace-graphql.test.js && node tests/di-resolution.test.js && node tests/di-parsing.test.js && node tests/config-models.test.js && node tests/validate-config.test.js && node tests/dispatch-resolution.test.js && node tests/index-snapshot.test.js && node tests/mcp-serve-start.test.js",
+    "test": "node scripts/run-tests.mjs",
     "test:unit": "node tests/unit.test.js",
     "test:integration": "node tests/mcp-server.test.js",
     "test:reindex-lock": "node tests/mcp-reindex-lock.test.js",
@@ -61,5 +61,8 @@
     "type": "git",
     "url": "https://github.com/krejcif/magector.git"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
 }

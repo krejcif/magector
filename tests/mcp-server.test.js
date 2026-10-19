@@ -11,7 +11,7 @@
 
 import { spawn } from 'child_process';
 import { createInterface } from 'readline';
-import { existsSync } from 'fs';
+import { existsSync, rmSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -367,6 +367,26 @@ async function main() {
     }
 
     try {
+      const pwned = `/tmp/magector-pwned-${process.pid}`;
+      const injResult = await client.callTool('magento_analyze_diff', { commitHash: `HEAD; touch ${pwned}` });
+      const injText = injResult?.content?.[0]?.text || '';
+      const injOk = injText.includes('Invalid commit reference') && !existsSync(pwned);
+      log(injOk ? 'PASS' : 'FAIL', 'magento_analyze_diff rejects a shell-injecting commitHash', injText.slice(0, 80));
+      try { rmSync(pwned, { force: true }); } catch {}
+    } catch (e) {
+      log('FAIL', 'magento_analyze_diff rejects a shell-injecting commitHash', e.message);
+    }
+
+    try {
+      const unkResult = await client.callTool('magento_analyze_diff', { commitHash: 'deadbeefdeadbeef' });
+      const unkText = unkResult?.content?.[0]?.text || '';
+      const unkOk = unkResult?.isError === true && unkText.includes('git show failed for deadbeefdeadbeef');
+      log(unkOk ? 'PASS' : 'FAIL', 'magento_analyze_diff reports git\'s error for an unknown ref', unkText.slice(0, 120));
+    } catch (e) {
+      log('FAIL', 'magento_analyze_diff reports git\'s error for an unknown ref', e.message);
+    }
+
+    try {
       const complexResult = await client.callTool('magento_complexity', {
         path: SERVER_PATH,
       });
@@ -374,6 +394,22 @@ async function main() {
       log(cText.includes('Complexity') ? 'PASS' : 'FAIL', 'tools/call magento_complexity');
     } catch (e) {
       log('FAIL', 'tools/call magento_complexity', e.message);
+    }
+
+    try {
+      const escRes = await client.callTool('magento_complexity', { path: '../../etc' });
+      const escText = escRes?.content?.[0]?.text || '';
+      log(escText.includes('Path escapes project root') ? 'PASS' : 'FAIL', 'magento_complexity refuses a path outside the root', escText.slice(0, 80));
+    } catch (e) {
+      log('FAIL', 'magento_complexity refuses a path outside the root', e.message);
+    }
+
+    try {
+      const modRes = await client.callTool('magento_complexity', { module: 'Magento_Catalog; rm -rf /' });
+      const modText = modRes?.content?.[0]?.text || '';
+      log(modText.includes('Invalid module name') ? 'PASS' : 'FAIL', 'magento_complexity rejects a malformed module name', modText.slice(0, 80));
+    } catch (e) {
+      log('FAIL', 'magento_complexity rejects a malformed module name', e.message);
     }
 
     // ── stdout integrity ────────────────────────────────────────

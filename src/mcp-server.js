@@ -25,11 +25,9 @@ import path from 'path';
 import { getRunningIndexPid, writeIndexPidFile, removeIndexPidFile } from './index-lock.js';
 import { PROCESS_SCOPE, readPidRecord, isRecordAlive } from './process-scope.js';
 import { shouldRespawnServe, RESPAWN_WINDOW_MS } from './serve-respawn.js';
-import {
-  analyzeCommit,
-  getStagedDiff,
-  analyzeFileDiff
-} from 'ruvector/dist/core/diff-embeddings.js';
+import { analyzeFileDiff } from 'ruvector/dist/core/diff-embeddings.js';
+import { isSafeGitRef, commitDiff, stagedDiff, commitSubject } from './git-diff.js';
+import { clientOutputTail } from './tool-output.js';
 import {
   analyzeFiles as analyzeComplexityFiles,
   getComplexityRating
@@ -52,6 +50,8 @@ import { defaultDbPath, manifestPath, tempDbPathFor, swapInIndex } from './paths
 import { extractPhpFacts, createDispatchResolver, parseNameExpr, dependsOnCalledClass, nameMatches, shownName, isInformative, sharesKnownParts, WILD, COND, plainName } from './php-dispatch.js';
 import { walkPhpFiles, buildPhpScan as buildPhpScanData, scanPhpFile as scanPhpFileInto } from './php-scan.js';
 import { extractJson } from './cli-json.js';
+import { resolveIndexRoot } from './index-root.js';
+import { isClassCandidate } from './find-class-filter.js';
 import { loadSnapshot, writeSnapshot, acquireScanLock, releaseScanLock, scanLockHolder, waitForScanLock } from './php-scan-snapshot.js';
 import { createRequire } from 'module';
 const __pkg = createRequire(import.meta.url)('../package.json');
@@ -210,7 +210,7 @@ const SOCK_PATH = path.join(config.magentoRoot, '.magector', 'serve.sock');
 // by COLD_SEARCH_TIMEOUT_MS); SOCKET_QUERY_TIMEOUT_MS must stay above it so a secondary's own
 // socket round-trip doesn't time out first and go cold while the proxy is still waiting.
 const SERVE_RELOAD_WAIT_MS = envMs('MAGECTOR_SERVE_WAIT_MS', 20000);
-const SOCKET_QUERY_TIMEOUT_MS = SERVE_RELOAD_WAIT_MS + 10000;
+const SOCKET_QUERY_TIMEOUT_MS = envMs('MAGECTOR_SERVE_QUERY_TIMEOUT_MS', SERVE_RELOAD_WAIT_MS + 10000);
 const COLD_SEARCH_TIMEOUT_MS = 20000;
 // Everything one search does — waiting for serve, asking it, a cold search — ends within this,
 // under the MCP client's 60s tool timeout.
@@ -619,8 +619,8 @@ function startBackgroundReindex() {
   // Check if another MCP instance is already running a reindex
   const existingPid = getRunningReindexPid();
   if (existingPid) {
-    logToFile('INFO', `Reindex already running in another process (PID ${existingPid}) — skipping`);
-    console.error(`Reindex already running (PID ${existingPid}) — skipping`);
+    logToFile('INFO', `Reindex already running in another process (PID ${existingPid}) — skipping. If no indexer is running, delete .magector/reindex.pid.`);
+    console.error(`Reindex already running (PID ${existingPid}) — skipping. If no indexer is running, delete .magector/reindex.pid.`);
     reindexInProgress = true; // mark locally so tools know
     // Poll the external process and react when it finishes
     const tempDbPath = tempDbPathFor(config.dbPath);
@@ -990,8 +990,20 @@ function startServeProcess() {
         return;
       }
 
-      // Route response to pending request by order (FIFO)
-      if (servePending.size > 0) {
+      // Route the reply to the request it answers, by the id the core echoes. A reply whose id
+      // is no longer pending answers a request that already timed out: drop it — handed to the
+      // next pending request in order it would shift every later reply by one. An older core
+      // that echoes no id is answered in order (FIFO).
+      if (parsed.id !== undefined) {
+        const { id, ...reply } = parsed;
+        const entry = servePending.get(id);
+        if (!entry) {
+          logToFile('ERR', `[${id}] ← late reply dropped (request no longer pending)`);
+          return;
+        }
+        servePending.delete(id);
+        entry.resolve(reply);
+      } else if (servePending.size > 0) {
         const [id, resolver] = servePending.entries().next().value;
         servePending.delete(id);
         resolver.resolve(parsed);
@@ -1298,7 +1310,9 @@ function serveQuery(command, params = {}, timeoutMs = 30000) {
     servePending.set(id, {
       resolve: (v) => { clearTimeout(timer); resolve(v); }
     });
-    const msg = JSON.stringify({ command, ...params });
+    // The core echoes `id` in its reply. It goes last so that a params.id (e.g. from a
+    // socket client) cannot override the routing id.
+    const msg = JSON.stringify({ command, ...params, id });
     serveProcess.stdin.write(msg + '\n');
   });
 }
@@ -1450,13 +1464,16 @@ async function rustSearchCold(query, limit = 10) {
   return Array.isArray(parsed) ? parsed : [];
 }
 
-function rustIndex(magentoRoot) {
+// The indexer child of a magento_index call, killed on shutdown so it is not orphaned.
+let toolIndexProcess = null;
+
+async function rustIndex(magentoRoot) {
   searchCache.clear(); // invalidate cache on reindex
   // Hold the reindex lock like `magector index`: the serve watcher defers to it instead of
   // saving index.db while this run writes the same file, and two indexers never race.
   const runningPid = getRunningReindexPid();
   if (runningPid) {
-    throw new Error(`Another indexing process (PID ${runningPid}) is already running — wait for it to finish.`);
+    throw new Error(`Another indexing process (PID ${runningPid}) is already running — wait for it to finish. If no indexer is running, delete .magector/reindex.pid.`);
   }
   const indexArgs = [
     'index',
@@ -1474,19 +1491,58 @@ function rustIndex(magentoRoot) {
   // constraint and caused silent re-index loops via the MCP auto-index path.
   const indexTimeout = parseInt(process.env.MAGECTOR_INDEX_TIMEOUT, 10) || 14400000;
   writeReindexPidFile(process.pid);
+  const MAX_OUTPUT = 4 * 1024 * 1024; // keep the last 4 MB of each stream
+  const collect = () => {
+    let text = '';
+    return {
+      add(chunk) {
+        text += chunk;
+        if (text.length > MAX_OUTPUT) text = text.slice(-MAX_OUTPUT);
+      },
+      get: () => text,
+    };
+  };
   try {
-    const result = execFileSync(config.rustBinary, indexArgs, { encoding: 'utf-8', timeout: indexTimeout, stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
-    return result;
-  } catch (err) {
-    if (err.message && err.message.includes('ETIMEDOUT')) {
-      throw new Error(
-        `Indexing timed out after ${indexTimeout / 1000}s. Partial progress was saved ` +
-        `to disk — the next indexing run will auto-resume from the last checkpoint. ` +
-        `To raise the timeout further, set MAGECTOR_INDEX_TIMEOUT (milliseconds) in the ` +
-        `MCP server env, e.g. MAGECTOR_INDEX_TIMEOUT=28800000 for 8 hours.`
-      );
-    }
-    throw err;
+    return await new Promise((resolve, reject) => {
+      const out = collect();
+      const err = collect();
+      let timedOut = false;
+      let child;
+      try {
+        child = spawn(config.rustBinary, indexArgs, { stdio: ['ignore', 'pipe', 'pipe'], env: rustEnv });
+      } catch (e) {
+        reject(e);
+        return;
+      }
+      toolIndexProcess = child;
+      child.stdout.setEncoding('utf-8');
+      child.stderr.setEncoding('utf-8');
+      child.stdout.on('data', d => out.add(d));
+      child.stderr.on('data', d => err.add(d));
+      const timer = setTimeout(() => { timedOut = true; try { child.kill('SIGTERM'); } catch {} }, indexTimeout);
+      const settle = () => { clearTimeout(timer); if (toolIndexProcess === child) toolIndexProcess = null; };
+      child.on('error', e => { settle(); reject(e); });
+      child.on('close', (code, signal) => {
+        settle();
+        if (timedOut) {
+          reject(new Error(
+            `Indexing timed out after ${indexTimeout / 1000}s. Partial progress was saved ` +
+            `to disk — the next indexing run will auto-resume from the last checkpoint. ` +
+            `To raise the timeout further, set MAGECTOR_INDEX_TIMEOUT (milliseconds) in the ` +
+            `MCP server env, e.g. MAGECTOR_INDEX_TIMEOUT=28800000 for 8 hours.`
+          ));
+        } else if (code !== 0) {
+          const tail = (err.get() || out.get()).trim();
+          const what = `Indexer ${signal ? `killed by ${signal}` : `exited with code ${code}`}`;
+          // The full output goes to the log; the MCP client gets its last 16 KB.
+          logToFile('ERR', `magento_index: ${what}${tail ? `:\n${tail}` : ''}`);
+          const shown = clientOutputTail(tail);
+          reject(new Error(`${what}${shown ? `:\n${shown}` : ''}`));
+        } else {
+          resolve(out.get());
+        }
+      });
+    });
   } finally {
     removeReindexPidFile();
   }
@@ -1548,13 +1604,15 @@ async function rustStatsAsync() {
 // ─── Analysis (ruvector JS) ─────────────────────────────────────
 
 async function analyzeDiff(options = {}) {
-  if (options.commitHash) {
-    return analyzeCommit(options.commitHash);
+  const commitHash = options.commitHash;
+  if (commitHash && !isSafeGitRef(commitHash)) {
+    throw new Error(`Invalid commit reference: ${commitHash}`);
   }
-  const diff = getStagedDiff();
+  const diff = commitHash ? commitDiff(config.magentoRoot, commitHash) : stagedDiff(config.magentoRoot);
   if (!diff || diff.trim() === '') {
-    return { files: [], totalAdditions: 0, totalDeletions: 0, riskScore: 0, message: 'No staged changes found' };
+    return { files: [], totalAdditions: 0, totalDeletions: 0, riskScore: 0, message: commitHash ? `No changes found for ${commitHash}` : 'No staged changes found' };
   }
+  const subject = commitHash ? commitSubject(config.magentoRoot, commitHash) : undefined;
   const fileSections = diff.split(/^diff --git /m).filter(Boolean);
   const files = [];
   let totalAdditions = 0;
@@ -1564,12 +1622,16 @@ async function analyzeDiff(options = {}) {
     const fileMatch = section.match(/a\/(.+?)\s/);
     if (!fileMatch) continue;
     const filePath = fileMatch[1];
-    const analysis = await analyzeFileDiff(filePath, section);
+    const analysis = await analyzeFileDiff(filePath, section, subject);
     files.push(analysis);
     totalAdditions += analysis.totalAdditions || 0;
     totalDeletions += analysis.totalDeletions || 0;
   }
 
+  if (commitHash) {
+    const meanRisk = files.length > 0 ? files.reduce((sum, f) => sum + (f.riskScore || 0), 0) / files.length : 0;
+    return { hash: commitHash, message: subject, files, totalAdditions, totalDeletions, riskScore: meanRisk };
+  }
   const maxRisk = files.length > 0 ? Math.max(...files.map(f => f.riskScore || 0)) : 0;
   return { files, totalAdditions, totalDeletions, riskScore: maxRisk };
 }
@@ -6652,10 +6714,7 @@ const _callToolHandler = async (request) => {
         const query = `${args.className} ${ns}`.trim();
         const raw = await rustSearchAsync(query, 30);
         const classLower = args.className.toLowerCase();
-        let results = raw.map(normalizeResult).filter(r =>
-          r.className?.toLowerCase().includes(classLower) ||
-          r.path?.toLowerCase().includes(classLower.replace(/\\/g, '/'))
-        );
+        let results = raw.map(normalizeResult).filter(r => isClassCandidate(r, classLower));
 
         // Filesystem fallback: if vector search found nothing, glob for ClassName.php
         if (results.length === 0 && config.magentoRoot) {
@@ -6863,8 +6922,14 @@ const _callToolHandler = async (request) => {
       }
 
       case 'magento_index': {
-        const root = args.path || config.magentoRoot;
-        const output = rustIndex(root);
+        const resolved = resolveIndexRoot(args.path, config.magentoRoot);
+        if (resolved.error) {
+          return { content: [{ type: 'text', text: resolved.error }], isError: true };
+        }
+        const root = resolved.root;
+        const fullOutput = await rustIndex(root);
+        logToFile('INFO', `magento_index output:\n${fullOutput}`);
+        const output = clientOutputTail(fullOutput); // the full output is in the log
         // Auto-enrich after indexing: runs in background via Rust serve, doesn't block response
         logToFile('INFO', 'Auto-enrich: starting in background after index');
         serveQuery('enrich', { magento_root: root }, 120000).then(resp => {
@@ -7349,12 +7414,20 @@ const _callToolHandler = async (request) => {
       case 'magento_complexity': {
         let filePaths = [];
 
+        const complexityAbs = args.path ? safePath(config.magentoRoot, args.path) : null;
+        if (args.path && !complexityAbs) {
+          return { content: [{ type: 'text', text: `Path escapes project root: ${args.path}` }], isError: true };
+        }
+        if (!args.path && args.module && !/^[A-Za-z][A-Za-z0-9]*_[A-Za-z][A-Za-z0-9]*$/.test(args.module)) {
+          return { content: [{ type: 'text', text: `Invalid module name: ${args.module}` }], isError: true };
+        }
+
         if (args.path) {
-          const pathStat = await stat(args.path).catch(() => null);
+          const pathStat = await stat(complexityAbs).catch(() => null);
           if (pathStat && pathStat.isDirectory()) {
-            filePaths = await glob('**/*.php', { cwd: args.path, absolute: true, nodir: true });
+            filePaths = await glob('**/*.php', { cwd: complexityAbs, absolute: true, nodir: true });
           } else if (pathStat) {
-            filePaths = [args.path];
+            filePaths = [complexityAbs];
           }
         } else if (args.module) {
           const modulePath = args.module.replace('_', '/');
@@ -8204,9 +8277,7 @@ const _callToolHandler = async (request) => {
                 const qr = `${a.className} ${ns}`.trim();
                 const raw = await rustSearchAsync(qr, 30);
                 const cl = a.className.toLowerCase();
-                let res = raw.map(normalizeResult).filter(r =>
-                  r.className?.toLowerCase().includes(cl) || r.path?.toLowerCase().includes(cl.replace(/\\/g, '/'))
-                );
+                let res = raw.map(normalizeResult).filter(r => isClassCandidate(r, cl));
                 // Filesystem fallback for batch find_class
                 if (res.length === 0 && config.magentoRoot) {
                   const shortName = a.className.split('\\').pop();
@@ -9892,6 +9963,11 @@ function cleanup(reason) {
     logToFile('INFO', `Cleanup: killing reindex process (PID ${reindexProcess.pid})`);
     try { reindexProcess.kill(); } catch {}
     reindexProcess = null;
+  }
+  if (toolIndexProcess) {
+    logToFile('INFO', `Cleanup: killing magento_index process (PID ${toolIndexProcess.pid})`);
+    try { toolIndexProcess.kill(); } catch {}
+    toolIndexProcess = null;
   }
   if (formatCheckProcess) {
     logToFile('INFO', `Cleanup: killing format check process (PID ${formatCheckProcess.pid})`);

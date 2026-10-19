@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  node:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      MAGECTOR_AUTO_INDEX: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Set model directory
+        run: echo "MAGECTOR_MODELS=$HOME/.magector/models" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.magector/models
+          key: onnx-models-v1
+      - run: npm install --no-audit --no-fund
+      - run: npm test
+
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-core
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config build-essential
+      - name: cargo test
+        working-directory: rust-core
+        run: cargo test --release

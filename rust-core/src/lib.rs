@@ -8,6 +8,7 @@ pub mod indexer;
 pub mod magento;
 pub mod validation;
 pub mod vectordb;
+pub mod sync_util;
 pub mod watcher;
 pub mod sona;
 pub mod datadb;

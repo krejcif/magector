@@ -63,7 +63,7 @@ pub(crate) fn is_module_readme(relative: &Path) -> bool {
 }
 
 /// Whether a file is indexed (size aside): a source file by extension, or a module README.
-/// `discover_files` and the watcher's two scans must agree on this.
+/// `discover_files_with_skipped` and the watcher's two scans must agree on this.
 pub(crate) fn is_indexed_file(path: &Path, root: &Path) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
         Some(ext) if INCLUDE_EXTENSIONS.contains(&ext) => true,
@@ -75,8 +75,9 @@ pub(crate) fn is_indexed_file(path: &Path, root: &Path) -> bool {
 }
 
 /// Splits a module README into `(heading, text)` chunks of at most `README_CHUNK_CHARS`
-/// (a single longer line stays whole). Text before the first `## ` is "Summary", a `### X`
-/// under `## Y` is "Y > X", `# ` titles are dropped and headings inside code fences are text.
+/// (a single longer line is split at its last space before the limit). Text before the first
+/// `## ` is "Summary", a `### X` under `## Y` is "Y > X", the first `# ` line is the title and
+/// is dropped (later `# ` lines are sections like `## `), headings inside code fences are text.
 /// Sections that say nothing are dropped: empty, or the module README template's
 /// placeholders `None.` and `Not documented yet.`.
 pub(crate) fn readme_sections(content: &str) -> Vec<(String, String)> {
@@ -87,7 +88,28 @@ pub(crate) fn readme_sections(content: &str) -> Vec<(String, String)> {
             return;
         }
         let mut piece = String::new();
-        for line in text.lines() {
+        let mut lines: Vec<&str> = Vec::new();
+        for mut line in text.lines() {
+            while line.len() > README_CHUNK_CHARS {
+                let mut cut = README_CHUNK_CHARS;
+                while !line.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                let space = if line.as_bytes()[cut] == b' ' { Some(cut) } else { line[..cut].rfind(' ') };
+                match space.filter(|&i| i > 0) {
+                    Some(i) => {
+                        lines.push(&line[..i]);
+                        line = &line[i + 1..];
+                    }
+                    None => {
+                        lines.push(&line[..cut]);
+                        line = &line[cut..];
+                    }
+                }
+            }
+            lines.push(line);
+        }
+        for line in lines {
             if !piece.is_empty() && piece.len() + line.len() + 1 > README_CHUNK_CHARS {
                 chunks.push((heading.clone(), piece.trim().to_string()));
                 piece.clear();
@@ -105,6 +127,7 @@ pub(crate) fn readme_sections(content: &str) -> Vec<(String, String)> {
     let mut sub: Option<String> = None;
     let mut body = String::new();
     let mut in_fence = false;
+    let mut seen_title = false;
     let heading = |section: &str, sub: &Option<String>| match sub {
         Some(s) => format!("{} > {}", section, s),
         None => section.to_string(),
@@ -115,7 +138,12 @@ pub(crate) fn readme_sections(content: &str) -> Vec<(String, String)> {
         if fence.starts_with("```") || fence.starts_with("~~~") {
             in_fence = !in_fence;
         } else if !in_fence {
-            if let Some(h) = line.strip_prefix("## ") {
+            let h1 = line.strip_prefix("# ");
+            if h1.is_some() && !seen_title {
+                seen_title = true;
+                continue;
+            }
+            if let Some(h) = line.strip_prefix("## ").or(h1) {
                 push(&mut chunks, heading(&section, &sub), &body);
                 body.clear();
                 section = h.trim().to_string();
@@ -126,9 +154,6 @@ pub(crate) fn readme_sections(content: &str) -> Vec<(String, String)> {
                 push(&mut chunks, heading(&section, &sub), &body);
                 body.clear();
                 sub = Some(h.trim().to_string());
-                continue;
-            }
-            if line.starts_with("# ") {
                 continue;
             }
         }
@@ -390,7 +415,7 @@ impl Indexer {
 
         println!("🔍 Discovering files...");
 
-        let all_files = self.discover_files()?;
+        let (all_files, skipped_dirs) = self.discover_files_with_skipped()?;
         stats.files_found = all_files.len();
 
         // In resume mode, use FileManifest for true incremental indexing:
@@ -439,7 +464,8 @@ impl Indexer {
             }
 
             // Detect changes against manifest
-            let changes = manifest.detect_changes(&self.magento_root)?;
+            let mut changes = manifest.detect_changes(&self.magento_root)?;
+            keep_files_under_skipped_dirs(&mut changes.deleted, &skipped_dirs, &self.magento_root);
             manifest.apply_touched(&changes.touched);
             let touched_count = changes.touched.len();
             let modified_count = changes.modified.len();
@@ -856,34 +882,10 @@ impl Indexer {
         Ok(())
     }
 
-    /// Discover files to index (no symlink following for speed)
-    pub(crate) fn discover_files(&self) -> Result<Vec<PathBuf>> {
-        let mut files = Vec::new();
-        let root = &self.magento_root;
-        let ignore = &self.ignore_patterns;
-
-        for entry in WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|e| !Self::should_skip_entry(e, root, ignore))
-        {
-            let entry = entry?;
-            if entry.file_type().is_file() {
-                let path = entry.path();
-
-                // Check the name first (cheap), then file size
-                if is_indexed_file(path, root) {
-                    // Use entry metadata (already cached from DirEntry)
-                    if let Ok(meta) = entry.metadata() {
-                        if meta.len() <= MAX_FILE_SIZE {
-                            files.push(path.to_path_buf());
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(files)
+    /// Discover files to index (no symlink following for speed), also returning the
+    /// directories that could not be read.
+    pub(crate) fn discover_files_with_skipped(&self) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+        walk_indexable_files(&self.magento_root, &self.ignore_patterns)
     }
 
     /// Check if a directory entry should be skipped during traversal.
@@ -1707,9 +1709,130 @@ impl Indexer {
     }
 }
 
+/// Walk `root` and return the indexable files plus the directories that could not
+/// be read. Errors if the root itself is missing, not a directory or unreadable (so
+/// a typo or an unmounted root cannot look like "every file was deleted"). Any other
+/// unreadable entry is skipped with a warning and reported in the second list.
+fn walk_indexable_files(root: &Path, ignore: &[String]) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    if !root.is_dir() {
+        anyhow::bail!("{:?} does not exist or is not a directory", root);
+    }
+    if let Err(e) = fs::read_dir(root) {
+        anyhow::bail!("Cannot read {:?}: {}", root, e);
+    }
+    let mut skipped = Vec::new();
+    let mut files = Vec::new();
+
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !Indexer::should_skip_entry(e, root, ignore))
+    {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("Skipping unreadable entry: {}", e);
+                if let Some(p) = e.path() {
+                    skipped.push(p.to_path_buf());
+                }
+                continue;
+            }
+        };
+        if entry.file_type().is_file() {
+            let path = entry.path();
+
+            // Check the name first (cheap), then file size
+            if is_indexed_file(path, root) {
+                // Use entry metadata (already cached from DirEntry)
+                if let Ok(meta) = entry.metadata() {
+                    if meta.len() <= MAX_FILE_SIZE {
+                        files.push(path.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok((files, skipped))
+}
+
+/// Drop from `deleted` (manifest-relative paths) every file under a directory the walk
+/// could not read: it is unknown, not deleted, so its index entries stay as they were.
+fn keep_files_under_skipped_dirs(deleted: &mut Vec<String>, skipped: &[PathBuf], root: &Path) {
+    for dir in skipped {
+        let rel = dir.strip_prefix(root).unwrap_or(dir);
+        let before = deleted.len();
+        deleted.retain(|f| !Path::new(f).starts_with(rel));
+        tracing::warn!(
+            "Could not read {:?}; keeping {} indexed files under it",
+            dir,
+            before - deleted.len()
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_skips_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::write(root.join("a/ok.php"), b"<?php").unwrap();
+        let bad = root.join("b");
+        fs::create_dir_all(&bad).unwrap();
+        fs::write(bad.join("hidden.php"), b"<?php").unwrap();
+        fs::set_permissions(&bad, fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = fs::read_dir(&bad).is_err();
+
+        let (files, skipped) = walk_indexable_files(root, &[]).unwrap();
+
+        // Restore before asserting so a failure cannot leave an undeletable dir.
+        fs::set_permissions(&bad, fs::Permissions::from_mode(0o755)).unwrap();
+        if !unreadable {
+            eprintln!("skipped: running as root, chmod 000 is still readable");
+            return;
+        }
+        assert!(files.iter().any(|f| f.ends_with("a/ok.php")), "{:?}", files);
+        assert!(!files.iter().any(|f| f.ends_with("hidden.php")), "{:?}", files);
+        assert_eq!(skipped, vec![bad.clone()]);
+
+        // Files indexed earlier under the unreadable dir are not "deleted"; others are.
+        let mut deleted = vec!["b/hidden.php".to_string(), "b/x/y.php".to_string(), "bb/z.php".to_string(), "a/gone.php".to_string()];
+        keep_files_under_skipped_dirs(&mut deleted, &skipped, root);
+        assert_eq!(deleted, vec!["bb/z.php".to_string(), "a/gone.php".to_string()]);
+    }
+
+    #[test]
+    fn walk_errors_on_missing_or_non_directory_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(walk_indexable_files(&tmp.path().join("typo"), &[]).is_err());
+        let f = tmp.path().join("file");
+        fs::write(&f, b"x").unwrap();
+        assert!(walk_indexable_files(&f, &[]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_errors_on_unreadable_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        fs::create_dir_all(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = fs::read_dir(&root).is_err();
+        let res = walk_indexable_files(&root, &[]);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        if !unreadable {
+            eprintln!("skipped: running as root");
+            return;
+        }
+        assert!(res.is_err());
+    }
 
     #[test]
     fn test_replaced_since() {
@@ -1777,6 +1900,32 @@ mod tests {
         assert!(chunks.iter().all(|(h, t)| h == "How it works" && t.len() <= README_CHUNK_CHARS));
         let rejoined: Vec<String> = chunks.iter().map(|(_, t)| t.clone()).collect();
         assert_eq!(rejoined.join("\n"), long.trim(), "nothing is lost at the cut");
+
+        // `# ` headings after the title are sections
+        assert_eq!(
+            readme_sections("# Acme_Export\n# Purpose\nExports orders.\n# How it works\n1. cron\n"),
+            vec![
+                ("Purpose".to_string(), "Exports orders.".to_string()),
+                ("How it works".to_string(), "1. cron".to_string()),
+            ]
+        );
+
+        // one unwrapped paragraph is split at spaces, nothing lost
+        let words: String = (0..410).map(|i| format!("w{:03}", i % 1000)).collect::<Vec<_>>().join(" ");
+        assert!(words.len() >= 2000);
+        let chunks = readme_sections(&format!("## Long\n{}\n", words));
+        assert!(chunks.len() > 1, "a long line is split");
+        assert!(chunks.iter().all(|(h, t)| h == "Long" && t.len() <= README_CHUNK_CHARS));
+        let rejoined: Vec<String> = chunks.iter().map(|(_, t)| t.clone()).collect();
+        assert_eq!(rejoined.join(" "), words);
+
+        // no space and multi-byte chars: hard split on char boundaries, nothing lost
+        let solid = "\u{00e9}".repeat(1500);
+        let chunks = readme_sections(&format!("## Solid\n{}\n", solid));
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|(_, t)| t.len() <= README_CHUNK_CHARS));
+        let rejoined: String = chunks.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(rejoined, solid);
     }
 
     #[test]

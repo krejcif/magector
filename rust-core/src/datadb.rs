@@ -250,7 +250,15 @@ impl DataDb {
     // ─── Transactions ──────────────────────────────────────────────
 
     /// Begin a transaction.
+    ///
+    /// If a previous caller left a transaction open (e.g. a handler panicked
+    /// between `begin` and `commit`), it is rolled back first so the new
+    /// transaction starts clean instead of failing or silently joining it.
     pub fn begin(&self) -> Result<()> {
+        if !self.conn.is_autocommit() {
+            tracing::warn!("Rolling back a dangling transaction left open by a prior failure");
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
         self.conn
             .execute_batch("BEGIN")
             .context("Failed to begin transaction")?;
@@ -271,6 +279,13 @@ impl DataDb {
             .execute_batch("ROLLBACK")
             .context("Failed to rollback transaction")?;
         Ok(())
+    }
+
+    /// Begin a transaction that rolls back on drop unless committed
+    /// (covers early returns and panics).
+    pub fn transaction(&self) -> Result<TxGuard<'_>> {
+        self.begin()?;
+        Ok(TxGuard { db: self, done: false })
     }
 
     // ─── Process state ─────────────────────────────────────────────
@@ -346,10 +361,55 @@ impl DataDb {
     }
 }
 
+/// RAII transaction guard: rolls back on drop unless `commit` succeeded.
+pub struct TxGuard<'a> {
+    db: &'a DataDb,
+    done: bool,
+}
+
+impl TxGuard<'_> {
+    pub fn commit(mut self) -> Result<()> {
+        self.db.commit()?;
+        self.done = true;
+        Ok(())
+    }
+}
+
+impl Drop for TxGuard<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            let _ = self.db.rollback();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_tx_guard_dropped_without_commit_rolls_back() {
+        let dir = tempdir().unwrap();
+        let db = DataDb::open(&dir.path().join("data.db")).unwrap();
+        {
+            let _tx = db.transaction().unwrap();
+            db.desc_upsert("a.xml", "h", "d", "m", 1).unwrap();
+        }
+        assert!(db.conn.is_autocommit());
+        assert!(db.desc_get("a.xml").is_none());
+    }
+
+    #[test]
+    fn test_begin_after_dangling_begin_succeeds() {
+        let dir = tempdir().unwrap();
+        let db = DataDb::open(&dir.path().join("data.db")).unwrap();
+        db.begin().unwrap();
+        db.desc_upsert("a.xml", "h", "d", "m", 1).unwrap();
+        db.begin().unwrap();
+        db.commit().unwrap();
+        assert!(db.desc_get("a.xml").is_none());
+    }
 
     #[test]
     fn test_open_creates_tables_and_desc_roundtrip() {

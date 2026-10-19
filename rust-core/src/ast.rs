@@ -1061,4 +1061,24 @@ $y->setBar(null);
         assert_eq!(results[0].line, 4);
         assert_eq!(results[1].line, 6);
     }
+
+    #[test]
+    fn test_query_dataobject_set_null_captures_method_names() {
+        let src = "<?php\nclass A {\n  function f($o) {\n    $o->getPayment()->setMethod(null);\n    $o->setCouponCode(null);\n    $o->setMethod('x');\n  }\n}\n";
+        let mut a = PhpAstAnalyzer::new().unwrap();
+        let m = a.run_query(src, include_str!("../queries/dataobject-set-null.scm")).unwrap();
+        let names: Vec<&str> = m.iter().flat_map(|x| x.captures.iter())
+            .filter(|(k, _)| k == "method_name").map(|(_, v)| v.as_str()).collect();
+        assert_eq!(names, vec!["setMethod", "setCouponCode"]);
+    }
+
+    #[test]
+    fn test_query_unchecked_method_chain_captures_property_chain() {
+        let src = "<?php\nclass U {\n  function e() {\n    return $this->payment->getMethod();\n  }\n}\n";
+        let mut a = PhpAstAnalyzer::new().unwrap();
+        let m = a.run_query(src, include_str!("../queries/unchecked-method-chain.scm")).unwrap();
+        assert_eq!(m.len(), 1);
+        assert!(m[0].captures.contains(&("property".to_string(), "payment".to_string())));
+        assert!(m[0].captures.contains(&("called_method".to_string(), "getMethod".to_string())));
+    }
 }
