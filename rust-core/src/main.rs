@@ -671,6 +671,19 @@ fn withdraw_sidecar_claims(db_path: &std::path::Path, paths: &[String]) -> bool 
     true
 }
 
+/// After index.db is saved with the new vectors of `indexed`, give the sidecar real records
+/// for them again, undoing `withdraw_sidecar_claims`; left stale, the watcher re-embeds them
+/// on every serve start. Described files that produced no vectors stay stale.
+fn confirm_sidecar_claims(db_path: &std::path::Path, magento_root: &std::path::Path, indexed: &[(String, Vec<usize>)]) {
+    let mut done = magector_core::watcher::FileManifest::new();
+    done.apply_indexed(magento_root, indexed);
+    let paths: Vec<String> = indexed.iter().map(|(p, _)| p.clone()).collect();
+    let sidecar = magector_core::watcher::FileManifest::sidecar_path(db_path);
+    if let Err(e) = done.confirm_in_sidecar(&sidecar, &paths) {
+        eprintln!("Warning: could not record the re-embedded files in {:?} ({}); the next start re-embeds them", sidecar, e);
+    }
+}
+
 /// Runs `save` (an index.db write) unless an external indexer holds the reindex lock for
 /// `magento_root` — the watcher defers the same way, and two writers would clobber each
 /// other's index.db. Returns whether `save` ran.
@@ -848,7 +861,11 @@ fn handle_serve_request(
                                 match reindex_result {
                                     Ok(indexed) => {
                                         eprintln!("Re-indexed {} files with descriptions", indexed.len());
-                                        save_unless_external_indexer(mg_root_path, || idx.save_atomic_unless_replaced(db_path));
+                                        save_unless_external_indexer(mg_root_path, || {
+                                            idx.save_atomic_unless_replaced(db_path)?;
+                                            confirm_sidecar_claims(db_path, mg_root_path, &indexed);
+                                            Ok(())
+                                        });
                                     }
                                     Err(e) => {
                                         eprintln!("Warning: re-index after describe failed: {}", e);

@@ -17,6 +17,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 - `magento_index` returns at most the last 16 KB of the indexer's output; the full output is in `.magector/magector.log`.
 
 ### Fixed
+- With the file watcher on (`npx magector mcp`), every serve start re-embedded, about one watch interval later, every file an earlier serve had re-indexed, although none of them had changed: tens of thousands of files after a `composer update`, at full CPU for 15–20 minutes. The watcher now records the files it re-indexes in `index.manifest` again once index.db is saved, and files it deleted leave that manifest instead of staying there for good. An existing manifest needs one more re-embed of those files, then a restart re-embeds only what changed. The re-embed after `describe` had the same problem.
 - Module READMEs that use `#` for every section, or very long paragraphs on one line, are now indexed section by section. Existing indexes pick this up when a README changes, or with `magector index --force`.
 - `magento_find_class` could list README sections of a module whose name contains the class name.
 - `magento_index` no longer freezes the MCP server while the index runs, and no longer fails when the indexer prints more than 1 MB.
