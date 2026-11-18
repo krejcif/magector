@@ -198,7 +198,13 @@ class McpTestClient {
     try { return JSON.parse(jsonText); } catch { return null; }
   }
 
-  stop() { if (this.child) this.child.kill(); }
+  // Wait for the exit: on SIGTERM the server still writes .magector/magector.log and removes
+  // its pid files, which raced the fixture cleanup (ENOTEMPTY).
+  async stop() {
+    if (this.child && this.child.exitCode === null && this.child.signalCode === null) {
+      await new Promise(r => { this.child.once('exit', r); this.child.kill(); });
+    }
+  }
 }
 
 // ── Main ───────────────────────────────────────────────────────
@@ -293,7 +299,7 @@ async function main() {
         `schema=${hasSchema} resolver=${hasResolver}`);
     }
   } finally {
-    client.stop();
+    await client.stop();
     rmSync(FIXTURE_ROOT, { recursive: true, force: true });
   }
 
