@@ -1,6 +1,6 @@
 [package]
 name = "magector-core"
-version = "2.23.0"
+version = "2.23.1"
 edition = "2021"
 description = "Magento source code indexer with semantic embeddings"
 license = "MIT"

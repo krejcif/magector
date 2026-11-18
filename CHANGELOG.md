@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 
 ## [Unreleased]
 
+## [2.23.1] - 2026-11-18
+
 ### Security
 - `magento_analyze_diff` passed `commitHash` to a shell; it now rejects anything but a git ref and runs git without a shell, in `MAGENTO_ROOT`. An invalid or unknown ref, or a root that is not a git repository, now returns git's error instead of "No changes found".
 
