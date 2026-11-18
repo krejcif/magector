@@ -90,9 +90,13 @@ class McpClient {
     return (res.result?.content || []).map(c => c.text || '').join('\n');
   }
 
-  stop() {
+  // Waits for the exit: on SIGTERM the server still writes into .magector, which would race
+  // a cleanup right after.
+  async stop() {
     try { this.child.stdin.end(); } catch { /* already closed */ }
-    try { this.child.kill(); } catch { /* already exited */ }
+    if (this.child.exitCode === null && this.child.signalCode === null) {
+      await new Promise(r => { this.child.once('exit', r); this.child.kill(); });
+    }
   }
 }
 
@@ -379,7 +383,7 @@ async function main() {
       has: ['is a virtual type', 'Instantiates `Acme\\Core\\Model\\Repo`'],
     });
   } finally {
-    client.stop();
+    await client.stop();
   }
 
   // ── Output cap ─────────────────────────────────────────────────
@@ -394,7 +398,7 @@ async function main() {
     log(body.length <= LIMIT + 10 && fences % 2 === 0 ? 'PASS' : 'FAIL',
       'output cap: cut at a line boundary within the limit, code fences closed', `${body.length} chars, ${fences} fences`);
   } finally {
-    capped.stop();
+    await capped.stop();
   }
 
   // ── Relative MAGENTO_ROOT ──────────────────────────────────────
@@ -406,7 +410,7 @@ async function main() {
       has: ['`app/code/Acme/Core/Model/Repo.php`'],
     });
   } finally {
-    rel.stop();
+    await rel.stop();
     rmSync(dbDir, { recursive: true, force: true });
   }
 
