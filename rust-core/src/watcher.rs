@@ -231,11 +231,24 @@ impl FileManifest {
     /// magector) is an `Err`, and left in place: a magector that can parse it would trust
     /// claims the caller is about to make false, so the caller must remove it.
     pub fn mark_stale_in_sidecar(sidecar: &Path, paths: &[String]) -> Result<bool> {
+        Self::edit_sidecar(sidecar, paths, |_| Some(FileRecord::stale()))
+    }
+
+    /// Once index.db is saved holding the current vectors of `paths`, give them this
+    /// manifest's records in the sidecar, undoing `mark_stale_in_sidecar`: left stale, they
+    /// are re-embedded by every later serve start. A path this manifest no longer tracks
+    /// (deleted) leaves the sidecar. Otherwise as `mark_stale_in_sidecar`.
+    pub fn confirm_in_sidecar(&self, sidecar: &Path, paths: &[String]) -> Result<bool> {
+        Self::edit_sidecar(sidecar, paths, |path| self.files.get(path).cloned())
+    }
+
+    /// Set the sidecar record of each of `paths` to `record(path)`, or drop it on `None`.
+    fn edit_sidecar(sidecar: &Path, paths: &[String], record: impl Fn(&str) -> Option<FileRecord>) -> Result<bool> {
         if paths.is_empty() {
             return Ok(false);
         }
-        // The watcher thread and the serve `describe` command both mark paths here: one
-        // read-modify-write of the sidecar at a time, or one's marks could be lost.
+        // The watcher thread and the serve `describe` command both edit the sidecar: one
+        // read-modify-write of it at a time, or one's edits could be lost.
         static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
         let _one_at_a_time = ONE_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(mut manifest) = Self::load(sidecar) else {
@@ -245,7 +258,10 @@ impl FileManifest {
             anyhow::bail!("the sidecar exists but cannot be read");
         };
         for path in paths {
-            manifest.files.insert(path.clone(), FileRecord::stale());
+            match record(path) {
+                Some(rec) => manifest.files.insert(path.clone(), rec),
+                None => manifest.files.remove(path),
+            };
         }
         manifest.save(sidecar)?;
         Ok(true)
@@ -308,13 +324,18 @@ impl FileManifest {
     /// a checkout that only rewrites mtimes be classified touched instead of re-embedded,
     /// and its stale sentinels keep forcing the re-embed they demand. A sidecar record with
     /// neither (v1, or an unreadable hash) adds nothing over the current stat and is skipped.
-    /// Paths the index does not hold are never added.
+    /// Of the paths this manifest does not track, only stale sentinels are added: they claim
+    /// nothing, so one whose file is gone (a deleted composer temp dir) is reported deleted
+    /// and leaves the sidecar instead of staying there for good, and one whose file is there
+    /// is embedded, as an untracked file would be.
     pub fn seed_from(&mut self, sidecar: &FileManifest) {
-        for (path, rec) in self.files.iter_mut() {
-            if let Some(from) = sidecar.files.get(path) {
-                if from.sha256.is_some() || from.is_stale() {
-                    *rec = from.clone();
+        for (path, from) in &sidecar.files {
+            match self.files.get_mut(path) {
+                Some(rec) if from.sha256.is_some() || from.is_stale() => *rec = from.clone(),
+                None if from.is_stale() => {
+                    self.files.insert(path.clone(), from.clone());
                 }
+                _ => {}
             }
         }
     }
@@ -514,6 +535,20 @@ fn zero_entry_paths(
         .collect()
 }
 
+/// Give the sidecar the watcher's records for `paths`, whose state index.db now holds, and
+/// clear `paths`. If that fails they stay stale there: the next serve start re-embeds them.
+fn confirm_saved(manifest: &FileManifest, sidecar: &Path, paths: &mut Vec<String>) {
+    if let Err(e) = manifest.confirm_in_sidecar(sidecar, paths) {
+        tracing::warn!(
+            "Watcher: could not record {} re-indexed files in {:?} ({}); the next start re-embeds them",
+            paths.len(),
+            sidecar,
+            e
+        );
+    }
+    paths.clear();
+}
+
 /// The watcher's manifest for the index `idx` holds: the files it has vectors for with their
 /// current stat, the content hashes and stale sentinels of the sidecar that describes that
 /// index.db, and every indexed file the walk no longer finds tracked stale, so the first scan
@@ -695,6 +730,10 @@ pub fn watcher_loop(
         // nothing — e.g. only re-attempted zero-entry files — must not rewrite
         // the whole index.db.
         let mut dirty = removed_any;
+        // Paths marked stale above whose new state is not yet saved: whenever index.db holds
+        // it (`!dirty`), the sidecar gets their records back. A chunk that fails to index is
+        // never added, so it stays stale there and the next start retries it.
+        let mut unconfirmed: Vec<String> = changes.deleted.clone();
 
         // 2. Index added and modified files in bounded chunks. After each chunk
         //    we persist to disk (so an interrupted process keeps its progress
@@ -730,6 +769,7 @@ pub fn watcher_loop(
                         if !zero_entry.is_empty() {
                             manifest.apply_indexed(&magento_root, &zero_entry);
                         }
+                        unconfirmed.extend(indexed.iter().chain(&zero_entry).map(|(rel, _)| rel.clone()));
 
                         if !indexed.is_empty() {
                             dirty = true;
@@ -760,7 +800,11 @@ pub fn watcher_loop(
                         }
                     }
                 }
-                // Lock dropped here at end of scope, before the next chunk.
+                // Release the lock before the sidecar write, and before the next chunk.
+                drop(idx);
+                if !dirty {
+                    confirm_saved(&manifest, &sidecar, &mut unconfirmed);
+                }
             }
             tracing::info!("Indexed {} files ({} entries)", indexed_files, indexed_entries);
         }
@@ -781,10 +825,14 @@ pub fn watcher_loop(
                 needs_save = true;
             }
             if needs_save {
-                if let Err(e) = idx.save_atomic_unless_replaced(&db_path) {
-                    tracing::error!("Failed to save index after watcher update: {}", e);
+                match idx.save_atomic_unless_replaced(&db_path) {
+                    Ok(()) => dirty = false,
+                    Err(e) => tracing::error!("Failed to save index after watcher update: {}", e),
                 }
             }
+        }
+        if !dirty {
+            confirm_saved(&manifest, &sidecar, &mut unconfirmed);
         }
 
         // 4. Update status
@@ -840,8 +888,10 @@ mod tests {
         if let Some(rec) = sidecar_rec {
             sidecar.files.insert(rel.to_string(), rec);
         }
-        // a path the sidecar knows but the index does not must not be added
-        sidecar.files.insert("not-in-index.php".to_string(), FileRecord::stale());
+        // a path the sidecar vouches for but the index does not hold must not be added
+        let mut vouched = FileRecord::stale();
+        vouched.sha256 = Some([0; 32]);
+        sidecar.files.insert("not-in-index.php".to_string(), vouched);
         watcher.seed_from(&sidecar);
         assert!(!watcher.files.contains_key("not-in-index.php"));
         watcher
@@ -1255,6 +1305,59 @@ mod tests {
         let manifest = manifest_for(&paths, &dir, &db);
         assert!(manifest.files.keys().any(|k| k.ends_with("a.php")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_watcher_reindex_survives_a_serve_restart() {
+        // Every serve start re-embedded the same ~43k unchanged files (a real project): the
+        // watcher marks what it changes stale in the sidecar before writing index.db, and
+        // nothing wrote real records back, so the next serve seeded those sentinels and
+        // re-embedded them all again. Paths it deleted stayed in the sidecar as stale
+        // sentinels for good, never tracked again and so never reported deleted.
+        let dir = make_temp_dir();
+        let db = dir.join(".magector").join("index.db");
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let sidecar = FileManifest::sidecar_path(&db);
+        for (f, body) in [("kept.php", "kept"), ("edited.php", "old"), ("gone.php", "gone")] {
+            fs::write(dir.join(f), format!("<?php echo '{body}';")).unwrap();
+        }
+        // `index` left a sidecar describing all three, and one ghost an older run left behind
+        let indexed: HashSet<String> = ["kept.php", "edited.php", "gone.php"].map(String::from).into();
+        let mut from_index = FileManifest::new();
+        from_index.apply_indexed(&dir, &indexed.iter().map(|p| (p.clone(), vec![0])).collect::<Vec<_>>());
+        from_index.files.insert("vendor/composer/tmp-1/ghost.php".to_string(), FileRecord::stale());
+        from_index.save(&sidecar).unwrap();
+
+        // serve starts on that index; one file is edited, one deleted
+        let mut watcher = manifest_for(&indexed, &dir, &db);
+        fs::write(dir.join("edited.php"), "<?php echo 'new content';").unwrap();
+        fs::remove_file(dir.join("gone.php")).unwrap();
+        let changes = watcher.detect_changes(&dir).unwrap();
+        assert_eq!(rel_paths(&dir, &changes.modified), vec!["edited.php"]);
+        let mut deleted = changes.deleted.clone();
+        deleted.sort();
+        assert_eq!(deleted, vec!["gone.php", "vendor/composer/tmp-1/ghost.php"], "a ghost is reported deleted");
+
+        // one watcher tick, in watcher_loop's order
+        let changing: Vec<String> = rel_paths(&dir, &changes.modified).into_iter().chain(deleted).collect();
+        assert!(FileManifest::mark_stale_in_sidecar(&sidecar, &changing).unwrap());
+        watcher.apply_deleted(&changes.deleted);
+        watcher.apply_indexed(&dir, &[("edited.php".to_string(), vec![1])]);
+        // ... index.db saved ...
+        assert!(watcher.confirm_in_sidecar(&sidecar, &changing).unwrap());
+
+        // serve restarts on the saved index: nothing changed on disk since
+        let indexed: HashSet<String> = ["kept.php", "edited.php"].map(String::from).into();
+        let restarted = manifest_for(&indexed, &dir, &db).detect_changes(&dir).unwrap();
+        assert!(restarted.modified.is_empty(), "re-embedded again: {:?}", restarted.modified);
+        assert!(restarted.is_empty(), "{restarted:?}");
+        let on_disk = FileManifest::load(&sidecar).unwrap();
+        let mut kept: Vec<&String> = on_disk.files.keys().collect();
+        kept.sort();
+        assert_eq!(kept, vec!["edited.php", "kept.php"], "deleted paths leave the sidecar");
+        assert!(on_disk.files["edited.php"].sha256.is_some());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
