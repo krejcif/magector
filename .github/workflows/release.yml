@@ -35,8 +35,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          # Pinned: from Rust 1.100 Cargo nests OUT_DIR one level deeper
+          # (build/<crate>/<hash>/out), and the build script of ort-sys 2.0.0-rc.11 then
+          # copies DirectML.dll to a directory that does not exist and panics on Windows.
+          # Move to stable again with an ort release whose copy_dylibs handles that layout.
+          toolchain: 1.99.1
           targets: ${{ matrix.target }}
 
       - name: Install cross-compilation tools (Linux ARM64)
