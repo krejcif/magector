@@ -25,6 +25,7 @@ import path from 'path';
 import { getRunningIndexPid, writeIndexPidFile, removeIndexPidFile } from './index-lock.js';
 import { PROCESS_SCOPE, readPidRecord, isRecordAlive } from './process-scope.js';
 import { shouldRespawnServe, RESPAWN_WINDOW_MS } from './serve-respawn.js';
+import { LIGHT_SERVE_COMMANDS, INDEX_USE_COMMANDS, serveIdleConfig, serveIdleDelayMs, pruneUses } from './serve-idle.js';
 import { analyzeFileDiff } from 'ruvector/dist/core/diff-embeddings.js';
 import { isSafeGitRef, commitDiff, stagedDiff, commitSubject } from './git-diff.js';
 import { clientOutputTail } from './tool-output.js';
@@ -541,7 +542,7 @@ async function checkDbFormat() {
     const cacheKey = `${binaryStat.mtimeMs}|${fstat.mtimeMs}|${fstat.size}`;
 
     // Try DB cache first (if serve process is running)
-    const queryFn = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
+    const queryFn = currentServeQueryFn();
     if (queryFn) {
       try {
         const resp = await queryFn('cache_get', { key: 'format_ok' }, 5000);
@@ -598,7 +599,7 @@ async function checkDbFormat() {
     const cacheValue = JSON.stringify({ key: cacheKey, ok });
     try { writeFileSync(FORMAT_CACHE_PATH, cacheValue); } catch {}
     // Async DB write — fire-and-forget (serve may not be up yet on first startup)
-    const queryFn2 = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
+    const queryFn2 = currentServeQueryFn();
     if (queryFn2) {
       queryFn2('cache_set', { key: 'format_ok', value: cacheValue }, 5000).catch(() => {});
     }
@@ -884,6 +885,20 @@ let isShuttingDown = false; // set by cleanup() so exit handlers don't respawn d
 let intentionalRestart = false; // set around a deliberate kill+restart (e.g. after reindex) so it isn't counted as a crash
 let isPrimary = false; // true from runAsPrimary() until we step down (budget-exhausted give-up); gates who may start the socket proxy
 
+// Idle sleep (see src/serve-idle.js): the primary stops serve after SERVE_IDLE.idleMs without an
+// index query and keeps its socket proxy; the next query that needs the index starts it again.
+const SERVE_IDLE = serveIdleConfig();
+// A woken serve loads the index and the model again; above FLAT_SEARCH_MAX vectors it also builds
+// the HNSW graph (45-60s). A query waits this long for it (bounded by its own timeout).
+const SERVE_WAKE_WAIT_MS = Math.max(SERVE_RELOAD_WAIT_MS, 60000);
+let serveSleeping = false;    // serve was stopped for being idle; not a crash, not respawned
+let serveWaking = false;      // a query woke serve and it is not ready yet
+let serveWakeAfterExit = false; // woken while the stopped process was still exiting: start it on exit
+let serveIdleTimer = null;
+let serveLastIndexUse = 0;    // last query that needed serve (light commands do not count)
+let serveIndexUses = [];      // index uses (search/describe/stats) in the last 24 h, for the keep rule
+let lightRequestUnsupported = false; // a core without `request`: light commands wake serve instead
+
 function startServeProcess() {
   // Guard: if a live serve process already exists (e.g. started by another
   // instance that won the lock race), reuse it instead of spawning a duplicate.
@@ -945,11 +960,15 @@ function startServeProcess() {
     });
     proc.on('exit', (code, signal) => {
       if (proc !== serveProcess) return; // stale handler from an already-replaced process (e.g. intentional restart)
-      logToFile('WARN', `Serve process exited (code=${code}, signal=${signal})`);
+      const wake = serveWakeAfterExit && !isShuttingDown;
+      serveWakeAfterExit = false;
+      logToFile(serveSleeping || wake ? 'INFO' : 'WARN', `Serve process exited (code=${code}, signal=${signal})${serveSleeping ? ' — sleeping until the next index query' : ''}`);
       serveProcess = null; serveReady = false; removePidFile();
       failAllPending('Serve process exited');
+      if (wake) { startServeProcess(); return; } // keeps the pending ready-promise of the wake
       if (serveReadyResolve) { serveReadyResolve(false); serveReadyResolve = null; }
-      if (!isShuttingDown && !intentionalRestart) scheduleServeRespawn();
+      serveWaking = false;
+      if (!isShuttingDown && !intentionalRestart && !serveSleeping) scheduleServeRespawn();
     });
     proc.stderr.on('data', (d) => {
       // Log serve process stderr (watcher events, tracing, errors) to .magector/magector.log
@@ -972,6 +991,9 @@ function startServeProcess() {
       // First line is ready signal
       if (parsed.ready) {
         serveReady = true;
+        serveWaking = false;
+        serveLastIndexUse = Date.now();
+        scheduleServeIdleCheck();
         // Clear stale cache entries — they may contain [] from when index was unavailable
         searchCache.clear();
         logToFile('INFO', `Serve process ready (PID ${proc.pid})`);
@@ -1078,6 +1100,8 @@ function scheduleServeRespawn() {
  * before its replacement is spawned.
  */
 function restartServeProcessIntentionally(reason, onOldServeGone = () => {}) {
+  serveSleeping = false;
+  serveWakeAfterExit = false;
   const proc = serveProcess;
   if (!proc) { onOldServeGone(); startServeProcess(); return; }
   intentionalRestart = true;
@@ -1294,7 +1318,119 @@ function tryConnectSocket() {
 let globalServeQuery = null;
 let socketQueryTag = 0;
 
-function serveQuery(command, params = {}, timeoutMs = 30000) {
+/** The serve query function to use now: the socket (secondary), the local serve, or null. */
+function currentServeQueryFn() {
+  if (globalServeQuery) return globalServeQuery;
+  if (serveProcess && serveReady) return serveQuery;
+  if (isPrimary && (serveSleeping || serveWaking)) return serveQuery; // serveQuery wakes it
+  return null;
+}
+
+function scheduleServeIdleCheck() {
+  if (!SERVE_IDLE.idleMs || !isPrimary || isShuttingDown) return;
+  clearTimeout(serveIdleTimer);
+  const delay = serveIdleDelayMs(serveIndexUses, Date.now(), SERVE_IDLE);
+  serveIdleTimer = setTimeout(sleepServeIfIdle, Math.max(0, serveLastIndexUse + delay - Date.now()) + 50);
+  serveIdleTimer.unref?.();
+}
+
+/** Stop serve when it has been idle long enough (MAGECTOR_SERVE_IDLE_SEC). The proxy stays up. */
+function sleepServeIfIdle() {
+  serveIdleTimer = null;
+  if (isShuttingDown || !isPrimary || !serveProcess || !serveReady || serveSleeping) return;
+  const delay = serveIdleDelayMs(serveIndexUses, Date.now(), SERVE_IDLE);
+  if (Date.now() - serveLastIndexUse < delay) { scheduleServeIdleCheck(); return; }
+  if (servePending.size > 0 || reindexInProgress || intentionalRestart) {
+    serveLastIndexUse = Date.now(); // busy: look again after another idle period
+    scheduleServeIdleCheck();
+    return;
+  }
+  logToFile('INFO', `Serve idle for ${Math.round(delay / 1000)}s — stopping it to free memory (the next index query starts it again)`);
+  serveSleeping = true;
+  const proc = serveProcess;
+  try { proc.kill(); } catch {}
+  const killTimer = setTimeout(() => {
+    if (proc.exitCode === null && proc.signalCode === null) {
+      logToFile('WARN', 'Sleeping serve did not exit within 15s of SIGTERM — sending SIGKILL');
+      try { proc.kill('SIGKILL'); } catch {}
+    }
+  }, 15000);
+  killTimer.unref?.();
+}
+
+/** Start a sleeping serve again. Queries wait on serveReadyPromise. */
+function wakeServe(command) {
+  if (!serveSleeping) return;
+  serveSleeping = false;
+  serveWaking = true;
+  logToFile('INFO', `Waking serve process for ${command}`);
+  if (!serveReadyResolve) serveReadyPromise = new Promise((resolve) => { serveReadyResolve = resolve; });
+  if (serveProcess) { serveWakeAfterExit = true; return; } // still exiting: the exit handler starts it
+  startServeProcess();
+}
+
+/**
+ * A light command (LIGHT_SERVE_COMMANDS) while serve sleeps: a one-shot `magector-core request`
+ * answers it without loading the index. A core without `request` falls back to waking serve.
+ */
+function oneShotServeRequest(command, params, timeoutMs) {
+  logToFile('QUERY', `[request] → ${command}(${JSON.stringify(params).slice(0, 200)})`);
+  return new Promise((resolve) => {
+    let out = '', err = '', done = false;
+    const finish = (v) => { if (!done) { done = true; clearTimeout(timer); resolve(v); } };
+    let proc;
+    try {
+      proc = spawn(config.rustBinary, ['request', '-d', config.dbPath], { stdio: ['pipe', 'pipe', 'pipe'], env: rustEnv });
+    } catch (e) {
+      finish({ ok: false, error: `request failed: ${e.message}` });
+      return;
+    }
+    const timer = setTimeout(() => {
+      try { proc.kill('SIGKILL'); } catch {}
+      finish({ ok: false, error: 'Serve request timeout' });
+    }, timeoutMs);
+    proc.stdout.on('data', (d) => { out += d; });
+    proc.stderr.on('data', (d) => { err += d; });
+    proc.on('error', (e) => finish({ ok: false, error: `request failed: ${e.message}` }));
+    proc.on('close', (code) => {
+      const line = out.split('\n').find((l) => l.trim());
+      if (line) {
+        try { const { id, ...reply } = JSON.parse(line); finish(reply); return; } catch {}
+      }
+      if (/unrecognized subcommand|invalid value|Usage:/i.test(err)) {
+        lightRequestUnsupported = true;
+        logToFile('WARN', 'magector-core has no `request` command — light commands wake serve instead');
+        serveQuery(command, params, timeoutMs).then(finish, (e) => finish({ ok: false, error: e.message }));
+        return;
+      }
+      finish({ ok: false, error: `request failed (exit ${code}): ${err.trim().slice(0, 200)}` });
+    });
+    proc.stdin.on('error', () => {});
+    proc.stdin.end(JSON.stringify({ command, ...params, id: 0 }) + '\n');
+  });
+}
+
+async function serveQuery(command, params = {}, timeoutMs = 30000) {
+  if (isPrimary && SERVE_IDLE.idleMs) {
+    const light = LIGHT_SERVE_COMMANDS.has(command);
+    if (serveSleeping && light && !lightRequestUnsupported) return oneShotServeRequest(command, params, timeoutMs);
+    if (!light) {
+      const now = Date.now();
+      serveLastIndexUse = now;
+      if (INDEX_USE_COMMANDS.has(command)) serveIndexUses = [...pruneUses(serveIndexUses, now), now];
+      if (serveReady) scheduleServeIdleCheck();
+    }
+    if (serveSleeping) wakeServe(command);
+    if (serveWaking && !serveReady && serveReadyPromise) {
+      const t0 = Date.now();
+      await Promise.race([serveReadyPromise, new Promise((r) => setTimeout(() => r(false), Math.min(SERVE_WAKE_WAIT_MS, timeoutMs)))]);
+      timeoutMs = Math.max(1000, timeoutMs - (Date.now() - t0));
+    }
+  }
+  return serveQueryNow(command, params, timeoutMs);
+}
+
+function serveQueryNow(command, params = {}, timeoutMs = 30000) {
   if (!serveProcess || !serveReady) {
     logToFile('WARN', `serveQuery(${command}): serve process not ready — returning error`);
     return Promise.resolve({ ok: false, error: 'Serve process not ready' });
@@ -1374,7 +1510,7 @@ async function rustSearchAsync(query, limit = 10) {
   }
 
   // Try socket proxy (secondary instance) or local serve process (primary)
-  const currentServe = () => globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
+  const currentServe = currentServeQueryFn;
   const askServe = async (queryFn) => {
     if (left() <= 0) return null;
     try {
@@ -1586,7 +1722,7 @@ async function rustStatsAsync() {
     await Promise.race([serveReadyPromise, new Promise((r) => setTimeout(() => r(false), SERVE_RELOAD_WAIT_MS))]);
   }
 
-  const queryFn = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
+  const queryFn = currentServeQueryFn();
   if (queryFn) {
     try {
       const resp = await queryFn('stats', {}, SOCKET_QUERY_TIMEOUT_MS);
@@ -5644,6 +5780,18 @@ function formatTraceConfigResult(result) {
 
 // ─── MCP Server ─────────────────────────────────────────────────
 
+// Sent once at initialize. MCP clients that defer tool schemas show the model only tool names,
+// so this is where it learns which tool fits which question.
+const SERVER_INSTRUCTIONS = `Magector indexes this Magento 2 / Adobe Commerce codebase: a semantic index plus parsed Magento structure (di.xml, events, layout, db_schema, routes, GraphQL, webapi).
+
+Pick the tool by the question:
+- Who/what is wired to a class or event: magento_find_class, magento_find_plugin, magento_find_preference, magento_find_di_wiring, magento_find_observer, magento_find_event_flow, magento_find_implementors. These read Magento config and resolve inheritance, which grep cannot.
+- Config, schema, routes, entry points: magento_find_config, magento_find_db_schema, magento_find_table_usage, magento_find_controller, magento_find_api, magento_find_graphql, magento_find_cron, magento_find_layout, magento_find_template.
+- How a feature works, where something is handled, the name is unknown: magento_search (natural language), then magento_trace_flow, magento_trace_call_chain, magento_find_callers, magento_impact_analysis.
+- A literal string or identifier, every occurrence: magento_grep. Reading code: magento_read (methodName returns one method).
+- Several questions at once: magento_batch (one round trip).
+magento_search works best for Magento core and well-known vendors; for project-specific code prefer the structural finders above, and magento_grep for exact names.`;
+
 const server = new Server(
   {
     name: 'magector',
@@ -5653,7 +5801,8 @@ const server = new Server(
     capabilities: {
       tools: {},
       resources: {}
-    }
+    },
+    instructions: SERVER_INSTRUCTIONS
   }
 );
 
@@ -7487,7 +7636,7 @@ const _callToolHandler = async (request) => {
         const descOutput = path.join(config.magentoRoot, '.magector', 'sqlite.db');
         const force = args.force || false;
 
-        if (serveProcess && serveReady) {
+        if ((serveProcess && serveReady) || (isPrimary && (serveSleeping || serveWaking))) {
           try {
             const resp = await serveQuery('describe', {
               magento_root: config.magentoRoot,
@@ -8486,7 +8635,7 @@ const _callToolHandler = async (request) => {
                 const batchFilesOnly = a.filesOnly || false;
 
                 // Try Rust serve grep first
-                const batchQueryFn = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
+                const batchQueryFn = currentServeQueryFn();
                 let batchGrepDone = false;
                 if (batchQueryFn) {
                   try {
@@ -8620,7 +8769,7 @@ const _callToolHandler = async (request) => {
         const grepStart = Date.now();
 
         // Try Rust serve grep first
-        const queryFn = globalServeQuery || ((serveProcess && serveReady) ? serveQuery : null);
+        const queryFn = currentServeQueryFn();
         let output = null;
         if (queryFn) {
           try {
@@ -9953,6 +10102,7 @@ async function main() {
 // Cleanup on exit — kill all child processes and remove PID file
 function cleanup(reason) {
   isShuttingDown = true; // stop the exit handler from respawning serve during our own shutdown
+  clearTimeout(serveIdleTimer);
   logToFile('INFO', `Cleanup: ${reason || 'exit'}`);
   if (serveProcess) {
     logToFile('INFO', `Cleanup: killing serve process (PID ${serveProcess.pid})`);

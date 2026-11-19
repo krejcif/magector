@@ -16,6 +16,7 @@ export const TEST_FILES = [
   'tests/index-snapshot.test.js',
   'tests/mcp-serve-start.test.js',
   'tests/mcp-serve-ids.test.js',
+  'tests/mcp-serve-idle.test.js',
 ];
 
 function main() {

@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 
 ## [Unreleased]
 
+### Added
+- Idle sleep of the serve process: `MAGECTOR_SERVE_IDLE_SEC` stops it after that many seconds without an index query and frees the memory of the index and the model; the next query that needs the index starts it again. Frequent use keeps it loaded longer (`MAGECTOR_SERVE_KEEP_SEC`, `MAGECTOR_SERVE_KEEP_IF_DAILY`). Off by default.
+- `magector-core request`: answers grep, data.db state and AST queries without loading the index or the model. The MCP server uses it while serve sleeps.
+- The MCP server sends `instructions` at initialize: which tool fits which question. Clients that defer tool schemas show the model only tool names, so it used to fall back to `magento_grep` and `magento_read`.
+
+### Changed
+- `magento_grep` reads and matches files in parallel and tests each file whole before splitting it into lines; on a project with 215k files a query took 1–2.5 s.
+
 ## [2.23.1] - 2026-11-18
 
 ### Security

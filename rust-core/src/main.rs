@@ -187,6 +187,19 @@ enum Commands {
         #[arg(long)]
         threads: Option<usize>,
     },
+
+    /// Answer serve requests that need no index or model (grep, data.db state, AST queries):
+    /// reads JSON requests from stdin, one per line, and writes one JSON reply per line.
+    /// Other commands are refused, since they need `serve`.
+    Request {
+        /// Path to the index database (data.db and sqlite.db are found next to it)
+        #[arg(short, long, default_value = "./.magector/index.db")]
+        database: PathBuf,
+
+        /// Path to descriptions SQLite DB
+        #[arg(long)]
+        descriptions_db: Option<PathBuf>,
+    },
 }
 
 /// Resolve the global thread limit from (in priority order):
@@ -348,6 +361,9 @@ fn main() -> Result<()> {
             threads,
         } => {
             run_serve(&database, &model_cache, magento_root, watch_interval, descriptions_db, threads)?;
+        }
+        Commands::Request { database, descriptions_db } => {
+            run_request(&database, descriptions_db)?;
         }
     }
 
@@ -653,6 +669,48 @@ fn run_serve(
     Ok(())
 }
 
+/// `magector-core request`: the light serve commands without loading the index or the model.
+fn run_request(database: &PathBuf, descriptions_db: Option<PathBuf>) -> Result<()> {
+    let desc_db_path = descriptions_db.unwrap_or_else(|| database.with_file_name("sqlite.db"));
+    let data_db_path = database.with_file_name("data.db");
+    let data_db = DataDb::open(&data_db_path)
+        .with_context(|| format!("Failed to open DataDb at {:?}", data_db_path))?;
+    let data_db = Arc::new(Mutex::new(data_db));
+
+    let stdout = io::stdout();
+    let mut out = io::BufWriter::new(stdout.lock());
+    for line in io::stdin().lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let response = match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(req) => {
+                let command = req.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                let raw = if LIGHT_COMMANDS.contains(&command) {
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        handle_light_request(&desc_db_path, &data_db, &req)
+                    })) {
+                        Ok(resp) => resp,
+                        Err(_) => r#"{"ok":false,"error":"Internal panic caught"}"#.to_string(),
+                    }
+                } else {
+                    serde_json::json!({"ok": false, "error": format!("Command '{}' needs the serve process", command)}).to_string()
+                };
+                finish_response(&req, raw)
+            }
+            Err(e) => serde_json::json!({"ok": false, "error": format!("Invalid JSON: {}", e)}).to_string(),
+        };
+        writeln!(out, "{}", response)?;
+        out.flush()?;
+    }
+    Ok(())
+}
+
 /// Before index.db is changed on behalf of `paths`, mark them stale in the sidecar next to
 /// it, as the serve watcher does: `index` trusts a matching hash there. A sidecar that
 /// cannot be marked is removed; if it cannot even be removed this returns false, and
@@ -883,6 +941,27 @@ fn handle_serve_request(
             }
         }
 
+        c if LIGHT_COMMANDS.contains(&c) => handle_light_request(desc_db_path, data_db, req),
+
+        _ => format!(r#"{{"ok":false,"error":"Unknown command: {}"}}"#, command),
+    }
+}
+
+/// Serve commands that touch neither the index nor the model. `magector-core request` answers
+/// them without loading either, so a sleeping serve process need not be woken for them.
+pub const LIGHT_COMMANDS: &[&str] = &[
+    "descriptions", "enrich", "enrich_query", "process_set", "process_get", "process_remove",
+    "cache_set", "cache_get", "ast_query", "grep",
+];
+
+fn handle_light_request(
+    desc_db_path: &PathBuf,
+    data_db: &Arc<Mutex<DataDb>>,
+    req: &serde_json::Value,
+) -> String {
+    let command = req.get("command").and_then(|v| v.as_str()).unwrap_or("");
+
+    match command {
         "descriptions" => {
             // Return all descriptions as JSON — try DataDb first, fall back to legacy DescriptionDb
             let ddb = lock_recover(&data_db, "data_db");
@@ -1386,45 +1465,58 @@ fn handle_grep_command(req: &serde_json::Value) -> String {
     let mut matched_files: Vec<String> = Vec::new();
     let mut hit_limit = false;
 
-    'file_walk: for entry in WalkDir::new(&target)
+    // Candidate files in walk order, then read and matched in parallel. A file is first tested
+    // whole with a multi-line copy of the pattern (a line match is always a whole-file match), so
+    // only the few files that can match are split into lines.
+    let candidates: Vec<std::path::PathBuf> = WalkDir::new(&target)
         .into_iter()
         .filter_map(|e| e.ok())
-    {
-        if !entry.file_type().is_file() {
-            continue;
-        }
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| {
+            e.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| matches_include_pattern(n, include))
+                .unwrap_or(false)
+        })
+        .map(|e| e.into_path())
+        .collect();
+    let whole_file_re = regex::Regex::new(&format!("(?m){}", regex_pattern)).ok();
+    let hits: Vec<(std::path::PathBuf, String, Vec<usize>)> = {
+        use rayon::prelude::*;
+        let mut found: Vec<(usize, std::path::PathBuf, String, Vec<usize>)> = candidates
+            .into_par_iter()
+            .enumerate()
+            .filter_map(|(order, path)| {
+                // Skip binary / unreadable files
+                let content = std::fs::read_to_string(&path).ok()?;
+                if let Some(w) = &whole_file_re {
+                    if !w.is_match(&content) {
+                        return None;
+                    }
+                }
+                let idx: Vec<usize> = content
+                    .lines()
+                    .enumerate()
+                    .filter(|(_, line)| re.is_match(line))
+                    .map(|(i, _)| i)
+                    .collect();
+                if idx.is_empty() {
+                    None
+                } else {
+                    Some((order, path, content, idx))
+                }
+            })
+            .collect();
+        found.sort_by_key(|h| h.0);
+        found.into_iter().map(|(_, p, c, i)| (p, c, i)).collect()
+    };
 
-        let file_path = entry.path();
-        let file_name = match file_path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n,
-            None => continue,
-        };
-
-        // Filter by include pattern
-        if !matches_include_pattern(file_name, include) {
-            continue;
-        }
-
-        // Read file content
-        let content = match std::fs::read_to_string(file_path) {
-            Ok(c) => c,
-            Err(_) => continue, // Skip binary / unreadable files
-        };
-
+    'file_walk: for (file_path, content, match_line_indices) in &hits {
+        let file_path = file_path.as_path();
         let lines: Vec<&str> = content.lines().collect();
         let mut file_has_match = false;
-
-        // Find all matching line numbers first
-        let mut match_line_indices: Vec<usize> = Vec::new();
-        for (i, line) in lines.iter().enumerate() {
-            if re.is_match(line) {
-                match_line_indices.push(i);
-            }
-        }
-
-        if match_line_indices.is_empty() {
-            continue;
-        }
+        let match_line_indices = match_line_indices.clone();
 
         // Relative path for output
         let rel_path = file_path
@@ -1586,6 +1678,40 @@ fn download_magento(target: &PathBuf, version: Option<&str>) -> Result<()> {
     println!("  XML files: {}", xml_count);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod light_request_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn light_commands_are_answered_without_an_index() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("A.php"), "<?php\nclass Needle {}\n").unwrap();
+        let data_db = Arc::new(Mutex::new(DataDb::open(&root.join("data.db")).unwrap()));
+        let desc = root.join("sqlite.db");
+
+        let grep = serde_json::json!({"command": "grep", "pattern": "Needle", "magento_root": root.to_str().unwrap(), "path": ".", "include": "*.php", "context": 0});
+        let resp: serde_json::Value = serde_json::from_str(&handle_light_request(&desc, &data_db, &grep)).unwrap();
+        assert_eq!(resp["ok"], true, "{}", resp);
+        assert_eq!(resp["data"]["total"], 1, "{}", resp);
+
+        let set = serde_json::json!({"command": "cache_set", "key": "k", "value": "v"});
+        let resp: serde_json::Value = serde_json::from_str(&handle_light_request(&desc, &data_db, &set)).unwrap();
+        assert_eq!(resp["ok"], true, "{}", resp);
+        let get = serde_json::json!({"command": "cache_get", "key": "k"});
+        let resp: serde_json::Value = serde_json::from_str(&handle_light_request(&desc, &data_db, &get)).unwrap();
+        assert_eq!(resp["data"]["value"], "v", "{}", resp);
+    }
+
+    #[test]
+    fn index_commands_are_not_light() {
+        for c in ["search", "stats", "describe", "feedback", "sona_status", "watcher_status"] {
+            assert!(!LIGHT_COMMANDS.contains(&c), "{} needs the serve process", c);
+        }
+    }
 }
 
 #[cfg(test)]
