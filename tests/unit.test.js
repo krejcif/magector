@@ -16,6 +16,7 @@ import { Readable } from 'stream';
 import { syncOptionalDeps } from '../scripts/sync-optional-deps.mjs';
 import { getRunningIndexPid, writeIndexPidFile, removeIndexPidFile, lockPathFor } from '../src/index-lock.js';
 import { shouldRespawnServe, MAX_RESPAWNS_PER_WINDOW, RESPAWN_WINDOW_MS, RESPAWN_BASE_DELAY_MS } from '../src/serve-respawn.js';
+import { serveIdleConfig, serveIdleDelayMs, pruneUses, LIGHT_SERVE_COMMANDS, INDEX_USE_COMMANDS } from '../src/serve-idle.js';
 import { defaultDbPath, dbPathForRoot, manifestPath, tempDbPathFor, swapInIndex } from '../src/paths.js';
 import { modelDownloadDir, downloadFile } from '../src/model.js';
 import { binaryVersion, acceptPathBinary } from '../src/binary.js';
@@ -4660,6 +4661,32 @@ function testIsClassCandidate() {
     'find_class: the class itself is a candidate');
 }
 
+
+function testServeIdlePolicy() {
+  console.log('\n-- Serve idle sleep policy --');
+  const off = serveIdleConfig({});
+  assertEq(off.idleMs, 0, 'idle sleep is off by default');
+  const cfg = serveIdleConfig({ MAGECTOR_SERVE_IDLE_SEC: '1200', MAGECTOR_SERVE_KEEP_SEC: '14400', MAGECTOR_SERVE_KEEP_IF_DAILY: '10' });
+  assertEq(cfg.idleMs, 1200000, 'MAGECTOR_SERVE_IDLE_SEC is read in seconds');
+  assertEq(cfg.keepMs, 14400000, 'MAGECTOR_SERVE_KEEP_SEC is read in seconds');
+  assertEq(cfg.keepIfDaily, 10, 'MAGECTOR_SERVE_KEEP_IF_DAILY is read');
+  assertEq(serveIdleConfig({ MAGECTOR_SERVE_IDLE_SEC: '600', MAGECTOR_SERVE_KEEP_SEC: '60' }).keepMs, 600000, 'the keep time is never shorter than the idle time');
+  assertEq(serveIdleConfig({ MAGECTOR_SERVE_IDLE_SEC: 'abc' }).idleMs, 0, 'an invalid value falls back to the default');
+
+  const now = 10 * 24 * 3600 * 1000;
+  const hour = 3600 * 1000;
+  const nine = Array.from({ length: 9 }, (_, i) => now - i * hour);
+  assertEq(serveIdleDelayMs(nine, now, cfg), cfg.idleMs, '9 uses in 24 h: the short idle time');
+  assertEq(serveIdleDelayMs([...nine, now - 23 * hour], now, cfg), cfg.keepMs, '10 uses in 24 h: kept loaded longer');
+  assertEq(serveIdleDelayMs([...nine, now - 25 * hour], now, cfg), cfg.idleMs, 'uses older than 24 h do not count');
+  assertEq(serveIdleDelayMs([...nine, now], now, { ...cfg, keepIfDaily: 0 }), cfg.idleMs, 'keepIfDaily 0 turns the keep rule off');
+  assertEq(pruneUses([now - 25 * hour, now - hour], now).length, 1, 'pruneUses drops uses older than 24 h');
+
+  assert(LIGHT_SERVE_COMMANDS.has('grep') && LIGHT_SERVE_COMMANDS.has('cache_get'), 'grep and data.db commands are light');
+  assert(!LIGHT_SERVE_COMMANDS.has('search') && !LIGHT_SERVE_COMMANDS.has('describe'), 'index commands are not light');
+  assert([...INDEX_USE_COMMANDS].every(c => !LIGHT_SERVE_COMMANDS.has(c)), 'an index use is never a light command');
+}
+
 async function main() {
   console.log('╔═══════════════════════════════════════════════════════════╗');
   console.log('║            MAGECTOR UNIT TESTS                          ║');
@@ -4754,6 +4781,7 @@ async function main() {
   await testDownloadFile();
   testMcpServerEnv();
   testShouldRespawnServe();
+  testServeIdlePolicy();
   await testRustStatsAsyncSocketFirst();
 
   console.log('\n════════════════════════════════════════════════════════════');

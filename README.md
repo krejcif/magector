@@ -253,6 +253,7 @@ Commands:
   index       Index a Magento codebase
   search      Search the index semantically
   serve       Start persistent server mode (stdin/stdout JSON protocol)
+  request     Answer serve requests that need no index (grep, data.db state, AST queries) from stdin
   describe    Generate LLM descriptions for di.xml files (requires an Anthropic API key)
   validate    Run the validation suite (downloads Magento if no root is given)
   download    Download Magento 2 Open Source
@@ -425,6 +426,9 @@ The `describe` command and `magento_describe` MCP tool require an Anthropic API 
 | `MAGECTOR_FILE_LIST_TTL_MS` | How long the list of the modules' `etc/` files is reused before it is listed again (files added mid-session show up after this); also how often composer's PSR-4 map and classmap are checked for a `composer dump-autoload`. Modules themselves are rediscovered as soon as `app/etc/config.php` or the composer registrations change. `0`: always fresh. | `2000` |
 | `MAGECTOR_SERVE_WAIT_MS` | How long a search waits for the serve process to become ready before it runs a single-shot search instead. | `20000` |
 | `MAGECTOR_SERVE_QUERY_TIMEOUT_MS` | Time limit of one query that a secondary MCP instance sends to the primary's serve process over `.magector/serve.sock`; keep it above `MAGECTOR_SERVE_WAIT_MS` | `MAGECTOR_SERVE_WAIT_MS` + 10000 |
+| `MAGECTOR_SERVE_IDLE_SEC` | Stop the serve process (and free the memory of the index and the model) after this many seconds without a query that needs the index. The next such query starts it again; grep and other light commands run as a one-shot `magector-core request` meanwhile. `0` = never stop. | `0` |
+| `MAGECTOR_SERVE_KEEP_SEC` | Idle time used instead of `MAGECTOR_SERVE_IDLE_SEC` while the index is used often (see next row). | `14400` (4 h) |
+| `MAGECTOR_SERVE_KEEP_IF_DAILY` | Index uses (search, describe, stats) in the last 24 h from which `MAGECTOR_SERVE_KEEP_SEC` applies. `0` turns the rule off. | `10` |
 | `MAGECTOR_PHP_LIST_TTL_MS` | How long the list of all PHP files (event dispatchers) is reused before the tree is walked again. | `30000` |
 | `MAGECTOR_AUTO_INDEX` | `0`: the MCP server never starts an index (none, or an incompatible one) — for CI and agent jobs that bring their own index. The structural tools work without one; semantic search reports it is missing. | `1` (index in the background) |
 | `MAGECTOR_PREWARM_PHP` | `1`: read the PHP class hierarchy and the event dispatch sites in the background after the MCP server starts, in every instance, so the first `find_event_dispatchers` / `find_implementors` call does not read the tree; `0`: never — their first call reads the tree (seconds on a large project). Unset: in the primary instance only (the one that owns the serve process), except with `MAGECTOR_AUTO_INDEX=0`, which keeps background CPU off. | primary instance (off with `MAGECTOR_AUTO_INDEX=0`) |
@@ -697,7 +701,7 @@ disabled with `disabled="true"` as active.
 | `magento_describe` | `force` (default false) | Generate LLM descriptions for di.xml files (requires `ANTHROPIC_API_KEY`), stored in `.magector/sqlite.db`, then re-index the described files |
 | `magento_stats` | — | View index statistics |
 | `magento_batch` | `queries`* (max 10 items of `{tool, args}`) | Run up to 10 calls in parallel in one MCP round trip. Supported tools: `magento_search`, `find_class`, `find_method`, `find_plugin`, `find_observer`, `find_config`, `find_event_flow`, `find_di_wiring`, `find_callers`, `module_structure`, `trace_dependency`, `impact_analysis`, `trace_config`, `grep`, `read`, `ast_search`, `find_dataobject_issues`, `find_null_risks` (all with the `magento_` prefix); any other tool returns "Unsupported batch tool" |
-| `magento_grep` | `pattern`*, `path`, `include` (default `*.php`), `ignoreCase` (default false), `maxResults` (default 50), `context` (default 4), `filesOnly` (default false) | Exact text/regex search across PHP/XML/PHTML files. Runs in the Rust serve process, falling back to `grep -rn -E`. `filesOnly` works like `grep -l` |
+| `magento_grep` | `pattern`*, `path`, `include` (default `*.php`), `ignoreCase` (default false), `maxResults` (default 50), `context` (default 4), `filesOnly` (default false) | Exact text/regex search across PHP/XML/PHTML files. Runs in the Rust core (files matched in parallel; a one-shot `magector-core request` while serve sleeps), falling back to `grep -rn -E`. `filesOnly` works like `grep -l` |
 | `magento_read` | `path`*, `startLine`, `endLine`, `methodName` | Read a file, a line range, or only one method (`methodName`), which returns far fewer tokens than the whole file |
 | `magento_trace_api` | `url`, `interfaceName`, `method` (GET/PUT/POST/DELETE) | Trace a REST/GraphQL API endpoint from URL to implementation: webapi.xml → service interface → DI preference → method body |
 | `magento_trace_config` | `configPath`, `keyword` | Trace a config path end-to-end: system.xml admin definition → PHP classes that consume the value → DB values from config-data exports. Accepts an exact path or a keyword |
@@ -888,6 +892,8 @@ Each source file produces one vector. A module README is split into sections of 
 ### 3. Persistent Serve Mode
 
 The MCP server spawns a persistent Rust process (`magector-core serve`) that keeps the ONNX model and the vector index loaded in memory. Queries are sent as JSON over stdin and responses returned via stdout, so a query does not load the model or the index. Up to 300k vectors there is no search graph to build at start; on a 50k-vector index serve was ready 0.7 s after it started (CHANGELOG 2.22.0). If it is not ready, a search waits for it up to `MAGECTOR_SERVE_WAIT_MS`, then runs a single-shot `magector-core search` (asynchronous, at most 20 s), so a tool answers inside the MCP client's 60 s. One serve process per project: the first MCP instance starts it and the others join it over `.magector/serve.sock` — also instances in other containers sharing `.magector` (an MCP gateway starting one per session), since the lock records the PID namespace of its holder.
+
+**Idle sleep.** On a large project the index and the model take gigabytes of RAM. With `MAGECTOR_SERVE_IDLE_SEC` set, the primary MCP instance stops serve after that idle time and keeps its socket proxy, so the other instances stay connected. The next query that needs the index (search, the semantic part of the finders, describe, stats) starts serve again and waits for it — about the start time above. `grep`, data.db state and AST queries do not wake it: a one-shot `magector-core request` answers them. While the index is used `MAGECTOR_SERVE_KEEP_IF_DAILY` times in 24 h, the longer `MAGECTOR_SERVE_KEEP_SEC` applies. The file watcher runs only while serve runs; on start it re-indexes the files changed meanwhile.
 
 ```mermaid
 flowchart LR
