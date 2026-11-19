@@ -6,6 +6,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions corresp
 
 ## [Unreleased]
 
+## [2.24.1] - 2026-11-19
+
+### Fixed
+- `magento_grep` and `magento_batch` grep with `filesOnly: true` listed no files when the serve process (or the one-shot `magector-core request`) answered: the core returns `data.files`, the server read `data.matches`.
+
 ## [2.24.0] - 2026-11-19
 
 ### Added

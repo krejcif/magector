@@ -38,6 +38,7 @@ if (cmd === 'stats') { console.log('Total vectors: 10'); process.exit(0); }
 if (cmd === 'search') { console.log('[]'); process.exit(0); }
 const reply = (req) => {
   const id = req.id === undefined ? {} : { id: req.id };
+  if (req.command === 'grep' && req.files_only) return { ok: true, data: { files: ['fake-' + req.pattern + '.xml'], total: 1 }, ...id };
   if (req.command === 'grep') return { ok: true, data: { matches: [{ file: 'fake.php', line: 1, text: req.pattern }], total: 1 }, ...id };
   if (req.command === 'search') return { ok: true, data: [hit(req.query)], ...id };
   if (req.command === 'stats') return { ok: true, data: { vectors: 10 }, ...id };
@@ -115,6 +116,11 @@ async function main() {
     ok('grep is answered while serve sleeps', grep.includes('fake.php:1:needle'), grep.slice(0, 200));
     ok('grep runs as a one-shot request', count('request grep') === 1, ev().join(' | '));
     ok('grep does not wake serve', count('serve-start') === 1, ev().join(' | '));
+    const files = await primary.call('magento_grep', { pattern: 'listprobe', filesOnly: true });
+    ok('grep filesOnly lists the files', files.includes('fake-listprobe.xml'), files.slice(0, 200));
+    const batchFiles = await primary.call('magento_batch', { queries: [{ tool: 'magento_grep', args: { pattern: 'batchprobe', filesOnly: true } }] });
+    ok('batch grep filesOnly lists the files', batchFiles.includes('fake-batchprobe.xml'), batchFiles.slice(0, 300));
+    ok('filesOnly greps do not wake serve', count('serve-start') === 1, ev().join(' | '));
 
     const search = await primary.call('magento_search', { query: 'wakeprobe' });
     ok('search wakes serve', count('serve-start') === 2, ev().join(' | '));
