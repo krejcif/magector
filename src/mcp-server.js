@@ -8654,7 +8654,8 @@ const _callToolHandler = async (request) => {
                       const bTotal = bResp.data.total || bMatches.length;
                       if (batchFilesOnly) {
                         text = `Files matching \`${a.pattern}\` (${bTotal}):\n`;
-                        for (const m of bMatches) text += (m.file || m) + '\n';
+                        // files_only answers with data.files (paths), not data.matches
+                        for (const f of bResp.data.files || bMatches) text += (f.file || f) + '\n';
                       } else {
                         text = `Found ${bTotal} matches${bTotal > maxRes ? ` (showing ${maxRes})` : ''}:\n`;
                         for (const m of bMatches) {
@@ -8791,7 +8792,8 @@ const _callToolHandler = async (request) => {
 
               if (filesOnly) {
                 let text = `## grep (files only): \`${args.pattern}\`\nFound **${total}** file(s)${total > maxResults ? ` (showing first ${maxResults})` : ''}. Use magento_read with methodName to read specific methods.\n\n`;
-                for (const m of matches) text += (m.file || m) + '\n';
+                // files_only answers with data.files (paths), not data.matches
+                for (const f of resp.data.files || matches) text += (f.file || f) + '\n';
                 return { content: [{ type: 'text', text }] };
               } else {
                 let text = `## grep: \`${args.pattern}\`\nFound **${total}** matches${total > maxResults ? ` (showing first ${maxResults})` : ''}\n\n`;
